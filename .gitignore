@@ -1,0 +1,11 @@
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+.env*
+!.env.example
+.sites-runtime/
+
+.test-build/
+upgrade.py
+finalize.py

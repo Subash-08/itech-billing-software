@@ -1,0 +1,7 @@
+import 'server-only';
+import {MongoClient} from 'mongodb';
+export class AppError extends Error{constructor(public status:number,message:string){super(message);}}
+const globalDb=globalThis as typeof globalThis&{itechMongo?:Promise<MongoClient>;itechIndexes?:Promise<void>};
+export async function mongo(){const uri=process.env.MONGODB_URI;if(!uri)throw new AppError(503,'MongoDB is not configured. The demo is still available.');if(!globalDb.itechMongo){globalDb.itechMongo=new MongoClient(uri,{maxPoolSize:10,serverSelectionTimeoutMS:5000}).connect().catch(e=>{globalDb.itechMongo=undefined;throw e;});}return globalDb.itechMongo;}
+export async function database(){return (await mongo()).db(process.env.MONGODB_DB||'itech_dev');}
+export async function ensureIndexes(){if(!globalDb.itechIndexes)globalDb.itechIndexes=(async()=>{const db=await database();await Promise.all([db.collection('authUsers').createIndex({email:1},{unique:true}),db.collection('authSessions').createIndex({expiresAt:1},{expireAfterSeconds:0}),db.collection('rateLimits').createIndex({expiresAt:1},{expireAfterSeconds:0}),db.collection('files').createIndex({tenantId:1,createdAt:-1}),db.collection('authUsers').createIndex({tenantId:1}),db.collection('authSessions').createIndex({userId:1}),db.collection('authSessions').createIndex({token:1},{unique:true}),db.collection('authAccounts').createIndex({providerId:1,accountId:1},{unique:true}),db.collection('authRateLimits').createIndex({key:1},{unique:true})]);})().catch(e=>{globalDb.itechIndexes=undefined;throw e;});return globalDb.itechIndexes;}
