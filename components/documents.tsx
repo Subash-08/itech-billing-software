@@ -1,49 +1,3675 @@
 'use client';
 
-import {useState} from 'react';
-
+import {useState, useEffect} from 'react';
 import Link from 'next/link';
-
-import {useRouter,useSearchParams} from 'next/navigation';
-
-import {Plus,Trash2,ArrowUp,ArrowDown,ArrowLeft,Printer,Download,ArrowUpRight,Check,FileText,Send} from 'lucide-react';
-
-import {Bill,Line,Purchase,TODAY,uid,totals,lineTotal,roundedTotal,money,balance,paid,dateLabel,activeReservation} from '@/lib/domain';
-
+import {useRouter, useSearchParams} from 'next/navigation';
+import {
+  Plus,
+  Trash2,
+  ArrowUp,
+  ArrowDown,
+  ArrowLeft,
+  Printer,
+  Download,
+  ArrowUpRight,
+  Check,
+  FileText,
+  AlertCircle,
+  RotateCcw,
+  Archive,
+} from 'lucide-react';
+import {
+  Bill,
+  Line,
+  Purchase,
+  TODAY,
+  uid,
+  totals,
+  lineTotal,
+  roundedTotal,
+  money,
+  balance,
+  paid,
+  dateLabel,
+  activeReservation,
+  State,
+} from '@/lib/domain';
 import SupplyReference from './supply-reference';
 import {ProductForm} from './inventory';
-
 import SupplierSettlement from './supplier-settlement';
-
-import {assertOpen,nextDate} from '@/lib/closing';
-
-import {State} from '@/lib/domain';
-
-import {issueBill,receivePurchase,addPayment} from '@/lib/operations';
-
+import {assertOpen, nextDate} from '@/lib/closing';
+import {issueBill, receivePurchase, addPayment} from '@/lib/operations';
 import {useStore} from './store';
-
-import {PageHead,Card,Btn,Field,Modal,SearchBox,Empty,Badge,csvDownload} from './ui';
-
+import {PageHead, Card, Btn, Field, Modal, SearchBox, Empty, Badge, csvDownload} from './ui';
 import {PaymentDialog} from './payments';
-
 import {PersonForm} from './people';
-
-import {TemplateInvoice as InvoicePaper,PrintDialog} from './templates';
+import {TemplateInvoice as InvoicePaper, PrintDialog} from './templates';
+import {mapPurchaseFromApi, mapInvoiceFromApi, mapQuotationFromApi} from '@/lib/mappers';
+import {
+  IssueInvoiceModal,
+  StockAllocationModal,
+  CustomerReceiptModal,
+  QuotationCancelModal,
+  QuotationReopenModal,
+  InvoiceCancelModal,
+} from './sales-modals';
 
 export {InvoicePaper};
 
-const blankLine=():Line=>({productId:'',name:'',qty:1,rate:0,discount:0,tax:18,serials:[],hsn:'998713',warranty:0});
+const blankLine = (): Line => ({
+  productId: '',
+  name: '',
+  qty: 1,
+  rate: 0,
+  discount: 0,
+  tax: 18,
+  serials: [],
+  hsn: '998713',
+  warranty: 0,
+  ...({clientLineKey: uid('CLK')} as any),
+});
 
-export function DocumentComposer({purchase=false,quotation=false,existingId}:{purchase?:boolean;quotation?:boolean;existingId?:string}){const {state,run,setState,notify}=useStore();const router=useRouter(),params=useSearchParams();const source=state.bills.find(b=>b.id===(params.get('from')||params.get('edit')));const existing=state.purchases.find(p=>p.id===existingId);const job=state.jobs.find(j=>j.id===(params.get('job')||source?.jobId));const enquiry=state.enquiries.find(e=>e.id===params.get('enquiry'));const service=!!job||source?.category==='Service'||params.get('kind')==='Service';const [customerId,setCustomerId]=useState(existing?.supplierId||source?.customerId||job?.customerId||enquiry?.customerId||params.get('customer')||'');const [lines,setLines]=useState<Line[]>(existing?.lines||source?.lines.map(l=>({...l,serials:[]}))|| (job?[{...blankLine(),name:job.work||job.problem,rate:Math.max(0,(job.final||job.estimate)-job.parts.reduce((a,x)=>a+(state.products.find(p=>p.id===x.productId)?.price||0)*x.qty,0))},...job.parts.map(part=>{const p=state.products.find(p=>p.id===part.productId)!;return {...blankLine(),productId:p.id,name:p.name,qty:part.qty,rate:p.price,tax:p.tax,hsn:p.hsn};})]:[]));const [date,setDate]=useState(TODAY),[due,setDue]=useState(existing?.due||'2026-09-17'),[taxMode,setTaxMode]=useState<'Intra-state'|'Inter-state'>(existing?.taxMode||source?.taxMode||'Intra-state'),[placeOfSupply,setPlaceOfSupply]=useState(existing?.placeOfSupply||source?.placeOfSupply||'Tamil Nadu'),[inclusive,setInclusive]=useState(existing?.inclusive??source?.inclusive??true),[notes,setNotes]=useState(existing?.notes||source?.notes||''),[category,setCategory]=useState<Bill['category']>(service?'Service':source?.category||'New goods'),[ref,setRef]=useState(existing?.reference||''),[product,setProduct]=useState(''),[search,setSearch]=useState(''),[serialIndex,setSerialIndex]=useState<number|null>(null),[serialText,setSerialText]=useState(''),[newPerson,setNewPerson]=useState(false),[review,setReview]=useState(false);const [newProduct,setNewProduct]=useState(false),[serviceId,setServiceId]=useState(''),[payRows,setPayRows]=useState<{account:string;amount:string;method:string}[]>([]),[templateId,setTemplateId]=useState(source?.templateId||state.defaultTemplateId),[shipSeparate,setShipSeparate]=useState(!!source?.shipTo),[shipTo,setShipTo]=useState(source?.shipTo||{name:'',address:'',phone:'',state:'Tamil Nadu',postalCode:''}),[orderRef,setOrderRef]=useState(''),[deliveryNote,setDeliveryNote]=useState(''),[dispatch,setDispatch]=useState('');const [id]=useState(existing?.id||(quotation&&params.get('edit')?source?.id:undefined)||`${purchase?'PUR':quotation?'QUO':service?'SVC':'INV'}-2026-${String(100+state.bills.length+state.purchases.length+1).padStart(4,'0')}`);const person=purchase?state.suppliers.find(c=>c.id===customerId):state.customers.find(c=>c.id===customerId);const bill:Bill={id,customerId,date,due,kind:quotation?'Quotation':service?'Service':'Sale',category,status:quotation?'Draft':'Issued',lines,inclusive,taxMode,placeOfSupply,notes,profit:null,templateId,shipTo:shipSeparate?shipTo:undefined,orderRef,deliveryNote,dispatch,jobId:service?job?.id:undefined,enquiryId:source?.enquiryId||enquiry?.id,sourceId:quotation?undefined:source?.id};const doc:Purchase={id,supplierId:customerId,date,due,reference:ref,status:'Ordered',lines,inclusive,taxMode,placeOfSupply,notes};const sum=totals(bill);function update(i:number,k:keyof Line,v:unknown){setLines(ls=>ls.map((l,n)=>n===i?{...l,[k]:v,...(k==='qty'?{serials:[]}:{} )}:l));}function addProduct(){const p=state.products.find(p=>p.id===product);if(!p)return;if(lines.some(l=>l.productId===p.id)){notify('This product is already added. Change its quantity in the row.');return;}setLines(ls=>[...ls,{productId:p.id,name:p.name,qty:1,rate:purchase?(inclusive?p.cost:p.cost/(1+p.tax/100)):(inclusive?p.price:Math.round(p.price/(1+p.tax/100)*100)/100),discount:0,tax:p.tax,serials:[],hsn:p.hsn,warranty:p.warranty}]);if(p.condition==='Used'&&lines.length===0)setCategory('Used goods');setProduct('');}function reorder(i:number,dir:number){const next=[...lines];[next[i],next[i+dir]]=[next[i+dir],next[i]];setLines(next);}function save(receive=false){if(shipSeparate&&(!shipTo.name.trim()||!shipTo.address.trim())){notify('Enter the ship-to name and address, or use the billing address.');return;}if(!person||!lines.length||lines.some(l=>!l.name.trim()||l.qty<=0||!Number.isInteger(l.qty)||l.rate<0||l.discount<0||l.discount>(l.discountType==='Amount'?l.qty*l.rate:100)||l.tax<0||l.tax>100)||due<date){notify('Choose a customer/supplier, add valid items and check the due date.');return;}if(payRows.some(p=>!Number.isFinite(+p.amount)||+p.amount<=0)){notify('Enter a positive payment amount or remove the unused payment row.');return;}const ok=run(s=>{let next:State=s;if(purchase){assertOpen(s,date);if(receive)next=receivePurchase(s,doc);else {if(s.purchases.some(p=>p.id===id))throw new Error('Purchase number already exists.');next={...s,purchases:[doc,...s.purchases]};}}else next=issueBill(quotation&&params.get('edit')?{...s,bills:s.bills.filter(b=>b.id!==id)}:s,bill);if(!quotation)for(const p of payRows)next=addPayment(next,{id:uid('PAY'),date,direction:purchase?'Out':'In',account:p.account,amount:Number(p.amount),purpose:purchase?'Supplier payment':'Customer payment',reference:id,party:customerId,note:p.method+' · at creation'});return next;},quotation?'Quotation saved.':purchase?'Purchase, stock and supplier payment updated.':'Invoice, stock, payment, outstanding and warranty updated.');if(ok)router.push(`${purchase?'/purchases':quotation?'/quotations':'/sales'}/${id}`);}
+export function DocumentComposer({
+  purchase = false,
+  quotation = false,
+  existingId,
+}: {
+  purchase?: boolean;
+  quotation?: boolean;
+  existingId?: string;
+}) {
+  const {
+    state,
+    run,
+    notify,
+    isLive,
+    savePurchaseApi,
+    confirmPurchaseOrderApi,
+    receivePurchaseStockApi,
+    recordReceiveShortcutApi,
+    recordReceiveAndPayShortcutApi,
+    fetchSuppliersPage,
+    fetchProductsPage,
+    fetchCustomersPage,
+    saveQuotationApi,
+    fetchQuotationDetailApi,
+    saveInvoiceDraftApi,
+    fetchInvoiceDetailApi,
+    issueInvoiceApi,
+  } = useStore();
+  const router = useRouter();
+  const params = useSearchParams();
 
+  const editId = params.get('edit') || (existingId && existingId !== 'new' ? existingId : undefined);
+  const isEditMode = !!editId;
+  const source = state.bills.find((b) => b.id === (params.get('from') || params.get('edit')));
+  const existing = state.purchases.find((p) => p.id === (existingId || params.get('edit')));
+  const job = state.jobs.find((j) => j.id === (params.get('job') || source?.jobId));
+  const enquiry = state.enquiries.find((e) => e.id === params.get('enquiry'));
+  const service = !!job || source?.category === 'Service' || params.get('kind') === 'Service';
 
+  const [loadedVersion, setLoadedVersion] = useState<number | undefined>((existing as any)?.version);
+  const [loadedBillStatus, setLoadedBillStatus] = useState<string | undefined>((existing as any)?.billStatus);
+  const isPosted = purchase && (existing?.billStatus === 'Posted' || loadedBillStatus === 'Posted');
 
-return <><Link className="back-link" href={purchase?'/purchases':quotation?'/quotations':'/sales'}><ArrowLeft size={14}/>Back to {purchase?'purchases':quotation?'quotations':'invoices'}</Link><PageHead title={existing?'Receive purchase':purchase?'New purchase':quotation?'New quotation':service?'New service invoice':'New sales invoice'} description={purchase?'Receive products now with no payment, sell them, then pay the supplier through Money out or their profile. Full and partial payment are optional.':quotation?'Prepare an estimate. Stock and money stay unchanged until a sale is confirmed.':'Add items, check the totals and issue the customer’s invoice.'} actions={<><Btn secondary onClick={()=>setReview(true)}><FileText size={16}/>Preview</Btn><Btn onClick={()=>save(!!existing)}><Check size={16}/>{existing?'Receive stock':purchase?'Save purchase order':quotation?'Save quotation':'Issue invoice'}</Btn></>}/><div className="stack"><Card title={purchase?'Supplier and purchase details':'Customer and document details'} actions={<Btn secondary onClick={()=>setNewPerson(true)}><Plus size={14}/>{purchase?'Add supplier':'Add customer'}</Btn>}><div className="form-body form-grid"><Field label={purchase?'Supplier *':'Customer *'}><select value={customerId} onChange={e=>{setCustomerId(e.target.value);const c=purchase?state.suppliers.find(c=>c.id===e.target.value):state.customers.find(c=>c.id===e.target.value);const days=purchase?(c as typeof state.suppliers[number])?.terms:Number((c as typeof state.customers[number])?.details?.paymentTerms||0);setDue(nextDate(date,days||0));}}><option value="">Select {purchase?'supplier':'customer'}</option>{(purchase?state.suppliers:state.customers).map(c=><option key={c.id} value={c.id}>{c.name} · {c.phone}</option>)}</select></Field>{!purchase&&<Field label="Invoice layout / template"><select value={templateId} onChange={e=>setTemplateId(e.target.value)}>{state.templates.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select><Link className="text-link" href="/templates">Edit layouts and logo</Link></Field>}<Field label="Document number"><input readOnly value={id}/></Field><Field label="Date"><input type="date" max={TODAY} value={date} onChange={e=>setDate(e.target.value)}/></Field><Field label={quotation?'Valid until':'Due date'}><input type="date" min={date} value={due} onChange={e=>setDue(e.target.value)}/></Field>{purchase?<Field label="Supplier invoice / reference"><input value={ref} onChange={e=>setRef(e.target.value)} placeholder="e.g. CIT/26/8053"/></Field>:!service&&<Field label="Business category"><select value={category} onChange={e=>setCategory(e.target.value as Bill['category'])}><option>New goods</option><option>Used goods</option></select></Field>}<Field label="GST supply type"><select value={taxMode} onChange={e=>setTaxMode(e.target.value as typeof taxMode)}><option value="Intra-state">Within state · CGST + SGST</option><option value="Inter-state">Interstate · IGST</option></select></Field><Field label="Place of supply"><input value={placeOfSupply} onChange={e=>setPlaceOfSupply(e.target.value)} placeholder="State / union territory"/></Field><Field label="Price entry mode"><select value={inclusive?'inclusive':'exclusive'} onChange={e=>setInclusive(e.target.value==='inclusive')}><option value="inclusive">GST inclusive · entered rate includes tax</option><option value="exclusive">GST exclusive · add tax to entered rate</option></select></Field>{person&&<div className="full customer-preview"><strong>{person.name}</strong><span>{person.phone} · {person.email||'No email'}</span><p>{person.address}</p><small>GSTIN: {person.gst||'Not provided'}</small>{!purchase&&(person as typeof state.customers[number]).details?.creditLimit&&<p>Credit limit: {money(Number((person as typeof state.customers[number]).details?.creditLimit))} · Review existing and new dues before allowing credit.</p>}{!purchase&&<p>Existing outstanding: {money(state.bills.filter(b=>b.customerId===customerId&&b.kind!=='Quotation').reduce((n,b)=>n+balance(state,b),0))}</p>}</div>}</div>{!purchase&&<div className="form-body"><label className="checkbox-row"><input type="checkbox" checked={shipSeparate} onChange={e=>{setShipSeparate(e.target.checked);if(e.target.checked&&!shipTo.name)setShipTo({name:person?.name||'',address:(person as typeof state.customers[number])?.details?.shippingAddress||person?.address||'',phone:person?.phone||'',state:(person as typeof state.customers[number])?.details?.state||'Tamil Nadu',postalCode:(person as typeof state.customers[number])?.details?.postalCode||''});}}/>Ship to a different address</label>{shipSeparate?<div className="form-grid">{Object.entries({name:'Ship-to name',address:'Delivery address',phone:'Delivery phone',state:'State / territory',postalCode:'PIN code'}).map(([k,label])=><Field key={k} label={label}><input value={shipTo[k as keyof typeof shipTo]} onChange={e=>setShipTo({...shipTo,[k]:e.target.value})}/></Field>)}</div>:<p>Ship to uses the selected customer’s billing details.</p>}</div>}</Card><Card title={purchase?'Purchase items' :service?'Service and parts':'Invoice items'} sub={inclusive?'Rates include GST. Discounts apply before tax; charges use their own editable GST rate.':'GST is added after discount. Changing the price mode reinterprets the entered rates.'} actions={<span className="muted">{lines.length} lines</span>}>{!service&&<div className="toolbar"><SearchBox value={search} onChange={setSearch} placeholder="Find a product…"/><select aria-label="Select product to add" value={product} onChange={e=>setProduct(e.target.value)} style={{flex:1}}><option value="">Choose a product</option>{state.products.filter(p=>(p.name+p.model).toLowerCase().includes(search.toLowerCase())).map(p=><option value={p.id} key={p.id}>{p.name} · {money(purchase?p.cost:p.price)} · {p.stock} on hand</option>)}</select><Btn secondary onClick={addProduct}><Plus size={15}/>Add item</Btn>{purchase&&<Btn secondary onClick={()=>setNewProduct(true)}>Create product</Btn>}</div>}{service&&<div className="toolbar"><select aria-label="Service catalogue" value={serviceId} onChange={e=>setServiceId(e.target.value)}><option value="">Choose a standard service</option>{state.serviceCatalog.filter(x=>x.active).map(x=><option key={x.id} value={x.id}>{x.name} · {money(x.rate)}</option>)}</select><Btn secondary onClick={()=>{const x=state.serviceCatalog.find(x=>x.id===serviceId);if(x)setLines(ls=>[...ls,{...blankLine(),name:x.name,rate:inclusive?x.rate:x.rate/(1+x.tax/100),tax:x.tax,hsn:x.sac,warranty:x.warranty}]);setServiceId('');}}>Add service</Btn><Link className="text-link" href="/service-catalog">Manage services</Link></div>}<div className="table-wrap"><table className="line-table"><thead><tr><th>Item / HSN</th><th>Qty</th><th>Rate {inclusive?'incl. GST':'excl. GST'}</th><th>Discount</th><th>GST %</th><th>Total</th><th/></tr></thead><tbody>{lines.map((l,i)=><tr key={i}><td><input aria-label={`Item ${i+1} description`} className="table-input wide-input" value={l.name} onChange={e=>update(i,'name',e.target.value)}/><div className="line-meta"><input aria-label={`Item ${i+1} HSN`} placeholder="HSN / SAC" value={l.hsn} onChange={e=>update(i,'hsn',e.target.value)}/>{l.productId&&!service&&<button onClick={()=>{setSerialIndex(i);setSerialText(l.serials.join('\n'));}}>{purchase?'Enter serials':quotation?'Serials at sale':`${l.serials.length} serial(s)`}</button>}</div>{!purchase&&<div className="line-meta">{l.productId&&!service&&<label>Source purchase (optional)<select aria-label={`Item ${i+1} source purchase`} value={l.purchaseId||''} onChange={e=>update(i,'purchaseId',e.target.value||undefined)}><option value="">{l.serials.length?'Match selected serials':'Opening stock / not linked'}</option>{state.purchases.filter(p=>p.status==='Received'&&p.lines.some(x=>x.productId===l.productId)).map(p=><option key={p.id} value={p.id}>{p.id} · {state.suppliers.find(x=>x.id===p.supplierId)?.name}</option>)}</select></label>}<label>Warranty (months) <input aria-label={`Item ${i+1} warranty months`} type="number" min="0" max="120" value={l.warranty} onChange={e=>update(i,'warranty',+e.target.value)}/></label>{l.warranty>0&&<label>Warranty photos<input aria-label={`Item ${i+1} warranty photos`} type="file" accept="image/*" multiple onChange={e=>{const files=Array.from(e.target.files||[]);if(files.length>6||files.some(f=>f.size>5*1024*1024)){notify('Choose up to 6 photos, each under 5 MB.');return;}update(i,'warrantyPhotos',files.map(f=>URL.createObjectURL(f)));}}/>{l.warrantyPhotos?.length||0} attached</label>}</div>}</td><td><input aria-label={`Item ${i+1} quantity`} className="table-input" type="number" min="1" value={l.qty} onChange={e=>update(i,'qty',+e.target.value)}/></td><td><input aria-label={`Item ${i+1} rate`} className="table-input" type="number" min="0" step="0.01" value={l.rate} onChange={e=>update(i,'rate',+e.target.value)}/></td><td><input aria-label={`Item ${i+1} discount`} className="table-input" type="number" min="0" max={l.discountType==='Amount'?l.qty*l.rate:100} value={l.discount} onChange={e=>update(i,'discount',+e.target.value)}/><select aria-label={`Item ${i+1} discount type`} value={l.discountType||'Percentage'} onChange={e=>{update(i,'discountType',e.target.value);update(i,'discount',0);}}><option value="Percentage">%</option><option value="Amount">₹ per line</option></select></td><td><select aria-label={`Item ${i+1} GST`} className="table-input" value={l.tax} onChange={e=>update(i,'tax',+e.target.value)}>{[0,5,12,18,28].map(v=><option key={v} value={v}>{v}%</option>)}</select></td><td className="amount">{money(lineTotal(l,inclusive).total)}<small>Base {money(lineTotal(l,inclusive).base)}</small><small>GST {money(lineTotal(l,inclusive).tax)}</small></td><td><div className="action-cell"><button className="icon-btn" disabled={i===0} aria-label={`Move item ${i+1} up`} onClick={()=>reorder(i,-1)}><ArrowUp size={14}/></button><button className="icon-btn" disabled={i===lines.length-1} aria-label={`Move item ${i+1} down`} onClick={()=>reorder(i,1)}><ArrowDown size={14}/></button><button className="icon-btn" aria-label={`Remove item ${i+1}`} onClick={()=>setLines(ls=>ls.filter((_,n)=>i!==n))}><Trash2 size={15}/></button></div></td></tr>)}</tbody></table></div>{!lines.length&&<Empty title="Add your first item" text={service?'Add the service work and charges below.':'Choose a product above to start this document.'}/>}<div className="toolbar">{!purchase&&<><Btn secondary onClick={()=>setLines(ls=>[...ls,blankLine()])}><Plus size={14}/>Add {service?'service':'custom'} line</Btn>{!service&&<Btn secondary onClick={()=>setLines(ls=>[...ls,{...blankLine(),name:'PC assembly and testing',rate:1000}])}>Add assembly charge</Btn>}</>}{!purchase&&<><Btn secondary onClick={()=>setLines(ls=>[...ls,{...blankLine(),lineType:'Charge',name:'Shipping charge',qty:1,rate:0,warranty:0}])}>Add shipping charge</Btn><Btn secondary onClick={()=>setLines(ls=>[...ls,{...blankLine(),lineType:'Charge',name:'Additional charge',qty:1,rate:0,warranty:0}])}>Add other charge</Btn></>}<span className="muted">Set a line’s GST to 0% for an illustrative non-GST item.</span></div></Card>{!quotation&&<Card title={purchase?'Supplier payment':'Payment received'} sub="Leave empty for credit. Add one or more payments for a full, partial or split payment."><div className="form-body stack">{payRows.map((p,i)=><div className="payment-entry-row" key={i}><Field label="Method"><select value={p.method} onChange={e=>setPayRows(rows=>rows.map((r,n)=>n===i?{...r,method:e.target.value,account:e.target.value==='Cash'?'Cash':'Bank account'}:r))}><option>Cash</option><option>GPay / UPI</option><option>Bank transfer</option><option>Card</option></select></Field><Field label="Account"><select value={p.account} onChange={e=>setPayRows(rows=>rows.map((r,n)=>n===i?{...r,account:e.target.value}:r))}>{(p.method==='Cash'?['Cash']:['Bank account']).map(a=><option key={a}>{a}</option>)}</select></Field><Field label="Amount"><input type="number" min="0.01" step="0.01" value={p.amount} onChange={e=>setPayRows(rows=>rows.map((r,n)=>n===i?{...r,amount:e.target.value}:r))}/></Field><Btn secondary onClick={()=>setPayRows(rows=>rows.filter((_,n)=>n!==i))}>Remove</Btn></div>)}<div className="actions"><Btn secondary onClick={()=>setPayRows(rows=>[...rows,{account:'Cash',method:'Cash',amount:''}])}>Add payment</Btn><Btn secondary onClick={()=>setPayRows([{account:'Cash',method:'Cash',amount:String(Math.max(0,roundedTotal(bill)-(existing?paid(state,id):0)))}])}>Pay remaining in cash</Btn></div><div className="summary-row"><span>Remaining outstanding</span><strong className={sum.total-payRows.reduce((n,p)=>n+(+p.amount||0),0)-(existing?paid(state,id):0)<0?'error':''}>{money(sum.total-payRows.reduce((n,p)=>n+(+p.amount||0),0)-(existing?paid(state,id):0))}</strong></div><p>Later payments can be recorded from the profile, invoice or Dues. Money is recorded only once.</p></div></Card>}<div className="detail-grid"><Card title="Notes and terms"><div className="body-pad"><details className="optional-fields"><summary>Order and delivery references</summary><Field label="Buyer order number"><input value={orderRef} onChange={e=>setOrderRef(e.target.value)}/></Field><Field label="Delivery note"><input value={deliveryNote} onChange={e=>setDeliveryNote(e.target.value)}/></Field><Field label="Dispatched through"><input value={dispatch} onChange={e=>setDispatch(e.target.value)}/></Field></details><Field label="Printed notes"><textarea value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Warranty terms, payment terms, delivery instructions…"/></Field></div></Card><div className="summary-box"><div className="summary-row"><span>Taxable value</span><b>{money(sum.base)}</b></div>{taxMode==='Inter-state'?<div className="summary-row"><span>IGST</span><b>{money(sum.igst)}</b></div>:<><div className="summary-row"><span>CGST</span><b>{money(sum.cgst)}</b></div><div className="summary-row"><span>SGST</span><b>{money(sum.sgst)}</b></div></>}<div className="summary-row total"><span>Total</span><b>{money(sum.total)}</b></div><small>Discounts are applied to each item before calculating tax.</small></div></div><div className="form-actions"><Link className="btn secondary" href={purchase?'/purchases':quotation?'/quotations':'/sales'}>Cancel</Link>{purchase&&!existing&&<Btn secondary onClick={()=>save(true)}>Receive stock now</Btn>}<Btn onClick={()=>save(!!existing)}>{existing?'Confirm stock receipt':purchase?'Save purchase order':quotation?'Save quotation':'Issue invoice'}</Btn></div></div>{newProduct&&<ProductForm onClose={()=>setNewProduct(false)}/>} {newPerson&&<PersonForm supplier={purchase} onClose={()=>setNewPerson(false)}/>} {serialIndex!==null&&<Modal title={`Serial numbers · ${lines[serialIndex].name}`} onClose={()=>setSerialIndex(null)}><div className="form-body">{purchase?<Field label={`Enter ${lines[serialIndex].qty} serial number(s), one per line`}><textarea value={serialText} onChange={e=>setSerialText(e.target.value)}/></Field>:<><p className="notice">Select {lines[serialIndex].qty} unit(s). Serials held for this customer are available to their sale.</p><div className="serial-list">{state.products.find(p=>p.id===lines[serialIndex].productId)?.serials.map(n=>{const blocked=state.reservations.some(r=>activeReservation(r)&&r.customerId!==customerId&&r.serials.includes(n));return <label key={n}><input type="checkbox" disabled={blocked} checked={lines[serialIndex].serials.includes(n)} onChange={e=>update(serialIndex,'serials',e.target.checked?[...lines[serialIndex].serials,n]:lines[serialIndex].serials.filter(x=>x!==n))}/>{n}{blocked&&<Badge>Reserved</Badge>}</label>;})}</div>{!state.products.find(p=>p.id===lines[serialIndex].productId)?.serials.length&&<p>This product uses quantity tracking; no serial selection is needed.</p>}</>}</div><div className="form-actions"><Btn onClick={()=>{if(purchase)update(serialIndex,'serials',serialText.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean));setSerialIndex(null);}}>Done</Btn></div></Modal>}{review&&!purchase&&<PrintDialog bills={[{...bill,previewPaid:payRows.reduce((n,p)=>n+(+p.amount||0),0)}]} onClose={()=>setReview(false)}/>} {review&&purchase&&<Modal title="Document preview" wide onClose={()=>setReview(false)}><InvoicePaper bill={bill} supplier={purchase?person as typeof state.suppliers[number]:undefined}/><div className="form-actions"><Btn secondary onClick={()=>window.print()}><Printer size={16}/>Print / save PDF</Btn><Btn onClick={()=>setReview(false)}>Continue editing</Btn></div></Modal>}</>;}
+  const [customerId, setCustomerId] = useState(
+    existing?.supplierId || source?.customerId || job?.customerId || enquiry?.customerId || params.get('customer') || ''
+  );
+  const [lines, setLines] = useState<Line[]>(() => {
+    if (existing) {
+      return existing.lines.map((line: any) => ({
+        ...line,
+        clientLineKey: line.clientLineKey || uid('CLK'),
+        qty: Math.max(0, (line.quantityOrdered ?? line.qty) - (line.quantityReceived ?? 0) - (line.quantityCancelled ?? 0)),
+        serials: [],
+      }));
+    }
+    if (source?.lines) {
+      return source.lines.map((l: any) => ({
+        ...l,
+        clientLineKey: l.clientLineKey || uid('CLK'),
+        serials: [],
+      }));
+    }
+    if (job) {
+      return [
+        {
+          ...blankLine(),
+          name: job.work || job.problem,
+          rate: Math.max(
+            0,
+            (job.final || job.estimate) -
+              job.parts.reduce((a, x) => a + (state.products.find((p) => p.id === x.productId)?.price || 0) * x.qty, 0)
+          ),
+        },
+        ...job.parts.map((part) => {
+          const p = state.products.find((p) => p.id === part.productId)!;
+          return {...blankLine(), productId: p.id, name: p.name, qty: part.qty, rate: p.price, tax: p.tax, hsn: p.hsn};
+        }),
+      ];
+    }
+    return [];
+  });
 
-export default function Documents({quotation=false,purchase=false,id}:{quotation?:boolean;purchase?:boolean;id?:string}){const {state,setState,notify}=useStore();const router=useRouter();const [q,setQ]=useState(''),[status,setStatus]=useState('All'),[payment,setPayment]=useState(false),[date,setDate]=useState(''),[cancel,setCancel]=useState(false),[print,setPrint]=useState(false),[categoryFilter,setCategoryFilter]=useState('All categories');const record=purchase?state.purchases.find(b=>b.id===id):state.bills.find(b=>b.id===id);const list=(purchase?state.purchases:state.bills.filter(b=>quotation?b.kind==='Quotation':b.kind!=='Quotation')).filter(b=>{const p=purchase?state.suppliers.find(c=>c.id===(b as Purchase).supplierId):state.customers.find(c=>c.id===(b as Bill).customerId);return (b.id+p?.name).toLowerCase().includes(q.toLowerCase())&&(!date||b.date===date)&&(purchase||quotation||categoryFilter==='All categories'||(b as Bill).category===categoryFilter)&&(status==='All'||b.status===status||(status==='Unpaid'&&balance(state,b)>0)||(status==='Paid'&&balance(state,b)===0));});const path=purchase?'/purchases':quotation?'/quotations':'/sales';if(id&&!record)return <Empty title="Document not found" text="This demo resets on refresh." action={<Link href={path}>Back to list</Link>}/>;const customer=record?(purchase?state.suppliers.find(c=>c.id===(record as Purchase).supplierId):state.customers.find(c=>c.id===(record as Bill).customerId)):null;return <>{record&&<Link className="back-link" href={path}><ArrowLeft size={14}/>All {purchase?'purchases':quotation?'quotations':'invoices'}</Link>}<PageHead title={record?.id||(purchase?'Purchases':quotation?'Quotations':'Sales & invoices')} description={record?`${customer?.name} · ${dateLabel(record.date)}`:purchase?'Bring products into stock and keep supplier payments connected.':quotation?'Create clear estimates for products, PC builds and services.':'Every sale and service invoice, with payment status at a glance.'} actions={record?<>{!purchase&&<Btn secondary onClick={()=>setPrint(true)}><Printer size={16}/>Print / PDF</Btn>}{quotation&&record.status!=='Converted'&&record.status!=='Cancelled'&&<><Btn secondary onClick={()=>{setState(s=>({...s,bills:s.bills.map(b=>b.id===id?{...b,status:'Shared'}:b)}));notify('Marked as shared. No message was sent.');}}>Mark shared</Btn><Link className="btn secondary" href={`/quotations/new?edit=${id}`}>Edit quotation</Link><Link href={`/sales/new?from=${id}`} className="btn">Convert to invoice</Link></>}{purchase&&record.status==='Ordered'&&<Link className="btn" href={`/purchases/${id}/receive`}>Receive stock</Link>}{!quotation&&balance(state,record)>0&&<Btn onClick={()=>setPayment(true)}>{purchase?'Pay supplier':'Receive payment'}</Btn>}</>:<><Link className="btn secondary" href="/reports">Reports / Excel / PDF</Link><Btn secondary onClick={()=>csvDownload((quotation?'quotations':purchase?'purchases':'invoices')+'.csv',[['Document','Date','Party','Total','Due','Status'],...list.map(b=>[b.id,b.date,purchase?state.suppliers.find(c=>c.id===(b as Purchase).supplierId)?.name||'':state.customers.find(c=>c.id===(b as Bill).customerId)?.name||'',roundedTotal(b),balance(state,b),b.status])])}><Download size={16}/>Export</Btn>{!quotation&&!purchase&&<Link className="btn secondary" href="/sales/new?kind=Service">Service invoice</Link>}<Link href={path+'/new'} className="btn"><Plus size={16}/>New {purchase?'purchase':quotation?'quotation':'invoice'}</Link></>}/>{!record&&!quotation&&<div className="grid-3 spaced"><Card title="Filtered bill total"><div className="body-pad"><h2>{money(list.reduce((n,b)=>n+roundedTotal(b),0))}</h2><p>{list.length} matching documents</p></div></Card><Card title="Payments recorded"><div className="body-pad"><h2>{money(list.reduce((n,b)=>n+paid(state,b.id),0))}</h2><p>Net payments linked to matching bills</p></div></Card><Card title={purchase?'Outstanding to pay':'Outstanding to collect'}><div className="body-pad"><button className="metric-button" onClick={()=>setStatus('Unpaid')}>{money(list.reduce((n,b)=>n+balance(state,b),0))}</button><p>Click to show unpaid bills</p><button className="link-button" onClick={()=>setStatus('All')}>Show all payment statuses</button></div></Card></div>}{record?<><div className="document-status-strip screen-only"><span><Badge>{record.status}</Badge></span><span>Total <b>{money(roundedTotal(record))}</b></span>{!quotation&&<><span>Paid <b>{money(paid(state,record.id))}</b></span><span>Balance <b>{money(balance(state,record))}</b></span><Badge>{balance(state,record)===0?'Paid':paid(state,record.id)>0?'Partly paid':'Unpaid'}</Badge></>}</div>{purchase?<Card title="Purchase items"><div className="table-wrap"><table><thead><tr><th>Product</th><th>Quantity</th><th>Rate</th><th>Serials</th><th>Total</th></tr></thead><tbody>{record.lines.map((l,i)=><tr key={i}><td>{l.name}</td><td>{l.qty}</td><td>{money(l.rate)}</td><td>{l.serials.join(', ')||'Quantity tracked / not received'}</td><td>{money(lineTotal(l,record.inclusive).total)}</td></tr>)}</tbody></table></div><div className="body-pad spaced"><p>{record.notes}</p><p>Supplier reference: {(record as Purchase).reference||'—'}</p><p>Due: {dateLabel(record.due)}</p></div></Card>:<InvoicePaper bill={record as Bill}/>}<div className="detail-grid spaced screen-only"><Card title={quotation?'Quotation actions':'Payment history'}>{quotation?<div className="body-pad actions"><Link className="btn secondary" href={`/quotations/new?from=${record.id}`}>Duplicate quotation</Link><Link className="btn secondary" href={`/communication?customer=${(record as Bill).customerId}`}>Preview message</Link>{!['Converted','Cancelled'].includes(record.status)&&<Btn secondary onClick={()=>setCancel(true)}>Cancel quotation</Btn>}</div>:<><div className="table-wrap"><table><thead><tr><th>Date</th><th>Account</th><th>Purpose</th><th>Amount</th></tr></thead><tbody>{state.payments.filter(p=>p.reference===record.id).map(p=><tr key={p.id}><td>{p.date}</td><td>{p.account}</td><td>{p.purpose}</td><td>{money(p.amount)}</td></tr>)}</tbody></table></div>{!state.payments.some(p=>p.reference===record.id)&&<Empty title="No payments recorded" text="Record the payment when money is actually received or paid."/>}</>}</Card><Card title="Related actions"><div className="body-pad stack">{!purchase&&!quotation&&<><h3>Supplier payment reference</h3><SupplyReference bill={record as Bill} state={state}/></>}{!purchase&&!quotation&&<Link className="text-link" href="/warranty">Add coverage, photos or manage warranty</Link>}<Link className="text-link" href={`${purchase?'/suppliers':'/customers'}/${customer?.id}`}>Open {purchase?'supplier':'customer'} profile <ArrowUpRight size={15}/></Link>{!quotation&&<Link className="text-link" href={`/returns?reference=${record.id}`}>Record {purchase?'supplier':'customer'} return <ArrowUpRight size={15}/></Link>}{!purchase&&!quotation&&<Link className="text-link" href="/profit">Enter profit at day end <ArrowUpRight size={15}/></Link>}</div></Card></div></>:<Card><div className="toolbar"><SearchBox value={q} onChange={setQ} placeholder="Search document or customer…"/><select aria-label="Document status" value={status} onChange={e=>setStatus(e.target.value)}><option>All</option>{(quotation?['Draft','Shared','Converted','Cancelled']:purchase?['Ordered','Received','Paid','Unpaid']:['Paid','Unpaid','Issued']).map(s=><option key={s}>{s}</option>)}</select>{!purchase&&!quotation&&<select aria-label="Business category filter" value={categoryFilter} onChange={e=>setCategoryFilter(e.target.value)}><option>All categories</option><option>New goods</option><option>Used goods</option><option>Service</option></select>}<input aria-label="Document date" type="date" value={date} onChange={e=>setDate(e.target.value)}/>{date&&<button className="link-button" onClick={()=>setDate('')}>Clear date</button>}</div><div className="table-wrap"><table><thead><tr><th>Document</th><th>{purchase?'Supplier':'Customer'}</th><th>Date</th><th>Total</th>{!quotation&&<th>Balance due</th>}<th>Status</th><th/></tr></thead><tbody>{list.map(b=><tr key={b.id}><td><Link className="record-link" href={path+'/'+b.id}>{b.id}</Link><small>{purchase?(b as Purchase).reference:(b as Bill).kind+' · '+(b as Bill).category}</small></td><td>{purchase?state.suppliers.find(c=>c.id===(b as Purchase).supplierId)?.name:state.customers.find(c=>c.id===(b as Bill).customerId)?.name}</td><td>{dateLabel(b.date)}</td><td className="amount">{money(roundedTotal(b))}</td>{!quotation&&<td>{money(balance(state,b))}</td>}<td><Badge>{quotation?b.status:purchase?b.status:balance(state,b)===0?'Paid':paid(state,b.id)>0?'Partial':'Unpaid'}</Badge>{purchase&&<><small>Payment</small><Badge>{balance(state,b)===0?'Paid':paid(state,b.id)>0?'Partly paid':'Unpaid'}</Badge></>}</td><td><Link className="text-link" href={path+'/'+b.id}>View <ArrowUpRight size={15}/></Link></td></tr>)}</tbody></table></div>{!list.length&&<Empty/>}<div className="table-footer">{list.length} records · All matching records shown</div></Card>}{print&&record&&!purchase&&<PrintDialog bills={[record as Bill]} onClose={()=>setPrint(false)}/>} {payment&&record&&(purchase?<SupplierSettlement supplierId={(record as Purchase).supplierId} onClose={()=>setPayment(false)}/>:<PaymentDialog record={record} onClose={()=>setPayment(false)}/>)} {cancel&&record&&<Modal title="Cancel quotation?" onClose={()=>setCancel(false)}><div className="form-body"><p>The quotation will remain in history as cancelled. No stock or payments are affected.</p></div><div className="form-actions"><Btn secondary onClick={()=>setCancel(false)}>Keep quotation</Btn><Btn danger onClick={()=>{setState(s=>({...s,bills:s.bills.map(b=>b.id===id?{...b,status:'Cancelled'}:b)}));setCancel(false);notify('Quotation cancelled.');}}>Cancel quotation</Btn></div></Modal>}</>;}
+  const [date, setDate] = useState(TODAY);
+  const [due, setDue] = useState(existing?.due || '2026-09-17');
+  const [taxMode, setTaxMode] = useState<'Intra-state' | 'Inter-state'>(
+    existing?.taxMode || source?.taxMode || 'Intra-state'
+  );
+  const [placeOfSupply, setPlaceOfSupply] = useState(
+    existing?.placeOfSupply || source?.placeOfSupply || 'Tamil Nadu'
+  );
+  const [inclusive, setInclusive] = useState(existing?.inclusive ?? source?.inclusive ?? true);
+  const [notes, setNotes] = useState(existing?.notes || source?.notes || '');
+  const [category, setCategory] = useState<Bill['category']>(service ? 'Service' : source?.category || 'New goods');
+  const [ref, setRef] = useState(existing?.reference || '');
+  const [product, setProduct] = useState('');
+  const [search, setSearch] = useState('');
+  const [supplierSearch, setSupplierSearch] = useState('');
+  const [supplierChoices, setSupplierChoices] = useState(state.suppliers);
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [customerChoices, setCustomerChoices] = useState(state.customers);
+  const [productChoices, setProductChoices] = useState(state.products);
+  const [serialIndex, setSerialIndex] = useState<number | null>(null);
+  const [serialText, setSerialText] = useState('');
+  const [allocatingLineIndex, setAllocatingLineIndex] = useState<number | null>(null);
+  const [newPerson, setNewPerson] = useState(false);
+  const [review, setReview] = useState(false);
+  const [newProduct, setNewProduct] = useState(false);
+  const [serviceId, setServiceId] = useState('');
+  const [payRows, setPayRows] = useState<{account: string; amount: string; method: string}[]>([]);
+  const [templateId, setTemplateId] = useState(source?.templateId || state.defaultTemplateId);
+  const [shipSeparate, setShipSeparate] = useState(!!source?.shipTo);
+  const [shipTo, setShipTo] = useState(
+    source?.shipTo || {name: '', address: '', phone: '', state: 'Tamil Nadu', postalCode: ''}
+  );
+  const [orderRef, setOrderRef] = useState('');
+  const [deliveryNote, setDeliveryNote] = useState('');
+  const [dispatch, setDispatch] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [attachmentFileId, setAttachmentFileId] = useState((existing as any)?.attachmentFileId || '');
+  const [attachmentName, setAttachmentName] = useState('');
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
 
+  // Phase 3.5 & 4 Modals
+  const [postModalOpen, setPostModalOpen] = useState(false);
+  const [postInvoiceNumber, setPostInvoiceNumber] = useState('');
+  const [postInvoiceDate, setPostInvoiceDate] = useState(TODAY);
+  const [payModalOpen, setPayModalOpen] = useState(false);
+  const [payAccount, setPayAccount] = useState('Cash');
+  const [conflictModalOpen, setConflictModalOpen] = useState(false);
+  const [conflictMessage, setConflictMessage] = useState('');
+  const [receiveShortcutKey, setReceiveShortcutKey] = useState(() => `record-receive-${uid('IDEM')}`);
+  const [receivePayShortcutKey, setReceivePayShortcutKey] = useState(() => `record-receive-pay-${uid('IDEM')}`);
+  const [issueModalOpen, setIssueModalOpen] = useState(false);
+  const [issueTargetDraft, setIssueTargetDraft] = useState<{id: string; version: number; totalPaise: number; customerId: string} | null>(null);
 
+  const [id] = useState(
+    existing?.id ||
+      (quotation && params.get('edit') ? source?.id : undefined) ||
+      `${purchase ? 'PUR' : quotation ? 'QUO' : service ? 'SVC' : 'INV'}-2026-${String(
+        100 + state.bills.length + state.purchases.length + 1
+      ).padStart(4, '0')}`
+  );
 
+  const person = purchase
+    ? supplierChoices.find((c) => c.id === customerId) || state.suppliers.find((c) => c.id === customerId)
+    : customerChoices.find((c) => c.id === customerId) || state.customers.find((c) => c.id === customerId);
 
+  const bill: Bill = {
+    id,
+    customerId,
+    date,
+    due,
+    kind: quotation ? 'Quotation' : service ? 'Service' : 'Sale',
+    category,
+    status: quotation ? 'Draft' : 'Issued',
+    lines,
+    inclusive,
+    taxMode,
+    placeOfSupply,
+    notes,
+    profit: null,
+    templateId,
+    shipTo: shipSeparate ? shipTo : undefined,
+    orderRef,
+    deliveryNote,
+    dispatch,
+    jobId: service ? job?.id : undefined,
+    enquiryId: source?.enquiryId || enquiry?.id,
+    sourceId: quotation ? undefined : source?.id,
+  };
 
+  const doc: Purchase = {
+    id,
+    supplierId: customerId,
+    date,
+    due,
+    reference: ref,
+    status: 'Ordered',
+    lines: lines.map((l: any) => ({
+      ...l,
+      clientLineKey: l.clientLineKey || uid('CLK'),
+    })),
+    inclusive,
+    taxMode,
+    placeOfSupply,
+    notes,
+    attachmentFileId: attachmentFileId || undefined,
+  };
+
+  const sum = totals(bill);
+
+  useEffect(() => {
+    if (!purchase || !isLive) return;
+    const timer = window.setTimeout(() => {
+      fetchSuppliersPage({limit: 50, q: supplierSearch.trim() || undefined}).then(result => setSupplierChoices(result.records)).catch(() => {});
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [purchase, isLive, supplierSearch, fetchSuppliersPage]);
+
+  useEffect(() => {
+    if (purchase || !isLive) return;
+    const timer = window.setTimeout(() => {
+      fetchCustomersPage({limit: 50, q: customerSearch.trim() || undefined, status: 'Active'}).then(result => setCustomerChoices(result.records)).catch(() => {});
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [purchase, isLive, customerSearch, fetchCustomersPage]);
+
+  useEffect(() => {
+    if (!isLive) return;
+    const timer = window.setTimeout(() => {
+      fetchProductsPage({limit: 50, q: search.trim() || undefined, status: 'Active'}).then(result => setProductChoices(result.records)).catch(() => {});
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [isLive, search, fetchProductsPage]);
+
+  const reloadLatestDraft = async () => {
+    const fromId = params.get('from');
+    if (!editId && !fromId) return;
+    const loadId = editId || fromId;
+    if (!loadId) return;
+    try {
+      if (purchase) {
+        const res = await fetch(`/api/purchases/${encodeURIComponent(loadId)}`);
+        if (!res.ok) throw new Error('Failed to load purchase draft.');
+        const data = await res.json();
+        const p = data.purchase || data;
+        setLoadedVersion(p.version);
+        setLoadedBillStatus(p.billStatus);
+        if (p.supplierId) setCustomerId(p.supplierId);
+        if (p.orderDate || p.date) setDate(p.orderDate || p.date);
+        if (p.dueDate || p.due) setDue(p.dueDate || p.due);
+        if (p.taxMode) setTaxMode(p.taxMode);
+        if (p.placeOfSupply) setPlaceOfSupply(p.placeOfSupply);
+        if (p.inclusive !== undefined) setInclusive(p.inclusive);
+        if (p.notes !== undefined) setNotes(p.notes);
+        if (p.supplierInvoiceNumber || p.reference) setRef(p.supplierInvoiceNumber || p.reference);
+        if (p.attachmentFileId) setAttachmentFileId(p.attachmentFileId);
+        if (p.lines?.length) {
+          setLines(p.lines.map((l: any) => ({
+            ...l,
+            clientLineKey: l.clientLineKey || uid('CLK'),
+            qty: l.quantityOrdered ?? l.qty,
+            rate: l.unitCostPaise ? l.unitCostPaise / 100 : (l.rate || 0),
+            tax: l.taxBasisPoints ? l.taxBasisPoints / 100 : (l.tax || 0),
+            discount: l.discountValue ? l.discountValue / 100 : (l.discount || 0),
+          })));
+        }
+        notify('Reloaded latest purchase draft.');
+      } else if (quotation) {
+        const data = await fetchQuotationDetailApi(loadId);
+        const q = data.quotation || data;
+        setLoadedVersion(q.version);
+        if (q.customerId) setCustomerId(q.customerId);
+        if (q.quotationDate || q.date) setDate(q.quotationDate || q.date);
+        if (q.validUntil || q.due) setDue(q.validUntil || q.due);
+        if (q.taxMode) setTaxMode(q.taxMode);
+        if (q.placeOfSupply) setPlaceOfSupply(q.placeOfSupply);
+        if (q.inclusive !== undefined) setInclusive(q.inclusive);
+        if (q.notes !== undefined) setNotes(q.notes);
+        if (q.templateId) setTemplateId(q.templateId);
+        if (q.orderReference) setOrderRef(q.orderReference);
+        if (q.lines?.length) {
+          setLines(q.lines.map((l: any) => ({
+            ...blankLine(),
+            productId: l.productId || '',
+            name: l.name || l.description || '',
+            qty: l.qty ?? l.quantity ?? 1,
+            rate: l.rate ?? (l.unitRatePaise ? l.unitRatePaise / 100 : 0),
+            discount: l.discount ?? (l.discountValue ? l.discountValue / 100 : 0),
+            discountType: l.discountType || 'Percentage',
+            tax: l.tax ?? (l.taxBasisPoints ? l.taxBasisPoints / 100 : 0),
+            hsn: l.hsn || '',
+            sac: l.sac || '',
+            warranty: l.warranty ?? l.warrantyMonths ?? 0,
+            lineType: l.lineType || 'Product',
+            stockAllocations: l.stockAllocations || [],
+            serials: l.serials || [],
+            clientLineKey: l.clientLineKey || uid('CLK'),
+          })));
+        }
+        notify('Loaded quotation details.');
+      } else {
+        if (fromId) {
+          const data = await fetchQuotationDetailApi(fromId);
+          const q = data.quotation || data;
+          if (q.customerId) setCustomerId(q.customerId);
+          if (q.taxMode) setTaxMode(q.taxMode);
+          if (q.placeOfSupply) setPlaceOfSupply(q.placeOfSupply);
+          if (q.inclusive !== undefined) setInclusive(q.inclusive);
+          if (q.notes !== undefined) setNotes(q.notes);
+          if (q.templateId) setTemplateId(q.templateId);
+          if (q.lines?.length) {
+            setLines(q.lines.map((l: any) => ({
+              ...blankLine(),
+              productId: l.productId || '',
+              name: l.name || l.description || '',
+              qty: l.qty ?? l.quantity ?? 1,
+              rate: l.rate ?? (l.unitRatePaise ? l.unitRatePaise / 100 : 0),
+              discount: l.discount ?? (l.discountValue ? l.discountValue / 100 : 0),
+              discountType: l.discountType || 'Percentage',
+              tax: l.tax ?? (l.taxBasisPoints ? l.taxBasisPoints / 100 : 0),
+              hsn: l.hsn || '',
+              sac: l.sac || '',
+              warranty: l.warranty ?? l.warrantyMonths ?? 0,
+              lineType: l.lineType || 'Product',
+              stockAllocations: [],
+              serials: [],
+              clientLineKey: uid('CLK'),
+            })));
+          }
+          notify('Loaded items from quotation.');
+        } else if (editId) {
+          const data = await fetchInvoiceDetailApi(editId);
+          const inv = data.invoice || data;
+          setLoadedVersion(inv.version);
+          setLoadedBillStatus(inv.status);
+          if (inv.customerId) setCustomerId(inv.customerId);
+          if (inv.invoiceDate || inv.date) setDate(inv.invoiceDate || inv.date);
+          if (inv.dueDate || inv.due) setDue(inv.dueDate || inv.due);
+          if (inv.taxMode) setTaxMode(inv.taxMode);
+          if (inv.placeOfSupply) setPlaceOfSupply(inv.placeOfSupply);
+          if (inv.inclusive !== undefined) setInclusive(inv.inclusive);
+          if (inv.notes !== undefined) setNotes(inv.notes);
+          if (inv.templateId) setTemplateId(inv.templateId);
+          if (inv.orderReference) setOrderRef(inv.orderReference);
+          if (inv.deliveryNote) setDeliveryNote(inv.deliveryNote);
+          if (inv.dispatchThrough) setDispatch(inv.dispatchThrough);
+          if (inv.lines?.length) {
+            setLines(inv.lines.map((l: any) => ({
+              ...blankLine(),
+              productId: l.productId || '',
+              name: l.name || l.description || '',
+              qty: l.qty ?? l.quantity ?? 1,
+              rate: l.rate ?? (l.unitRatePaise ? l.unitRatePaise / 100 : 0),
+              discount: l.discount ?? (l.discountValue ? l.discountValue / 100 : 0),
+              discountType: l.discountType || 'Percentage',
+              tax: l.tax ?? (l.taxBasisPoints ? l.taxBasisPoints / 100 : 0),
+              hsn: l.hsn || '',
+              sac: l.sac || '',
+              warranty: l.warranty ?? l.warrantyMonths ?? 0,
+              lineType: l.lineType || 'Product',
+              stockAllocations: l.stockAllocations || [],
+              serials: l.stockAllocations?.flatMap((a: any) => a.serials || []) || l.serials || [],
+              clientLineKey: l.clientLineKey || uid('CLK'),
+            })));
+          }
+          notify('Reloaded latest invoice draft.');
+        }
+      }
+    } catch (err: any) {
+      notify(err.message || 'Could not reload document details.');
+    }
+  };
+
+  useEffect(() => {
+    if (isLive && (isEditMode || (!purchase && params.get('from')))) {
+      reloadLatestDraft();
+    }
+  }, [isLive, isEditMode, editId]);
+
+  function update(i: number, k: keyof Line, v: unknown) {
+    setLines((ls) => ls.map((l, n) => (n === i ? {...l, [k]: v, ...(k === 'qty' ? {serials: []} : {})} : l)));
+  }
+
+  async function uploadPurchaseAttachment(file?: File) {
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) return notify('Attachment must be 5 MB or smaller.');
+    setUploadingAttachment(true);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const response = await fetch('/api/files', {method: 'POST', body: form});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Attachment upload failed.');
+      setAttachmentFileId(data._id || data.id);
+      setAttachmentName(file.name);
+      notify('Supplier document attached.');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Attachment upload failed.');
+    } finally {
+      setUploadingAttachment(false);
+    }
+  }
+
+  function addProduct() {
+    const p = productChoices.find((p) => p.id === product) || state.products.find((p) => p.id === product);
+    if (!p) return;
+    if (lines.some((l) => l.productId === p.id && l.lineType !== 'Charge')) {
+      notify('This product is already added. Change its quantity in the row.');
+      return;
+    }
+    setLines((ls) => [
+      ...ls,
+      {
+        ...blankLine(),
+        productId: p.id,
+        name: p.name,
+        qty: 1,
+        rate: purchase
+          ? inclusive
+            ? p.cost
+            : p.cost / (1 + p.tax / 100)
+          : inclusive
+          ? p.price
+          : Math.round((p.price / (1 + p.tax / 100)) * 100) / 100,
+        discount: 0,
+        tax: p.tax,
+        serials: [],
+        hsn: p.hsn,
+        warranty: p.warranty,
+        clientLineKey: uid('CLK'),
+      } as any,
+    ]);
+    if (p.condition === 'Used' && lines.length === 0) setCategory('Used goods');
+    setProduct('');
+  }
+
+  function reorder(i: number, dir: number) {
+    const next = [...lines];
+    [next[i], next[i + dir]] = [next[i + dir], next[i]];
+    setLines(next);
+  }
+
+  function validateBasic(): boolean {
+    if (shipSeparate && (!shipTo.name.trim() || !shipTo.address.trim())) {
+      notify('Enter the ship-to name and address, or use the billing address.');
+      return false;
+    }
+    if (
+      !person ||
+      !lines.length ||
+      lines.some(
+        (l) =>
+          !l.name.trim() ||
+          l.qty <= 0 ||
+          !Number.isInteger(l.qty) ||
+          l.rate < 0 ||
+          l.discount < 0 ||
+          l.discount > (l.discountType === 'Amount' ? l.qty * l.rate : 100) ||
+          l.tax < 0 ||
+          l.tax > 100
+      ) ||
+      due < date
+    ) {
+      notify('Choose a customer/supplier, add valid items and check the due date.');
+      return false;
+    }
+    return true;
+  }
+
+  async function handlePurchaseAction(action: 'draft' | 'confirm' | 'post' | 'receive' | 'receive_pay') {
+    if (!validateBasic()) return;
+
+    // Existing purchase receipt mode
+    if (existing) {
+      const receiptLines = lines
+        .filter((line: any) => line.lineType !== 'Charge' && line.qty > 0)
+        .map((line: any) => ({
+          lineId: line.lineId,
+          quantityReceived: line.qty,
+          serials: line.serials || [],
+        }));
+      if (!receiptLines.length) {
+        notify('Enter a quantity to receive for at least one product.');
+        return;
+      }
+      setBusy(true);
+      const ok = await receivePurchaseStockApi(existing.id, receiptLines);
+      setBusy(false);
+      if (ok) router.push('/purchases/' + existing.id);
+      return;
+    }
+
+    if (!isLive) {
+      // Fallback in-memory
+      const ok = run((s) => {
+        let next: State = s;
+        assertOpen(s, date);
+        if (action === 'post' || action === 'receive' || action === 'receive_pay') {
+          next = receivePurchase(s, doc);
+        } else {
+          if (s.purchases.some((p) => p.id === id)) throw new Error('Purchase number already exists.');
+          next = {...s, purchases: [doc, ...s.purchases]};
+        }
+        return next;
+      }, 'Purchase updated.');
+      if (ok) router.push('/purchases/' + id);
+      return;
+    }
+
+    setBusy(true);
+    try {
+      if (action === 'draft') {
+        const res = await savePurchaseApi(doc, false, isEditMode ? editId : undefined, isEditMode ? loadedVersion : undefined);
+        if (res.success) {
+          notify('Purchase draft saved.');
+          router.push('/purchases/' + (res.purchase?._id || res.purchase?.id || id));
+        } else {
+          if (res.error?.includes('conflict') || res.error?.includes('version') || res.error?.includes('409')) {
+            setConflictMessage(res.error);
+            setConflictModalOpen(true);
+          } else {
+            notify(res.error || 'Failed to save purchase draft.');
+          }
+        }
+      } else if (action === 'confirm') {
+        const saveRes = await savePurchaseApi(doc, false);
+        if (!saveRes.success) {
+          notify(saveRes.error || 'Failed to save purchase order.');
+          return;
+        }
+        const purId = saveRes.purchase?._id || saveRes.purchase?.id || id;
+        const confRes = await confirmPurchaseOrderApi(purId, saveRes.purchase?.version || 1);
+        if (confRes.success) {
+          notify('Purchase order confirmed.');
+          router.push('/purchases/' + purId);
+        } else {
+          notify(confRes.error || 'Saved as draft, but could not confirm order.');
+          router.push('/purchases/' + purId);
+        }
+      } else if (action === 'post') {
+        if (!postInvoiceNumber && ref) setPostInvoiceNumber(ref);
+        setPostModalOpen(true);
+      } else if (action === 'receive') {
+        if (!ref.trim()) {
+          notify('Enter the supplier invoice number before recording and receiving stock.');
+          return;
+        }
+        const receiptLines = lines
+          .filter((l: any) => l.lineType !== 'Charge')
+          .map((l: any) => ({
+            clientLineKey: l.clientLineKey,
+            quantityReceived: l.qty,
+            serials: l.serials || [],
+          }));
+        const res = await recordReceiveShortcutApi({
+          purchase: {...doc, supplierInvoiceNumber: ref.trim(), supplierInvoiceDate: postInvoiceDate},
+          receiptLines,
+          supplierInvoiceNumber: ref.trim(),
+          supplierInvoiceDate: postInvoiceDate,
+          idempotencyKey: receiveShortcutKey,
+        });
+        if (res.success) {
+          setReceiveShortcutKey(`record-receive-${uid('IDEM')}`);
+          notify('Purchase created and stock received.');
+          router.push('/purchases/' + (res.purchase?._id || res.purchase?.id || id));
+        } else {
+          notify(res.error || 'Failed to record and receive purchase.');
+        }
+      } else if (action === 'receive_pay') {
+        if (!postInvoiceNumber && ref) setPostInvoiceNumber(ref);
+        setPayModalOpen(true);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitPostModal(e: React.FormEvent) {
+    e.preventDefault();
+    if (!postInvoiceNumber.trim()) return notify('Enter the supplier invoice number.');
+    setBusy(true);
+    try {
+      const res = await savePurchaseApi(
+        {
+          ...doc,
+          reference: postInvoiceNumber.trim(),
+          supplierInvoiceDate: postInvoiceDate,
+        },
+        true
+      );
+      if (res.success) {
+        setPostModalOpen(false);
+        notify('Supplier bill posted.');
+        router.push('/purchases/' + (res.purchase?._id || res.purchase?.id || id));
+      } else {
+        notify(res.error || 'Failed to post supplier bill.');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitReceiveAndPay(e: React.FormEvent) {
+    e.preventDefault();
+    if (!postInvoiceNumber.trim()) return notify('Enter the supplier invoice number.');
+    setBusy(true);
+    try {
+      const receiptLines = lines
+        .filter((l: any) => l.lineType !== 'Charge')
+        .map((l: any) => ({
+          clientLineKey: l.clientLineKey,
+          quantityReceived: l.qty,
+          serials: l.serials || [],
+        }));
+      const res = await recordReceiveAndPayShortcutApi({
+        purchase: {
+          ...doc,
+          reference: postInvoiceNumber.trim(),
+          supplierInvoiceDate: postInvoiceDate,
+        },
+        receiptLines,
+        payment: {
+          components: [{
+            amountPaise: Math.round(sum.total * 100),
+            account: payAccount === 'Cash' ? 'Cash' : 'Bank',
+            method: payAccount === 'Cash' ? 'Cash' : 'BankTransfer',
+            reference: '',
+          }],
+          recordExcessAsAdvance: false,
+          notes: '',
+        },
+        supplierInvoiceNumber: postInvoiceNumber.trim(),
+        supplierInvoiceDate: postInvoiceDate,
+        idempotencyKey: receivePayShortcutKey,
+      });
+      if (res.success) {
+        setReceivePayShortcutKey(`record-receive-pay-${uid('IDEM')}`);
+        setPayModalOpen(false);
+        notify('Purchase created, stock received, and payment settled.');
+        router.push('/purchases/' + (res.purchase?._id || res.purchase?.id || id));
+      } else {
+        notify(res.error || 'Failed to record receive and pay.');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSalesAction(action: 'save_draft' | 'issue') {
+    if (!validateBasic()) return;
+
+    if (!isLive) {
+      return saveSales();
+    }
+
+    setBusy(true);
+    try {
+      const templateRecord = state.templates.find((t) => t.id === templateId);
+      const chosenTemplateId = templateRecord?.id || state.defaultTemplateId || 'classic-tech';
+      const chosenTemplateRev = 1;
+
+      const linesPayload = lines.map((l: any) => {
+        const isProd = l.lineType !== 'Service' && l.lineType !== 'Charge';
+        const isSvc = l.lineType === 'Service';
+        const isChg = l.lineType === 'Charge';
+        const common = {
+          clientLineKey: l.clientLineKey || uid('CLK'),
+          description: (l.name || l.description || 'Item').trim(),
+          quantity: Math.max(1, Math.round(l.qty || 1)),
+          unitRatePaise: Math.round((l.rate || 0) * 100),
+          discountType: (l.discountType || 'Percentage') as 'Percentage' | 'Amount',
+          discountValue: Math.round((l.discount || 0) * 100),
+          taxBasisPoints: Math.round((l.tax || 0) * 100),
+          taxTreatment: 'Taxable' as const,
+        };
+
+        if (isChg) {
+          return {
+            ...common,
+            lineType: 'Charge' as const,
+            sac: l.sac || l.hsn || '998713',
+          };
+        }
+        if (isSvc) {
+          return {
+            ...common,
+            lineType: 'Service' as const,
+            serviceId: l.serviceId || undefined,
+            sac: l.sac || l.hsn || '998713',
+            serviceJobId: l.serviceJobId || (service ? job?.id : undefined),
+            warrantyMonths: Number(l.warranty || 0),
+          };
+        }
+        return {
+          ...common,
+          lineType: 'Product' as const,
+          productId: l.productId,
+          hsn: l.hsn || '84713010',
+          stockAllocations: (l.stockAllocations && l.stockAllocations.length > 0)
+            ? l.stockAllocations
+            : (l.serials?.length
+                ? [{
+                    lotId: l.lotId || '',
+                    quantity: l.serials.length,
+                    serials: l.serials,
+                  }]
+                : []),
+          warrantyMonths: Number(l.warranty || 0),
+        };
+      });
+
+      if (quotation) {
+        const payload = {
+          idempotencyKey: `quote-save-${uid('IDEM')}`,
+          customerId,
+          invoiceKind: (service ? 'Service' : 'Sale') as 'Sale' | 'Service',
+          businessCategory: (category === 'Used goods' ? 'UsedGoods' : category === 'Service' ? 'Service' : 'NewGoods') as any,
+          quotationDate: date,
+          validUntil: due >= date ? due : date,
+          inclusive: !!inclusive,
+          taxMode,
+          placeOfSupply,
+          templateId: chosenTemplateId,
+          templateRevision: chosenTemplateRev,
+          orderReference: orderRef.trim(),
+          notes: notes.trim(),
+          lines: linesPayload,
+        };
+
+        const res = await saveQuotationApi(payload, editId, loadedVersion);
+        if (res.success) {
+          notify('Quotation saved successfully.');
+          const quoteId = res.quotation?._id || res.quotation?.id || id;
+          router.push('/quotations/' + quoteId);
+        } else {
+          notify(res.error || 'Failed to save quotation.');
+        }
+        return;
+      }
+
+      // Sales Invoice Draft
+      const invoicePayload = {
+        idempotencyKey: `inv-save-${uid('IDEM')}`,
+        customerId,
+        invoiceKind: (service ? 'Service' : 'Sale') as 'Sale' | 'Service',
+        businessCategory: (category === 'Used goods' ? 'UsedGoods' : category === 'Service' ? 'Service' : 'NewGoods') as any,
+        invoiceDate: date,
+        dueDate: due >= date ? due : date,
+        inclusive: !!inclusive,
+        taxMode,
+        placeOfSupply,
+        templateId: chosenTemplateId,
+        templateRevision: chosenTemplateRev,
+        orderReference: orderRef.trim(),
+        deliveryNote: deliveryNote.trim(),
+        dispatchThrough: dispatch.trim(),
+        notes: notes.trim(),
+        sourceQuotationId: params.get('from') || undefined,
+        lines: linesPayload,
+      };
+
+      const res = await saveInvoiceDraftApi(invoicePayload, editId, loadedVersion);
+      if (!res.success) {
+        notify(res.error || 'Failed to save invoice draft.');
+        return;
+      }
+
+      const draftObj = res.draft || {};
+      const draftId = draftObj._id || draftObj.id || id;
+      const draftVer = draftObj.version || loadedVersion || 1;
+      const draftTotalPaise = draftObj.totalPaise || Math.round(sum.total * 100);
+
+      if (action === 'save_draft') {
+        notify('Invoice draft saved.');
+        router.push('/sales/' + draftId);
+      } else if (action === 'issue') {
+        setIssueTargetDraft({
+          id: draftId,
+          version: draftVer,
+          totalPaise: draftTotalPaise,
+          customerId,
+        });
+        setIssueModalOpen(true);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function saveSales(receive = false) {
+    if (!validateBasic()) return;
+    if (payRows.some((p) => !Number.isFinite(+p.amount) || +p.amount <= 0)) {
+      notify('Enter a positive payment amount or remove the unused payment row.');
+      return;
+    }
+    const ok = run((s) => {
+      let next: State = s;
+      next = issueBill(
+        quotation && params.get('edit') ? {...s, bills: s.bills.filter((b) => b.id !== id)} : s,
+        bill
+      );
+      if (!quotation) {
+        for (const p of payRows) {
+          next = addPayment(next, {
+            id: uid('PAY'),
+            date,
+            direction: 'In',
+            account: p.account,
+            amount: Number(p.amount),
+            purpose: 'Customer payment',
+            reference: id,
+            party: customerId,
+            note: p.method + ' · at creation',
+          });
+        }
+      }
+      return next;
+    }, quotation ? 'Quotation saved.' : 'Invoice, stock, payment, outstanding and warranty updated.');
+    if (ok) router.push(`${quotation ? '/quotations' : '/sales'}/${id}`);
+  }
+
+  return (
+    <>
+      <Link className="back-link" href={purchase ? '/purchases' : quotation ? '/quotations' : '/sales'}>
+        <ArrowLeft size={14} />
+        Back to {purchase ? 'purchases' : quotation ? 'quotations' : 'invoices'}
+      </Link>
+
+      <PageHead
+        title={
+          existing
+            ? 'Receive purchase'
+            : purchase
+            ? 'New purchase'
+            : quotation
+            ? 'New quotation'
+            : service
+            ? 'New service invoice'
+            : 'New sales invoice'
+        }
+        description={
+          purchase
+            ? 'Draft purchase orders, post supplier bills, or record receiving and settlement in one step.'
+            : quotation
+            ? 'Prepare an estimate. Stock and money stay unchanged until a sale is confirmed.'
+            : 'Add items, check the totals and issue the customer’s invoice.'
+        }
+        actions={
+          <>
+            <Btn secondary onClick={() => setReview(true)}>
+              <FileText size={16} />
+              Preview
+            </Btn>
+            {purchase ? (
+              existing ? (
+                <Btn disabled={busy} onClick={() => handlePurchaseAction('receive')}>
+                  <Check size={16} />
+                  Receive stock
+                </Btn>
+              ) : (
+                <div className="composer-actions" style={{display: 'flex', gap: '0.5rem', flexWrap: 'wrap'}}>
+                  <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('draft')}>
+                    Save draft
+                  </Btn>
+                  <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('confirm')}>
+                    Confirm purchase order
+                  </Btn>
+                  <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('post')}>
+                    Post supplier bill
+                  </Btn>
+                  <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('receive')}>
+                    Record + Receive
+                  </Btn>
+                  <Btn disabled={busy} onClick={() => handlePurchaseAction('receive_pay')}>
+                    <Check size={16} />
+                    Record + Receive + Pay
+                  </Btn>
+                </div>
+              )
+            ) : (
+              <div className="composer-actions" style={{display: 'flex', gap: '0.5rem', flexWrap: 'wrap'}}>
+                {quotation ? (
+                  <Btn disabled={busy} onClick={() => handleSalesAction('save_draft')}>
+                    <Check size={16} /> Save quotation
+                  </Btn>
+                ) : (
+                  <>
+                    <Btn secondary disabled={busy} onClick={() => handleSalesAction('save_draft')}>
+                      Save draft
+                    </Btn>
+                    <Btn disabled={busy} onClick={() => handleSalesAction('issue')}>
+                      <Check size={16} /> Issue invoice
+                    </Btn>
+                  </>
+                )}
+              </div>
+            )}
+          </>
+        }
+      />
+
+      <div className="stack">
+        <Card
+          title={purchase ? 'Supplier and purchase details' : 'Customer and document details'}
+          actions={
+            <Btn secondary onClick={() => setNewPerson(true)}>
+              <Plus size={14} />
+              {purchase ? 'Add supplier' : 'Add customer'}
+            </Btn>
+          }
+        >
+          <div className="form-body form-grid">
+            <Field label={purchase ? 'Supplier *' : 'Customer *'}>
+              {purchase && isLive && <input value={supplierSearch} onChange={(e) => setSupplierSearch(e.target.value)} placeholder="Search live suppliers…" />}
+              {!purchase && isLive && <input value={customerSearch} onChange={(e) => setCustomerSearch(e.target.value)} placeholder="Search live customers…" />}
+              <select
+                value={customerId}
+                onChange={(e) => {
+                  setCustomerId(e.target.value);
+                  const c = purchase
+                    ? supplierChoices.find((c) => c.id === e.target.value) || state.suppliers.find((c) => c.id === e.target.value)
+                    : customerChoices.find((c) => c.id === e.target.value) || state.customers.find((c) => c.id === e.target.value);
+                  const days = purchase
+                    ? (c as any)?.terms
+                    : Number((c as any)?.details?.paymentTerms || 0);
+                  setDue(nextDate(date, days || 0));
+                }}
+              >
+                <option value="">Select {purchase ? 'supplier' : 'customer'}</option>
+                {(purchase ? supplierChoices : (isLive ? customerChoices : state.customers)).map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} · {c.phone}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            {!purchase && (
+              <Field label="Invoice layout / template">
+                <select value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
+                  {state.templates.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+                <Link className="text-link" href="/templates">
+                  Edit layouts and logo
+                </Link>
+              </Field>
+            )}
+
+            <Field label="Document number">
+              <input readOnly value={id} />
+            </Field>
+
+            <Field label="Date">
+              <input type="date" max={TODAY} value={date} onChange={(e) => setDate(e.target.value)} />
+            </Field>
+
+            <Field label={quotation ? 'Valid until' : 'Due date'}>
+              <input type="date" min={date} value={due} onChange={(e) => setDue(e.target.value)} />
+            </Field>
+
+            {purchase ? (
+              <Field label="Supplier invoice / reference">
+                <input
+                  value={ref}
+                  onChange={(e) => setRef(e.target.value)}
+                  placeholder="e.g. CIT/26/8053 (optional for order/draft)"
+                />
+              </Field>
+            ) : (
+              !service && (
+                <Field label="Business category">
+                  <select value={category} onChange={(e) => setCategory(e.target.value as Bill['category'])}>
+                    <option>New goods</option>
+                    <option>Used goods</option>
+                  </select>
+                </Field>
+              )
+            )}
+
+            <Field label="GST supply type">
+              <select value={taxMode} onChange={(e) => setTaxMode(e.target.value as typeof taxMode)}>
+                <option value="Intra-state">Within state · CGST + SGST</option>
+                <option value="Inter-state">Interstate · IGST</option>
+              </select>
+            </Field>
+
+            <Field label="Place of supply">
+              <input
+                value={placeOfSupply}
+                onChange={(e) => setPlaceOfSupply(e.target.value)}
+                placeholder="State / union territory"
+              />
+            </Field>
+
+            <Field label="Price entry mode">
+              <select
+                value={inclusive ? 'inclusive' : 'exclusive'}
+                onChange={(e) => setInclusive(e.target.value === 'inclusive')}
+              >
+                <option value="inclusive">GST inclusive · entered rate includes tax</option>
+                <option value="exclusive">GST exclusive · add tax to entered rate</option>
+              </select>
+            </Field>
+
+            {person && (
+              <div className="full customer-preview">
+                <strong>{person.name}</strong>
+                <span>
+                  {person.phone} · {person.email || 'No email'}
+                </span>
+                <p>{person.address}</p>
+                <small>GSTIN: {person.gst || 'Not provided'}</small>
+                {!purchase && (person as any).details?.creditLimit && (
+                  <p>
+                    Credit limit: {money(Number((person as any).details?.creditLimit))} · Review existing and new dues
+                    before allowing credit.
+                  </p>
+                )}
+                {!purchase && (
+                  <p>
+                    Existing outstanding:{' '}
+                    {money(
+                      state.bills
+                        .filter((b) => b.customerId === customerId && b.kind !== 'Quotation')
+                        .reduce((n, b) => n + balance(state, b), 0)
+                    )}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+          {!purchase && (
+            <div className="form-body">
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={shipSeparate}
+                  onChange={(e) => {
+                    setShipSeparate(e.target.checked);
+                    if (e.target.checked && !shipTo.name) {
+                      setShipTo({
+                        name: person?.name || '',
+                        address: (person as any)?.details?.shippingAddress || person?.address || '',
+                        phone: person?.phone || '',
+                        state: (person as any)?.details?.state || 'Tamil Nadu',
+                        postalCode: (person as any)?.details?.postalCode || '',
+                      });
+                    }
+                  }}
+                />
+                Ship to a different address
+              </label>
+              {shipSeparate ? (
+                <div className="form-grid">
+                  {Object.entries({
+                    name: 'Ship-to name',
+                    address: 'Delivery address',
+                    phone: 'Delivery phone',
+                    state: 'State / territory',
+                    postalCode: 'PIN code',
+                  }).map(([k, label]) => (
+                    <Field key={k} label={label}>
+                      <input
+                        value={(shipTo as any)[k]}
+                        onChange={(e) => setShipTo({...shipTo, [k]: e.target.value})}
+                      />
+                    </Field>
+                  ))}
+                </div>
+              ) : (
+                <p>Ship to uses the selected customer’s billing details.</p>
+              )}
+            </div>
+          )}
+        </Card>
+
+        <Card
+          title={purchase ? 'Purchase items' : service ? 'Service and parts' : 'Invoice items'}
+          sub={
+            inclusive
+              ? 'Rates include GST. Discounts apply before tax; charges use their own editable GST rate.'
+              : 'GST is added after discount. Changing the price mode reinterprets the entered rates.'
+          }
+          actions={<span className="muted">{lines.length} lines</span>}
+        >
+          {!service && (
+            <div className="toolbar">
+              <SearchBox value={search} onChange={setSearch} placeholder="Find a product…" />
+              <select
+                aria-label="Select product to add"
+                value={product}
+                onChange={(e) => setProduct(e.target.value)}
+                style={{flex: 1}}
+              >
+                <option value="">Choose a product</option>
+                {(purchase && isLive ? productChoices : state.products)
+                  .filter((p) => (p.name + p.model).toLowerCase().includes(search.toLowerCase()))
+                  .map((p) => (
+                    <option value={p.id} key={p.id}>
+                      {p.name} · {money(purchase ? p.cost : p.price)} · {p.stock} on hand
+                    </option>
+                  ))}
+              </select>
+              <Btn secondary onClick={addProduct}>
+                <Plus size={15} />
+                Add item
+              </Btn>
+              {purchase && (
+                <Btn secondary onClick={() => setNewProduct(true)}>
+                  Create product
+                </Btn>
+              )}
+            </div>
+          )}
+
+          {service && (
+            <div className="toolbar">
+              <select
+                aria-label="Service catalogue"
+                value={serviceId}
+                onChange={(e) => setServiceId(e.target.value)}
+              >
+                <option value="">Choose a standard service</option>
+                {state.serviceCatalog
+                  .filter((x) => x.active)
+                  .map((x) => (
+                    <option key={x.id} value={x.id}>
+                      {x.name} · {money(x.rate)}
+                    </option>
+                  ))}
+              </select>
+              <Btn
+                secondary
+                onClick={() => {
+                  const x = state.serviceCatalog.find((x) => x.id === serviceId);
+                  if (x) {
+                    setLines((ls) => [
+                      ...ls,
+                      {
+                        ...blankLine(),
+                        name: x.name,
+                        rate: inclusive ? x.rate : x.rate / (1 + x.tax / 100),
+                        tax: x.tax,
+                        hsn: x.sac,
+                        warranty: x.warranty,
+                        clientLineKey: uid('CLK'),
+                      } as any,
+                    ]);
+                  }
+                  setServiceId('');
+                }}
+              >
+                Add service
+              </Btn>
+              <Link className="text-link" href="/service-catalog">
+                Manage services
+              </Link>
+            </div>
+          )}
+
+          <div className="table-wrap">
+            <table className="line-table">
+              <thead>
+                <tr>
+                  <th>Item / HSN</th>
+                  <th>Qty</th>
+                  <th>Rate {inclusive ? 'incl. GST' : 'excl. GST'}</th>
+                  <th>Discount</th>
+                  <th>GST %</th>
+                  <th>Total</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((l, i) => (
+                  <tr key={(l as any).clientLineKey || i}>
+                    <td>
+                      <input
+                        aria-label={`Item ${i + 1} description`}
+                        className="table-input wide-input"
+                        value={l.name}
+                        onChange={(e) => update(i, 'name', e.target.value)}
+                      />
+                      <div className="line-meta">
+                        <input
+                          aria-label={`Item ${i + 1} HSN`}
+                          placeholder="HSN / SAC"
+                          value={l.hsn}
+                          onChange={(e) => update(i, 'hsn', e.target.value)}
+                        />
+                        {l.productId && !service && l.lineType !== 'Charge' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!purchase && !quotation && isLive) {
+                                setAllocatingLineIndex(i);
+                              } else {
+                                setSerialIndex(i);
+                                setSerialText(l.serials.join('\n'));
+                              }
+                            }}
+                          >
+                            {purchase
+                              ? 'Enter serials'
+                              : quotation
+                              ? 'Serials at sale'
+                              : (l as any).stockAllocations?.length
+                              ? `${(l as any).stockAllocations.reduce((s: number, a: any) => s + (a.quantity || 0), 0)} allocated`
+                              : `${l.serials.length} serial(s) / Lots`}
+                          </button>
+                        )}
+                        {l.lineType === 'Charge' && <Badge>Charge</Badge>}
+                      </div>
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`Item ${i + 1} quantity`}
+                        className="table-input"
+                        type="number"
+                        min="1"
+                        disabled={isPosted || l.lineType === 'Charge'}
+                        value={l.qty}
+                        onChange={(e) => update(i, 'qty', +e.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`Item ${i + 1} rate`}
+                        className="table-input"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        disabled={isPosted}
+                        value={l.rate}
+                        onChange={(e) => update(i, 'rate', +e.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`Item ${i + 1} discount`}
+                        className="table-input"
+                        type="number"
+                        min="0"
+                        max={l.discountType === 'Amount' ? l.qty * l.rate : 100}
+                        disabled={isPosted}
+                        value={l.discount}
+                        onChange={(e) => update(i, 'discount', +e.target.value)}
+                      />
+                      <select
+                        aria-label={`Item ${i + 1} discount type`}
+                        value={l.discountType || 'Percentage'}
+                        disabled={isPosted}
+                        onChange={(e) => {
+                          update(i, 'discountType', e.target.value);
+                          update(i, 'discount', 0);
+                        }}
+                      >
+                        <option value="Percentage">%</option>
+                        <option value="Amount">₹ per line</option>
+                      </select>
+                    </td>
+                    <td>
+                      <select
+                        aria-label={`Item ${i + 1} GST`}
+                        className="table-input"
+                        disabled={isPosted}
+                        value={l.tax}
+                        onChange={(e) => update(i, 'tax', +e.target.value)}
+                      >
+                        {[0, 5, 12, 18, 28].map((v) => (
+                          <option key={v} value={v}>
+                            {v}%
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="amount">
+                      {money(lineTotal(l, inclusive).total)}
+                      <small>Base {money(lineTotal(l, inclusive).base)}</small>
+                      <small>GST {money(lineTotal(l, inclusive).tax)}</small>
+                    </td>
+                    <td>
+                      <div className="action-cell">
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          disabled={i === 0}
+                          aria-label={`Move item ${i + 1} up`}
+                          onClick={() => reorder(i, -1)}
+                        >
+                          <ArrowUp size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          disabled={i === lines.length - 1}
+                          aria-label={`Move item ${i + 1} down`}
+                          onClick={() => reorder(i, 1)}
+                        >
+                          <ArrowDown size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          aria-label={`Remove item ${i + 1}`}
+                          onClick={() => setLines((ls) => ls.filter((_, n) => i !== n))}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {!lines.length && (
+            <Empty
+              title="Add your first item"
+              text={service ? 'Add the service work and charges below.' : 'Choose a product above to start this document.'}
+            />
+          )}
+
+          <div className="toolbar">
+            <Btn
+              secondary
+              onClick={() =>
+                setLines((ls) => [
+                  ...ls,
+                  {
+                    ...blankLine(),
+                    lineType: 'Charge',
+                    name: 'Shipping charge',
+                    qty: 1,
+                    rate: 0,
+                    tax: 18,
+                    warranty: 0,
+                    clientLineKey: uid('CLK'),
+                  } as any,
+                ])
+              }
+            >
+              Add shipping charge
+            </Btn>
+            <Btn
+              secondary
+              onClick={() =>
+                setLines((ls) => [
+                  ...ls,
+                  {
+                    ...blankLine(),
+                    lineType: 'Charge',
+                    name: 'Additional charge',
+                    qty: 1,
+                    rate: 0,
+                    tax: 18,
+                    warranty: 0,
+                    clientLineKey: uid('CLK'),
+                  } as any,
+                ])
+              }
+            >
+              Add other charge
+            </Btn>
+            {!purchase && (
+              <Btn secondary onClick={() => setLines((ls) => [...ls, blankLine()])}>
+                <Plus size={14} />
+                Add {service ? 'service' : 'custom'} line
+              </Btn>
+            )}
+            <span className="muted">Set a line’s GST to 0% for an illustrative non-GST item.</span>
+          </div>
+        </Card>
+
+        {!quotation && !purchase && (
+          <Card
+            title="Payment received"
+            sub="Leave empty for credit. Add one or more payments for a full, partial or split payment."
+          >
+            <div className="form-body stack">
+              {payRows.map((p, i) => (
+                <div className="payment-entry-row" key={i}>
+                  <Field label="Method">
+                    <select
+                      value={p.method}
+                      onChange={(e) =>
+                        setPayRows((rows) =>
+                          rows.map((r, n) =>
+                            n === i
+                              ? {
+                                  ...r,
+                                  method: e.target.value,
+                                  account: e.target.value === 'Cash' ? 'Cash' : 'Bank account',
+                                }
+                              : r
+                          )
+                        )
+                      }
+                    >
+                      <option>Cash</option>
+                      <option>GPay / UPI</option>
+                      <option>Bank transfer</option>
+                      <option>Card</option>
+                    </select>
+                  </Field>
+                  <Field label="Account">
+                    <select
+                      value={p.account}
+                      onChange={(e) =>
+                        setPayRows((rows) => rows.map((r, n) => (n === i ? {...r, account: e.target.value} : r)))
+                      }
+                    >
+                      {(p.method === 'Cash' ? ['Cash'] : ['Bank account']).map((a) => (
+                        <option key={a}>{a}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Amount">
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      value={p.amount}
+                      onChange={(e) =>
+                        setPayRows((rows) => rows.map((r, n) => (n === i ? {...r, amount: e.target.value} : r)))
+                      }
+                    />
+                  </Field>
+                  <Btn secondary onClick={() => setPayRows((rows) => rows.filter((_, n) => n !== i))}>
+                    Remove
+                  </Btn>
+                </div>
+              ))}
+              <div className="actions">
+                <Btn secondary onClick={() => setPayRows((rows) => [...rows, {account: 'Cash', method: 'Cash', amount: ''}])}>
+                  Add payment
+                </Btn>
+                <Btn
+                  secondary
+                  onClick={() =>
+                    setPayRows([
+                      {
+                        account: 'Cash',
+                        method: 'Cash',
+                        amount: String(Math.max(0, roundedTotal(bill) - (existing ? paid(state, id) : 0))),
+                      },
+                    ])
+                  }
+                >
+                  Pay remaining in cash
+                </Btn>
+              </div>
+              <div className="summary-row">
+                <span>Remaining outstanding</span>
+                <strong
+                  className={
+                    sum.total -
+                      payRows.reduce((n, p) => n + (+p.amount || 0), 0) -
+                      (existing ? paid(state, id) : 0) <
+                    0
+                      ? 'error'
+                      : ''
+                  }
+                >
+                  {money(
+                    sum.total -
+                      payRows.reduce((n, p) => n + (+p.amount || 0), 0) -
+                      (existing ? paid(state, id) : 0)
+                  )}
+                </strong>
+              </div>
+            </div>
+          </Card>
+        )}
+
+        <div className="detail-grid">
+          <Card title="Notes and terms">
+            <div className="body-pad">
+              {purchase && isLive && (
+                <Field label="Supplier bill / purchase attachment">
+                  <input
+                    type="file"
+                    accept="application/pdf,image/png,image/jpeg"
+                    disabled={uploadingAttachment}
+                    onChange={(e) => void uploadPurchaseAttachment(e.target.files?.[0])}
+                  />
+                  <small>
+                    {uploadingAttachment
+                      ? 'Uploading…'
+                      : attachmentFileId
+                        ? `${attachmentName || 'Attachment'} is linked to this purchase.`
+                        : 'PDF, JPG or PNG up to 5 MB. Files are private to this company.'}
+                  </small>
+                  {attachmentFileId && (
+                    <Btn secondary onClick={() => { setAttachmentFileId(''); setAttachmentName(''); }}>
+                      Remove attachment
+                    </Btn>
+                  )}
+                </Field>
+              )}
+              <details className="optional-fields">
+                <summary>Order and delivery references</summary>
+                <Field label="Buyer order number">
+                  <input value={orderRef} onChange={(e) => setOrderRef(e.target.value)} />
+                </Field>
+                <Field label="Delivery note">
+                  <input value={deliveryNote} onChange={(e) => setDeliveryNote(e.target.value)} />
+                </Field>
+                <Field label="Dispatched through">
+                  <input value={dispatch} onChange={(e) => setDispatch(e.target.value)} />
+                </Field>
+              </details>
+              <Field label="Printed notes">
+                <textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="Warranty terms, payment terms, delivery instructions…"
+                />
+              </Field>
+            </div>
+          </Card>
+
+          <div className="summary-box">
+            <div className="summary-row">
+              <span>Taxable value</span>
+              <b>{money(sum.base)}</b>
+            </div>
+            {taxMode === 'Inter-state' ? (
+              <div className="summary-row">
+                <span>IGST</span>
+                <b>{money(sum.igst)}</b>
+              </div>
+            ) : (
+              <>
+                <div className="summary-row">
+                  <span>CGST</span>
+                  <b>{money(sum.cgst)}</b>
+                </div>
+                <div className="summary-row">
+                  <span>SGST</span>
+                  <b>{money(sum.sgst)}</b>
+                </div>
+              </>
+            )}
+            <div className="summary-row total">
+              <span>Total</span>
+              <b>{money(sum.total)}</b>
+            </div>
+            <small>Discounts are applied to each item before calculating tax.</small>
+          </div>
+        </div>
+
+        <div className="form-actions">
+          <Link className="btn secondary" href={purchase ? '/purchases' : quotation ? '/quotations' : '/sales'}>
+            Cancel
+          </Link>
+          {purchase ? (
+            existing ? (
+              <Btn disabled={busy} onClick={() => handlePurchaseAction('receive')}>
+                Confirm stock receipt
+              </Btn>
+            ) : (
+              <>
+                <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('draft')}>
+                  Save draft
+                </Btn>
+                <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('confirm')}>
+                  Confirm order
+                </Btn>
+                <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('post')}>
+                  Post supplier bill
+                </Btn>
+                <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('receive')}>
+                  Record + Receive
+                </Btn>
+                <Btn disabled={busy} onClick={() => handlePurchaseAction('receive_pay')}>
+                  Record + Receive + Pay
+                </Btn>
+              </>
+            )
+          ) : (
+            <div style={{display: 'flex', gap: '0.5rem', flexWrap: 'wrap'}}>
+              {quotation ? (
+                <Btn disabled={busy} onClick={() => handleSalesAction('save_draft')}>
+                  Save quotation
+                </Btn>
+              ) : (
+                <>
+                  <Btn secondary disabled={busy} onClick={() => handleSalesAction('save_draft')}>
+                    Save draft
+                  </Btn>
+                  <Btn disabled={busy} onClick={() => handleSalesAction('issue')}>
+                    Issue invoice
+                  </Btn>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {postModalOpen && (
+        <Modal title="Post supplier bill" onClose={() => setPostModalOpen(false)}>
+          <form onSubmit={submitPostModal}>
+            <div className="form-body form-grid">
+              <Field label="Supplier invoice number *">
+                <input
+                  required
+                  maxLength={100}
+                  value={postInvoiceNumber}
+                  onChange={(e) => setPostInvoiceNumber(e.target.value)}
+                  placeholder="e.g. INV-9082"
+                />
+              </Field>
+              <Field label="Supplier invoice date *">
+                <input
+                  required
+                  type="date"
+                  max={TODAY}
+                  value={postInvoiceDate}
+                  onChange={(e) => setPostInvoiceDate(e.target.value)}
+                />
+              </Field>
+              <p className="notice full">
+                Posting creates the official supplier payable. Payment can be recorded now or later.
+              </p>
+            </div>
+            <div className="form-actions">
+              <Btn secondary onClick={() => setPostModalOpen(false)}>
+                Cancel
+              </Btn>
+              <Btn type="submit" disabled={busy}>
+                {busy ? 'Posting…' : 'Post bill'}
+              </Btn>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {payModalOpen && (
+        <Modal title="Record, Receive & Pay supplier" onClose={() => setPayModalOpen(false)}>
+          <form onSubmit={submitReceiveAndPay}>
+            <div className="form-body form-grid">
+              <Field label="Supplier invoice number *">
+                <input
+                  required
+                  value={postInvoiceNumber}
+                  onChange={(e) => setPostInvoiceNumber(e.target.value)}
+                  placeholder="e.g. INV-9082"
+                />
+              </Field>
+              <Field label="Supplier invoice date *">
+                <input required type="date" max={TODAY} value={postInvoiceDate} onChange={(e) => setPostInvoiceDate(e.target.value)} />
+              </Field>
+              <Field label="Payment account">
+                <select value={payAccount} onChange={(e) => setPayAccount(e.target.value)}>
+                  <option>Cash</option>
+                  <option>Bank account</option>
+                </select>
+              </Field>
+              <div className="full notice">
+                Total to pay: <strong>{money(sum.total)}</strong>. All stock will be marked as received and payment
+                recorded against this purchase.
+              </div>
+            </div>
+            <div className="form-actions">
+              <Btn secondary onClick={() => setPayModalOpen(false)}>
+                Cancel
+              </Btn>
+              <Btn type="submit" disabled={busy}>
+                {busy ? 'Processing…' : 'Confirm Receive & Pay'}
+              </Btn>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {conflictModalOpen && (
+        <Modal title="Version Conflict" onClose={() => setConflictModalOpen(false)}>
+          <div className="form-body">
+            <div className="notice error">
+              <AlertCircle size={20} />
+              <p>{conflictMessage || 'This purchase order has been updated by another user or session.'}</p>
+            </div>
+            <p>Please reload the latest purchase details before making modifications.</p>
+          </div>
+          <div className="form-actions">
+            <Btn secondary onClick={() => setConflictModalOpen(false)}>
+              Cancel
+            </Btn>
+            <Btn
+              onClick={async () => {
+                await reloadLatestDraft();
+                setConflictModalOpen(false);
+              }}
+            >
+              Reload latest
+            </Btn>
+          </div>
+        </Modal>
+      )}
+
+      {newProduct && <ProductForm onClose={() => setNewProduct(false)} />}
+      {newPerson && <PersonForm supplier={purchase} onClose={() => setNewPerson(false)} />}
+
+      {serialIndex !== null && (
+        <Modal
+          title={`Serial numbers · ${lines[serialIndex].name}`}
+          onClose={() => setSerialIndex(null)}
+        >
+          <div className="form-body">
+            {purchase ? (
+              <Field label={`Enter ${lines[serialIndex].qty} serial number(s), one per line`}>
+                <textarea value={serialText} onChange={(e) => setSerialText(e.target.value)} />
+              </Field>
+            ) : (
+              <>
+                <p className="notice">
+                  Select {lines[serialIndex].qty} unit(s). Serials held for this customer are available to their sale.
+                </p>
+                <div className="serial-list">
+                  {state.products
+                    .find((p) => p.id === lines[serialIndex].productId)
+                    ?.serials.map((n) => {
+                      const blocked = state.reservations.some(
+                        (r) => activeReservation(r) && r.customerId !== customerId && r.serials.includes(n)
+                      );
+                      return (
+                        <label key={n}>
+                          <input
+                            type="checkbox"
+                            disabled={blocked}
+                            checked={lines[serialIndex].serials.includes(n)}
+                            onChange={(e) =>
+                              update(
+                                serialIndex,
+                                'serials',
+                                e.target.checked
+                                  ? [...lines[serialIndex].serials, n]
+                                  : lines[serialIndex].serials.filter((x) => x !== n)
+                              )
+                            }
+                          />
+                          {n}
+                          {blocked && <Badge>Reserved</Badge>}
+                        </label>
+                      );
+                    })}
+                </div>
+                {!state.products.find((p) => p.id === lines[serialIndex].productId)?.serials.length && (
+                  <p>This product uses quantity tracking; no serial selection is needed.</p>
+                )}
+              </>
+            )}
+          </div>
+          <div className="form-actions">
+            <Btn
+              onClick={() => {
+                if (purchase) {
+                  update(
+                    serialIndex,
+                    'serials',
+                    serialText
+                      .split(/[\n,]+/)
+                      .map((s) => s.trim())
+                      .filter(Boolean)
+                  );
+                }
+                setSerialIndex(null);
+              }}
+            >
+              Done
+            </Btn>
+          </div>
+        </Modal>
+      )}
+
+      {review && !purchase && (
+        <PrintDialog
+          bills={[{...bill, previewPaid: payRows.reduce((n, p) => n + (+p.amount || 0), 0)}]}
+          onClose={() => setReview(false)}
+        />
+      )}
+
+      {review && purchase && (
+        <Modal title="Document preview" wide onClose={() => setReview(false)}>
+          <InvoicePaper bill={bill} supplier={person as any} />
+          <div className="form-actions">
+            <Btn secondary onClick={() => window.print()}>
+              <Printer size={16} />
+              Print / save PDF
+            </Btn>
+            <Btn onClick={() => setReview(false)}>Continue editing</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {allocatingLineIndex !== null && lines[allocatingLineIndex] && (
+        <StockAllocationModal
+          isOpen={allocatingLineIndex !== null}
+          onClose={() => setAllocatingLineIndex(null)}
+          line={lines[allocatingLineIndex]}
+          customerId={customerId}
+          onSave={(allocations, serials) => {
+            setLines((ls) =>
+              ls.map((l, i) =>
+                i === allocatingLineIndex
+                  ? {...l, stockAllocations: allocations, serials}
+                  : l
+              )
+            );
+          }}
+        />
+      )}
+
+      {issueModalOpen && issueTargetDraft && (
+        <IssueInvoiceModal
+          isOpen={issueModalOpen}
+          onClose={() => setIssueModalOpen(false)}
+          draft={issueTargetDraft}
+          onIssued={(inv) => {
+            const invoiceId = inv?._id || inv?.id || issueTargetDraft.id;
+            router.push('/sales/' + invoiceId);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function LivePurchaseLifecycle({
+  record,
+  onRefresh,
+}: {
+  record: Purchase;
+  onRefresh?: () => void;
+}) {
+  const {
+    postPurchaseBillApi,
+    confirmPurchaseOrderApi,
+    closePurchaseRemainderApi,
+    cancelPurchaseApi,
+    notify,
+  } = useStore();
+  const [postOpen, setPostOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [closeRemainderOpen, setCloseRemainderOpen] = useState(false);
+  const [reasonText, setReasonText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [invoiceNumber, setInvoiceNumber] = useState(record.reference || '');
+  const [invoiceDate, setInvoiceDate] = useState(TODAY);
+
+  const canConfirm = record.documentStatus === 'Draft';
+  const canPost = record.billStatus === 'NotPosted' && record.documentStatus !== 'Cancelled';
+  const canReceive =
+    record.billStatus === 'Posted' &&
+    !['Received', 'ClosedPartlyReceived'].includes(record.receiptStatus || '');
+  const canCloseRemainder = record.receiptStatus === 'PartlyReceived';
+  const canCancel =
+    record.billStatus === 'NotPosted' &&
+    record.receiptStatus === 'NotReceived' &&
+    record.documentStatus !== 'Cancelled';
+
+  return (
+    <>
+      {canConfirm && (
+        <Btn
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            const res = await confirmPurchaseOrderApi(record.id, record.version);
+            setBusy(false);
+            if (res.success) {
+              notify('Purchase order confirmed.');
+              onRefresh?.();
+            } else {
+              notify(res.error || 'Failed to confirm purchase order.');
+            }
+          }}
+        >
+          Confirm order
+        </Btn>
+      )}
+
+      {canPost && <Btn onClick={() => setPostOpen(true)}>Post supplier bill</Btn>}
+
+      {canReceive && (
+        <Link className="btn" href={`/purchases/${record.id}/receive`}>
+          Receive stock
+        </Link>
+      )}
+
+      {canCloseRemainder && (
+        <Btn secondary disabled={busy} onClick={() => setCloseRemainderOpen(true)}>
+          Close remainder
+        </Btn>
+      )}
+
+      {canCancel && (
+        <Btn secondary disabled={busy} onClick={() => setCancelOpen(true)}>
+          Cancel order
+        </Btn>
+      )}
+
+      {postOpen && (
+        <Modal title="Post supplier bill" onClose={() => setPostOpen(false)}>
+          <form
+            onSubmit={async (event) => {
+              event.preventDefault();
+              setBusy(true);
+              const res = await postPurchaseBillApi(
+                record.id,
+                invoiceNumber.trim(),
+                invoiceDate,
+                record.version
+              );
+              setBusy(false);
+              if (res.success) {
+                setPostOpen(false);
+                notify('Supplier bill posted.');
+                onRefresh?.();
+              } else {
+                notify(res.error || 'Failed to post supplier bill.');
+              }
+            }}
+          >
+            <div className="form-body form-grid">
+              <Field label="Supplier invoice number *">
+                <input
+                  required
+                  maxLength={100}
+                  value={invoiceNumber}
+                  onChange={(event) => setInvoiceNumber(event.target.value)}
+                />
+              </Field>
+              <Field label="Supplier invoice date *">
+                <input
+                  required
+                  type="date"
+                  max={TODAY}
+                  value={invoiceDate}
+                  onChange={(event) => setInvoiceDate(event.target.value)}
+                />
+              </Field>
+              <p className="notice full">
+                Posting creates the supplier payable. Cash or bank changes only when a supplier payment is recorded.
+              </p>
+            </div>
+            <div className="form-actions">
+              <Btn secondary onClick={() => setPostOpen(false)}>
+                Cancel
+              </Btn>
+              <Btn type="submit" disabled={busy}>
+                {busy ? 'Posting…' : 'Post bill'}
+              </Btn>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {closeRemainderOpen && (
+        <Modal title="Close unreceived remainder" onClose={() => setCloseRemainderOpen(false)}>
+          <div className="form-body">
+            <p>
+              Are you sure you want to close the unreceived remainder of this purchase order? Received stock stays
+              available, but remaining quantities cannot be received later.
+            </p>
+            <Field label="Reason (optional)">
+              <input
+                value={reasonText}
+                onChange={(e) => setReasonText(e.target.value)}
+                placeholder="Supplier out of stock, cancelled remaining..."
+              />
+            </Field>
+          </div>
+          <div className="form-actions">
+            <Btn secondary onClick={() => setCloseRemainderOpen(false)}>
+              Back
+            </Btn>
+            <Btn
+              danger
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                const ok = await closePurchaseRemainderApi(record.id, record.version, reasonText.trim() || undefined);
+                setBusy(false);
+                if (ok) {
+                  setCloseRemainderOpen(false);
+                  onRefresh?.();
+                }
+              }}
+            >
+              Close remainder
+            </Btn>
+          </div>
+        </Modal>
+      )}
+
+      {cancelOpen && (
+        <Modal title="Cancel purchase order" onClose={() => setCancelOpen(false)}>
+          <div className="form-body">
+            <p>
+              Cancel this unposted purchase order? It has no stock movements or financial effect, and will remain in
+              history as cancelled.
+            </p>
+          </div>
+          <div className="form-actions">
+            <Btn secondary onClick={() => setCancelOpen(false)}>
+              Keep order
+            </Btn>
+            <Btn
+              danger
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                const ok = await cancelPurchaseApi(record.id, record.version);
+                setBusy(false);
+                if (ok) {
+                  setCancelOpen(false);
+                  onRefresh?.();
+                }
+              }}
+            >
+              Cancel order
+            </Btn>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
+export default function Documents({
+  quotation = false,
+  purchase = false,
+  id,
+}: {
+  quotation?: boolean;
+  purchase?: boolean;
+  id?: string;
+}) {
+  const {
+    state,
+    setState,
+    notify,
+    isLive,
+    fetchPurchaseDetailApi,
+    fetchPurchaseReceiptsApi,
+    fetchPurchaseAllocationsApi,
+    fetchPurchaseReturnsApi,
+    fetchPurchaseCreditNotesApi,
+    reversePurchaseReceiptApi,
+    reverseSupplierReturnApi,
+    reverseSupplierPaymentApi,
+    reverseSupplierAllocationApi,
+    reverseSupplierCreditNoteApi,
+    fetchPurchasesPage,
+    fetchQuotationsPage,
+    fetchQuotationDetailApi,
+    convertQuotationApi,
+    cancelQuotationApi,
+    reopenQuotationApi,
+    fetchInvoicesPage,
+    fetchInvoiceDetailApi,
+    cancelInvoiceDraftApi,
+    issueInvoiceApi,
+    recordCustomerReceiptApi,
+  } = useStore();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const [q, setQ] = useState(() => searchParams?.get('search') || searchParams?.get('q') || '');
+  const [status, setStatus] = useState('All');
+  const [docStatusFilter, setDocStatusFilter] = useState(() => searchParams?.get('docStatus') || 'All');
+  const [billStatusFilter, setBillStatusFilter] = useState(() => searchParams?.get('billStatus') || 'All');
+  const [receiptStatusFilter, setReceiptStatusFilter] = useState(() => searchParams?.get('receiptStatus') || 'All');
+  const [paymentStatusFilter, setPaymentStatusFilter] = useState(() => searchParams?.get('paymentStatus') || 'All');
+  const [payment, setPayment] = useState(false);
+  const [date, setDate] = useState(() => searchParams?.get('date') || '');
+  const [cancel, setCancel] = useState(false);
+  const [print, setPrint] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState('All categories');
+  const [purchasePage, setPurchasePage] = useState(() => Math.max(1, parseInt(searchParams?.get('page') || '1', 10)));
+  const [quotationPage, setQuotationPage] = useState(1);
+  const [quotationPageData, setQuotationPageData] = useState<{records: Bill[]; total: number; totalPages: number} | null>(null);
+  const [quotationListLoading, setQuotationListLoading] = useState(false);
+
+  const [invoicePage, setInvoicePage] = useState(1);
+  const [invoicePageData, setInvoicePageData] = useState<{records: Bill[]; total: number; totalPages: number} | null>(null);
+  const [invoiceListLoading, setInvoiceListLoading] = useState(false);
+
+  const [salesSummary, setSalesSummary] = useState<any>(null);
+
+  // Live Modals for Quotation & Invoice
+  const [issueModalOpen, setIssueModalOpen] = useState(false);
+  const [issueTargetDraft, setIssueTargetDraft] = useState<{id: string; version: number; totalPaise: number; customerId: string} | null>(null);
+  const [receiptModalOpen, setReceiptModalOpen] = useState(false);
+  const [receiptTargetInvoice, setReceiptTargetInvoice] = useState<{id: string; customerId: string; dueAmount: number} | null>(null);
+  const [quoteCancelOpen, setQuoteCancelOpen] = useState(false);
+  const [quoteReopenOpen, setQuoteReopenOpen] = useState(false);
+  const [invCancelOpen, setInvCancelOpen] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
+
+  // Sync active purchase list filters to URL
+  useEffect(() => {
+    if (!purchase || id) return;
+    const url = new URL(window.location.href);
+    if (q.trim()) url.searchParams.set('search', q.trim()); else url.searchParams.delete('search');
+    if (docStatusFilter !== 'All') url.searchParams.set('docStatus', docStatusFilter); else url.searchParams.delete('docStatus');
+    if (billStatusFilter !== 'All') url.searchParams.set('billStatus', billStatusFilter); else url.searchParams.delete('billStatus');
+    if (receiptStatusFilter !== 'All') url.searchParams.set('receiptStatus', receiptStatusFilter); else url.searchParams.delete('receiptStatus');
+    if (paymentStatusFilter !== 'All') url.searchParams.set('paymentStatus', paymentStatusFilter); else url.searchParams.delete('paymentStatus');
+    if (date) url.searchParams.set('date', date); else url.searchParams.delete('date');
+    if (purchasePage > 1) url.searchParams.set('page', String(purchasePage)); else url.searchParams.delete('page');
+    window.history.replaceState(null, '', url.pathname + url.search);
+  }, [purchase, id, q, docStatusFilter, billStatusFilter, receiptStatusFilter, paymentStatusFilter, date, purchasePage]);
+
+  // Detail view state
+  const [detailData, setDetailData] = useState<any>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailTab, setDetailTab] = useState<'Overview' | 'Receipts' | 'Payments' | 'Returns' | 'Credit notes'>('Overview');
+  const [reversalModal, setReversalModal] = useState<{
+    open: boolean;
+    type: 'receipt' | 'return' | 'payment' | 'allocation';
+    id: string;
+    title: string;
+  }>({open: false, type: 'receipt', id: '', title: ''});
+  const [reversalReason, setReversalReason] = useState('');
+  const [reversalBusy, setReversalBusy] = useState(false);
+
+  // Dedicated paginated tab state for purchase detail
+  const [rcptList, setRcptList] = useState<any[]>([]);
+  const [rcptPage, setRcptPage] = useState(1);
+  const [rcptTotalPages, setRcptTotalPages] = useState(1);
+  const [rcptTotal, setRcptTotal] = useState(0);
+  const [rcptLoading, setRcptLoading] = useState(false);
+  const [rcptError, setRcptError] = useState('');
+
+  const [allocList, setAllocList] = useState<any[]>([]);
+  const [allocPage, setAllocPage] = useState(1);
+  const [allocTotalPages, setAllocTotalPages] = useState(1);
+  const [allocTotal, setAllocTotal] = useState(0);
+  const [allocLoading, setAllocLoading] = useState(false);
+  const [allocError, setAllocError] = useState('');
+
+  const [retList, setRetList] = useState<any[]>([]);
+  const [retPage, setRetPage] = useState(1);
+  const [retTotalPages, setRetTotalPages] = useState(1);
+  const [retTotal, setRetTotal] = useState(0);
+  const [retLoading, setRetLoading] = useState(false);
+  const [retError, setRetError] = useState('');
+
+  const [cnList, setCnList] = useState<any[]>([]);
+  const [cnPage, setCnPage] = useState(1);
+  const [cnTotalPages, setCnTotalPages] = useState(1);
+  const [cnTotal, setCnTotal] = useState(0);
+  const [cnLoading, setCnLoading] = useState(false);
+  const [cnError, setCnError] = useState('');
+
+  const loadReceipts = () => {
+    if (!id || !purchase || !isLive) return;
+    setRcptLoading(true);
+    setRcptError('');
+    fetchPurchaseReceiptsApi(id, {page: rcptPage, limit: 10})
+      .then((res: any) => {
+        setRcptList(res.receipts || res.records || []);
+        setRcptTotalPages(res.totalPages || 1);
+        setRcptTotal(res.total || 0);
+      })
+      .catch((err: any) => setRcptError(err.message || 'Failed to load stock receipts.'))
+      .finally(() => setRcptLoading(false));
+  };
+
+  const loadAllocations = () => {
+    if (!id || !purchase || !isLive) return;
+    setAllocLoading(true);
+    setAllocError('');
+    fetchPurchaseAllocationsApi(id, {page: allocPage, limit: 10})
+      .then((res: any) => {
+        setAllocList(res.allocations || res.records || []);
+        setAllocTotalPages(res.totalPages || 1);
+        setAllocTotal(res.total || 0);
+      })
+      .catch((err: any) => setAllocError(err.message || 'Failed to load payment allocations.'))
+      .finally(() => setAllocLoading(false));
+  };
+
+  const loadReturns = () => {
+    if (!id || !purchase || !isLive) return;
+    setRetLoading(true);
+    setRetError('');
+    fetchPurchaseReturnsApi(id, {page: retPage, limit: 10})
+      .then((res: any) => {
+        setRetList(res.returns || res.records || []);
+        setRetTotalPages(res.totalPages || 1);
+        setRetTotal(res.total || 0);
+      })
+      .catch((err: any) => setRetError(err.message || 'Failed to load returns.'))
+      .finally(() => setRetLoading(false));
+  };
+
+  const loadCreditNotes = () => {
+    if (!id || !purchase || !isLive) return;
+    setCnLoading(true);
+    setCnError('');
+    fetchPurchaseCreditNotesApi(id, {page: cnPage, limit: 10})
+      .then((res: any) => {
+        setCnList(res.creditNotes || res.records || []);
+        setCnTotalPages(res.totalPages || 1);
+        setCnTotal(res.total || 0);
+      })
+      .catch((err: any) => setCnError(err.message || 'Failed to load credit notes.'))
+      .finally(() => setCnLoading(false));
+  };
+
+  useEffect(() => {
+    if (purchase && id && isLive) {
+      if (detailTab === 'Receipts') loadReceipts();
+      else if (detailTab === 'Payments') loadAllocations();
+      else if (detailTab === 'Returns') loadReturns();
+      else if (detailTab === 'Credit notes') loadCreditNotes();
+    }
+  }, [purchase, id, isLive, detailTab]);
+
+  useEffect(() => {
+    if (purchase && id && isLive && detailTab === 'Receipts') loadReceipts();
+  }, [rcptPage]);
+
+  useEffect(() => {
+    if (purchase && id && isLive && detailTab === 'Payments') loadAllocations();
+  }, [allocPage]);
+
+  useEffect(() => {
+    if (purchase && id && isLive && detailTab === 'Returns') loadReturns();
+  }, [retPage]);
+
+  useEffect(() => {
+    if (purchase && id && isLive && detailTab === 'Credit notes') loadCreditNotes();
+  }, [cnPage]);
+
+  // Summary counters
+  const [summary, setSummary] = useState<any>(null);
+  const [purchasePageData, setPurchasePageData] = useState<{records: Purchase[]; total: number; totalPages: number} | null>(null);
+  const [purchaseListLoading, setPurchaseListLoading] = useState(false);
+
+  const record = purchase
+    ? (detailData?.purchase ? mapPurchaseFromApi(detailData.purchase) : state.purchases.find((b) => b.id === id))
+    : quotation
+    ? (detailData?.quotation ? detailData.quotation : state.bills.find((b) => b.id === id && b.kind === 'Quotation'))
+    : (detailData?.invoice ? detailData.invoice : state.bills.find((b) => b.id === id && b.kind !== 'Quotation'));
+
+  const refreshDetail = () => {
+    if (id && isLive) {
+      setDetailLoading(true);
+      if (purchase) {
+        fetchPurchaseDetailApi(id).then((res) => {
+          if (res?.purchase) {
+            setDetailData(res);
+            if (res.receipts?.length && !rcptList.length) setRcptList(res.receipts);
+            if (res.allocations?.length && !allocList.length) setAllocList(res.allocations);
+            if (res.returns?.length && !retList.length) setRetList(res.returns);
+            if (res.creditNotes?.length && !cnList.length) setCnList(res.creditNotes);
+          }
+        }).catch(() => setDetailData({notFound: true})).finally(() => setDetailLoading(false));
+      } else if (quotation) {
+        fetchQuotationDetailApi(id).then((res) => {
+          if (res?.quotation) {
+            setDetailData({quotation: mapQuotationFromApi(res.quotation), raw: res.quotation});
+          }
+        }).catch(() => setDetailData({notFound: true})).finally(() => setDetailLoading(false));
+      } else {
+        fetchInvoiceDetailApi(id).then((res) => {
+          if (res?.invoice) {
+            setDetailData({invoice: mapInvoiceFromApi(res.invoice), raw: res.invoice});
+          }
+        }).catch(() => setDetailData({notFound: true})).finally(() => setDetailLoading(false));
+      }
+    }
+  };
+
+  useEffect(() => {
+    refreshDetail();
+  }, [id, purchase, quotation, isLive]);
+
+  useEffect(() => {
+    if (purchase && !id && isLive) {
+      fetch('/api/purchases/summary')
+        .then((r) => r.json())
+        .then((data) => {
+          setSummary(data.summary || data);
+        })
+        .catch(() => {});
+    }
+  }, [purchase, id, isLive]);
+
+  useEffect(() => {
+    if (!purchase && !id && isLive) {
+      fetch('/api/sales/summary')
+        .then((r) => r.json())
+        .then((data) => {
+          setSalesSummary(data.summary || data);
+        })
+        .catch(() => {});
+    }
+  }, [purchase, id, isLive]);
+
+  useEffect(() => {
+    if (!purchase || id || !isLive) return;
+    setPurchaseListLoading(true);
+    fetchPurchasesPage({
+      page: purchasePage,
+      limit: 20,
+      search: q.trim() || undefined,
+      documentStatus: docStatusFilter === 'All' ? undefined : docStatusFilter,
+      billStatus: billStatusFilter === 'All' ? undefined : billStatusFilter,
+      receiptStatus: receiptStatusFilter === 'All' ? undefined : receiptStatusFilter,
+      paymentStatus: paymentStatusFilter === 'All' ? undefined : paymentStatusFilter,
+      dateFrom: date || undefined,
+      dateTo: date || undefined,
+    }).then(setPurchasePageData).catch(() => notify('Could not load purchases.')).finally(() => setPurchaseListLoading(false));
+  }, [purchase, id, isLive, purchasePage, q, docStatusFilter, billStatusFilter, receiptStatusFilter, paymentStatusFilter, date, fetchPurchasesPage, notify]);
+
+  useEffect(() => { setPurchasePage(1); }, [q, docStatusFilter, billStatusFilter, receiptStatusFilter, paymentStatusFilter, date]);
+
+  useEffect(() => {
+    if (!quotation || purchase || id || !isLive) return;
+    setQuotationListLoading(true);
+    fetchQuotationsPage({
+      page: quotationPage,
+      limit: 20,
+      search: q.trim() || undefined,
+      status: status === 'All' ? undefined : status,
+      dateFrom: date || undefined,
+      dateTo: date || undefined,
+    }).then(setQuotationPageData).catch(() => notify('Could not load quotations.')).finally(() => setQuotationListLoading(false));
+  }, [quotation, purchase, id, isLive, quotationPage, q, status, date, fetchQuotationsPage, notify]);
+
+  useEffect(() => { setQuotationPage(1); }, [q, status, date]);
+
+  useEffect(() => {
+    if (quotation || purchase || id || !isLive) return;
+    setInvoiceListLoading(true);
+    fetchInvoicesPage({
+      page: invoicePage,
+      limit: 20,
+      search: q.trim() || undefined,
+      status: status === 'All' ? undefined : status,
+      hasDue: status === 'Unpaid' ? true : undefined,
+      dateFrom: date || undefined,
+      dateTo: date || undefined,
+    }).then(setInvoicePageData).catch(() => notify('Could not load invoices.')).finally(() => setInvoiceListLoading(false));
+  }, [quotation, purchase, id, isLive, invoicePage, q, status, date, fetchInvoicesPage, notify]);
+
+  useEffect(() => { setInvoicePage(1); }, [q, status, date]);
+
+  const list = (
+    purchase
+      ? (isLive && purchasePageData ? purchasePageData.records : state.purchases)
+      : quotation
+      ? (isLive && quotationPageData ? quotationPageData.records : state.bills.filter((b) => b.kind === 'Quotation'))
+      : (isLive && invoicePageData ? invoicePageData.records : state.bills.filter((b) => b.kind !== 'Quotation'))
+  ).filter((b) => {
+    if (isLive) return true;
+    const p = purchase
+      ? state.suppliers.find((c) => c.id === (b as Purchase).supplierId)
+      : state.customers.find((c) => c.id === (b as Bill).customerId);
+    const matchSearch = (b.id + (p?.name || '')).toLowerCase().includes(q.toLowerCase());
+    const matchDate = !date || b.date === date;
+    const matchCat = purchase || quotation || categoryFilter === 'All categories' || (b as Bill).category === categoryFilter;
+
+    if (purchase) {
+      const pur = b as Purchase;
+      const matchDoc = docStatusFilter === 'All' || pur.documentStatus === docStatusFilter;
+      const matchBill = billStatusFilter === 'All' || pur.billStatus === billStatusFilter;
+      const matchRec = receiptStatusFilter === 'All' || pur.receiptStatus === receiptStatusFilter;
+      const matchPay = paymentStatusFilter === 'All' || pur.paymentStatus === paymentStatusFilter;
+      return matchSearch && matchDate && matchDoc && matchBill && matchRec && matchPay;
+    }
+
+    const matchStatus =
+      status === 'All' ||
+      b.status === status ||
+      (status === 'Unpaid' && balance(state, b) > 0) ||
+      (status === 'Paid' && balance(state, b) === 0);
+
+    return matchSearch && matchDate && matchCat && matchStatus;
+  });
+
+  const path = purchase ? '/purchases' : quotation ? '/quotations' : '/sales';
+  const purchaseExportUrl = (format: string) => {
+    const query = new URLSearchParams({format});
+    if (q.trim()) query.set('search', q.trim());
+    if (docStatusFilter !== 'All') query.set('documentStatus', docStatusFilter);
+    if (billStatusFilter !== 'All') query.set('billStatus', billStatusFilter);
+    if (receiptStatusFilter !== 'All') query.set('receiptStatus', receiptStatusFilter);
+    if (paymentStatusFilter !== 'All') query.set('paymentStatus', paymentStatusFilter);
+    if (date) { query.set('dateFrom', date); query.set('dateTo', date); }
+    return `/api/purchases/export?${query.toString()}`;
+  };
+
+  const quotationExportUrl = (format: string) => {
+    const query = new URLSearchParams({format});
+    if (q.trim()) query.set('search', q.trim());
+    if (status !== 'All') query.set('status', status);
+    if (date) { query.set('dateFrom', date); query.set('dateTo', date); }
+    return `/api/sales/quotations/export?${query.toString()}`;
+  };
+
+  const invoiceExportUrl = (format: string) => {
+    const query = new URLSearchParams({format});
+    if (q.trim()) query.set('search', q.trim());
+    if (status !== 'All') query.set('status', status);
+    if (status === 'Unpaid') query.set('hasDue', 'true');
+    if (date) { query.set('dateFrom', date); query.set('dateTo', date); }
+    return `/api/sales/invoices/export?${query.toString()}`;
+  };
+
+  if (id && purchase && isLive && (detailLoading || !detailData)) return <Empty title="Loading purchase…" text="Loading the live purchase record." />;
+  if (id && !record) {
+    return (
+      <Empty
+        title="Document not found"
+        text="This document does not exist or has been removed."
+        action={<Link href={path}>Back to list</Link>}
+      />
+    );
+  }
+
+  const customer = record
+    ? purchase
+      ? state.suppliers.find((c) => c.id === (record as Purchase).supplierId)
+      : state.customers.find((c) => c.id === (record as Bill).customerId)
+    : null;
+
+  async function handleExecuteReversal(e: React.FormEvent) {
+    e.preventDefault();
+    if (!reversalReason.trim()) return notify('Reason for reversal is required.');
+    setReversalBusy(true);
+    try {
+      let res: {success: boolean; error?: string} = {success: false};
+      if (reversalModal.type === 'receipt') {
+        res = await reversePurchaseReceiptApi(reversalModal.id, reversalReason.trim());
+      } else if (reversalModal.type === 'return') {
+        res = await reverseSupplierReturnApi(reversalModal.id, reversalReason.trim());
+      } else if (reversalModal.type === 'payment') {
+        res = await reverseSupplierPaymentApi(reversalModal.id, reversalReason.trim());
+      } else if (reversalModal.type === 'allocation') {
+        res = await reverseSupplierAllocationApi(reversalModal.id, reversalReason.trim());
+      }
+
+      if (res.success) {
+        notify('Reversal recorded successfully.');
+        setReversalModal({open: false, type: 'receipt', id: '', title: ''});
+        setReversalReason('');
+        refreshDetail();
+      } else {
+        notify(res.error || 'Failed to execute reversal.');
+      }
+    } finally {
+      setReversalBusy(false);
+    }
+  }
+
+  return (
+    <>
+      {record && (
+        <Link className="back-link" href={path}>
+          <ArrowLeft size={14} />
+          All {purchase ? 'purchases' : quotation ? 'quotations' : 'invoices'}
+        </Link>
+      )}
+
+      <PageHead
+        title={record?.id || (purchase ? 'Purchases' : quotation ? 'Quotations' : 'Sales & invoices')}
+        description={
+          record
+            ? `${customer?.name || 'Unknown'} · ${dateLabel(record.date)}`
+            : purchase
+            ? 'Complete procurement lifecycle: purchase orders, stock receipts, supplier bills, and settlements.'
+            : quotation
+            ? 'Create clear estimates for products, PC builds and services.'
+            : 'Every sale and service invoice, with payment status at a glance.'
+        }
+        actions={
+          record ? (
+            <>
+              {!purchase && (
+                <Btn secondary onClick={() => setPrint(true)}>
+                  <Printer size={16} />
+                  Print / PDF
+                </Btn>
+              )}
+              {quotation && record.status !== 'Converted' && record.status !== 'Cancelled' && (
+                <>
+                  <Btn
+                    secondary
+                    onClick={() => {
+                      setState((s) => ({
+                        ...s,
+                        bills: s.bills.map((b) => (b.id === id ? {...b, status: 'Shared'} : b)),
+                      }));
+                      notify('Marked as shared. No message was sent.');
+                    }}
+                  >
+                    Mark shared
+                  </Btn>
+                  <Link className="btn secondary" href={`/quotations/new?edit=${id}`}>
+                    Edit quotation
+                  </Link>
+                  <Link href={`/sales/new?from=${id}`} className="btn">
+                    Convert to invoice
+                  </Link>
+                  <Btn secondary onClick={() => setQuoteCancelOpen(true)}>
+                    Cancel quotation
+                  </Btn>
+                </>
+              )}
+              {quotation && record.status === 'Cancelled' && (
+                <Btn secondary onClick={() => setQuoteReopenOpen(true)}>
+                  Reopen quotation
+                </Btn>
+              )}
+              {purchase && isLive && (
+                <LivePurchaseLifecycle record={record as Purchase} onRefresh={refreshDetail} />
+              )}
+              {!purchase && !quotation && record.status === 'Draft' && (
+                <>
+                  <Link className="btn secondary" href={`/sales/new?edit=${id}`}>
+                    Edit draft
+                  </Link>
+                  <Btn secondary onClick={() => setInvCancelOpen(true)}>
+                    Discard draft
+                  </Btn>
+                  <Btn
+                    onClick={() => {
+                      const totalP = Math.round(((detailData?.raw?.grandTotalPaise != null ? detailData.raw.grandTotalPaise / 100 : roundedTotal(record))) * 100);
+                      setIssueTargetDraft({
+                        id: record.id,
+                        version: detailData?.raw?.version ?? 1,
+                        totalPaise: totalP,
+                        customerId: (record as Bill).customerId || (detailData?.raw?.customerId ?? ''),
+                      });
+                      setIssueModalOpen(true);
+                    }}
+                  >
+                    Issue invoice
+                  </Btn>
+                </>
+              )}
+              {!purchase && !quotation && record.status !== 'Draft' && (
+                <>
+                  {(detailData?.raw?.duePaise != null ? detailData.raw.duePaise > 0 : balance(state, record) > 0) && (
+                    <Btn
+                      onClick={() => {
+                        if (isLive) {
+                          setReceiptTargetInvoice({
+                            id: record.id,
+                            customerId: (record as Bill).customerId || (detailData?.raw?.customerId ?? ''),
+                            dueAmount: detailData?.raw?.duePaise != null ? detailData.raw.duePaise : Math.round(balance(state, record) * 100),
+                          });
+                          setReceiptModalOpen(true);
+                        } else {
+                          setPayment(true);
+                        }
+                      }}
+                    >
+                      Receive payment
+                    </Btn>
+                  )}
+                  <Link className="btn secondary" href={`/returns?reference=${id}`}>
+                    Record return
+                  </Link>
+                </>
+              )}
+              {purchase && !quotation && balance(state, record) > 0 && (
+                <Btn onClick={() => setPayment(true)}>
+                  Pay supplier
+                </Btn>
+              )}
+            </>
+          ) : (
+            <>
+              <Link className="btn secondary" href="/reports">
+                Reports / Excel / PDF
+              </Link>
+              {purchase ? (
+                <div style={{display: 'flex', gap: '0.5rem'}}>
+                  <Btn secondary onClick={() => window.open(purchaseExportUrl('csv'), '_blank')}>
+                    <Download size={14} />
+                    CSV
+                  </Btn>
+                  <Btn secondary onClick={() => window.open(purchaseExportUrl('xlsx'), '_blank')}>
+                    <Download size={14} />
+                    XLSX
+                  </Btn>
+                  <Btn secondary onClick={() => window.open(purchaseExportUrl('pdf'), '_blank')}>
+                    <Download size={14} />
+                    PDF
+                  </Btn>
+                </div>
+              ) : quotation ? (
+                <div style={{display: 'flex', gap: '0.5rem'}}>
+                  <Btn secondary onClick={() => window.open(quotationExportUrl('csv'), '_blank')}>
+                    <Download size={14} />
+                    CSV
+                  </Btn>
+                  <Btn secondary onClick={() => window.open(quotationExportUrl('xlsx'), '_blank')}>
+                    <Download size={14} />
+                    XLSX
+                  </Btn>
+                  <Btn secondary onClick={() => window.open(quotationExportUrl('pdf'), '_blank')}>
+                    <Download size={14} />
+                    PDF
+                  </Btn>
+                </div>
+              ) : (
+                <div style={{display: 'flex', gap: '0.5rem'}}>
+                  <Btn secondary onClick={() => window.open(invoiceExportUrl('csv'), '_blank')}>
+                    <Download size={14} />
+                    CSV
+                  </Btn>
+                  <Btn secondary onClick={() => window.open(invoiceExportUrl('xlsx'), '_blank')}>
+                    <Download size={14} />
+                    XLSX
+                  </Btn>
+                  <Btn secondary onClick={() => window.open(invoiceExportUrl('pdf'), '_blank')}>
+                    <Download size={14} />
+                    PDF
+                  </Btn>
+                  <span title="Download all invoices as a ZIP archive of PDFs">
+                    <Btn secondary onClick={() => window.open('/api/sales/invoices/export-zip', '_blank')}>
+                      <Archive size={14} />
+                      Batch PDFs ZIP
+                    </Btn>
+                  </span>
+                </div>
+              )}
+              {!quotation && !purchase && (
+                <Link className="btn secondary" href="/sales/new?kind=Service">
+                  Service invoice
+                </Link>
+              )}
+              <Link href={path + '/new'} className="btn">
+                <Plus size={16} />
+                New {purchase ? 'purchase' : quotation ? 'quotation' : 'invoice'}
+              </Link>
+            </>
+          )
+        }
+      />
+
+      {/* Summary Cards */}
+      {!record && (
+        purchase ? (
+          <div className="summary-dashboard" style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginBottom: '1.5rem'}}>
+            <Card title="Draft orders">
+              <div className="body-pad" role="button" tabIndex={0} onClick={() => setDocStatusFilter('Draft')}>
+                <h2>{summary?.draftCount ?? state.purchases.filter((p) => p.documentStatus === 'Draft').length}</h2>
+                <p>Awaiting confirmation</p>
+              </div>
+            </Card>
+            <Card title="Confirmed orders">
+              <div className="body-pad" role="button" tabIndex={0} onClick={() => setDocStatusFilter('Confirmed')}>
+                <h2>{summary?.confirmedOrderCount ?? state.purchases.filter((p) => p.documentStatus === 'Confirmed').length}</h2>
+                <p>Pending receipt or bill</p>
+              </div>
+            </Card>
+            <Card title="Posted bill value">
+              <div className="body-pad">
+                <h2>{money(summary?.postedValuePaise != null ? summary.postedValuePaise / 100 : state.purchases.filter((p) => p.billStatus === 'Posted').reduce((n, p) => n + roundedTotal(p), 0))}</h2>
+                <p>Total posted supplier liability</p>
+              </div>
+            </Card>
+            <Card title="Unpaid dues">
+              <div className="body-pad" role="button" tabIndex={0} onClick={() => { setBillStatusFilter('Posted'); setPaymentStatusFilter('Unpaid'); }}>
+                <h2 style={{color: 'var(--error, #e53935)'}}>
+                  {money(summary?.unpaidDuePaise != null ? summary.unpaidDuePaise / 100 : state.purchases.reduce((n, p) => n + balance(state, p), 0))}
+                </h2>
+                <p>Due to suppliers</p>
+              </div>
+            </Card>
+            <Card title="Awaiting receipt">
+              <div className="body-pad" role="button" tabIndex={0} onClick={() => setReceiptStatusFilter('NotReceived')}>
+                <h2>{summary?.awaitingReceiptCount ?? state.purchases.filter((p) => p.receiptStatus === 'NotReceived' && p.billStatus === 'Posted').length}</h2>
+                <p>Bills posted, 0 stock received</p>
+              </div>
+            </Card>
+            <Card title="Partly received">
+              <div className="body-pad" role="button" tabIndex={0} onClick={() => setReceiptStatusFilter('PartlyReceived')}>
+                <h2>{summary?.partlyReceivedCount ?? state.purchases.filter((p) => p.receiptStatus === 'PartlyReceived').length}</h2>
+                <p>Orders with remaining balance</p>
+              </div>
+            </Card>
+            <Card title="Available advance">
+              <div className="body-pad">
+                <h2>{money(summary?.availableAdvancePaise != null ? summary.availableAdvancePaise / 100 : 0)}</h2>
+                <p>Supplier prepayments available</p>
+              </div>
+            </Card>
+          </div>
+        ) : quotation ? (
+          <div className="summary-dashboard" style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginBottom: '1.5rem'}}>
+            <Card title="Draft quotations">
+              <div className="body-pad" role="button" tabIndex={0} onClick={() => setStatus('Draft')}>
+                <h2>{salesSummary?.quotations?.draft ?? list.filter((q) => q.status === 'Draft').length}</h2>
+                <p>Pending review</p>
+              </div>
+            </Card>
+            <Card title="Shared quotations">
+              <div className="body-pad" role="button" tabIndex={0} onClick={() => setStatus('Shared')}>
+                <h2>{salesSummary?.quotations?.shared ?? list.filter((q) => q.status === 'Shared').length}</h2>
+                <p>Sent to customers</p>
+              </div>
+            </Card>
+            <Card title="Converted to invoice">
+              <div className="body-pad" role="button" tabIndex={0} onClick={() => setStatus('Converted')}>
+                <h2>{salesSummary?.quotations?.converted ?? list.filter((q) => q.status === 'Converted').length}</h2>
+                <p>Accepted and billed</p>
+              </div>
+            </Card>
+            <Card title="Expired">
+              <div className="body-pad" role="button" tabIndex={0} onClick={() => setStatus('Expired')}>
+                <h2>{salesSummary?.quotations?.expired ?? list.filter((q) => q.status === 'Expired').length}</h2>
+                <p>Past valid-until date</p>
+              </div>
+            </Card>
+            <Card title="Total quoted">
+              <div className="body-pad">
+                <h2>{money(salesSummary?.quotations?.totalQuotedPaise != null ? salesSummary.quotations.totalQuotedPaise / 100 : list.reduce((n, b) => n + roundedTotal(b), 0))}</h2>
+                <p>Pipeline estimate total</p>
+              </div>
+            </Card>
+          </div>
+        ) : (
+          <div className="summary-dashboard" style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginBottom: '1.5rem'}}>
+            <Card title="Draft invoices">
+              <div className="body-pad" role="button" tabIndex={0} onClick={() => setStatus('Draft')}>
+                <h2>{salesSummary?.invoices?.draftCount ?? list.filter((b) => b.status === 'Draft').length}</h2>
+                <p>Unissued drafts</p>
+              </div>
+            </Card>
+            <Card title="Issued invoices">
+              <div className="body-pad">
+                <h2>{salesSummary?.invoices?.issuedCount ?? list.filter((b) => b.status !== 'Draft').length}</h2>
+                <p>Active sales bills</p>
+              </div>
+            </Card>
+            <Card title="Gross invoiced">
+              <div className="body-pad">
+                <h2>{money(salesSummary?.invoices?.grossTotalPaise != null ? salesSummary.invoices.grossTotalPaise / 100 : list.reduce((n, b) => n + roundedTotal(b), 0))}</h2>
+                <p>Total bill value</p>
+              </div>
+            </Card>
+            <Card title="Payments collected">
+              <div className="body-pad">
+                <h2 style={{color: 'var(--success, #2e7d32)'}}>
+                  {money(salesSummary?.invoices?.paidPaise != null ? salesSummary.invoices.paidPaise / 100 : list.reduce((n, b) => n + paid(state, b.id), 0))}
+                </h2>
+                <p>Settled receipts</p>
+              </div>
+            </Card>
+            <Card title="Outstanding dues">
+              <div className="body-pad" role="button" tabIndex={0} onClick={() => setStatus('Unpaid')}>
+                <h2 style={{color: 'var(--error, #e53935)'}}>
+                  {money(salesSummary?.invoices?.duePaise != null ? salesSummary.invoices.duePaise / 100 : list.reduce((n, b) => n + balance(state, b), 0))}
+                </h2>
+                <p>Pending customer collections</p>
+              </div>
+            </Card>
+            <Card title="Available advances">
+              <div className="body-pad">
+                <h2>{money(salesSummary?.advances?.availablePaise != null ? salesSummary.advances.availablePaise / 100 : 0)}</h2>
+                <p>Customer prepaid deposits</p>
+              </div>
+            </Card>
+          </div>
+        )
+      )}
+
+      {record ? (
+        <>
+          <div className="document-status-strip screen-only">
+            <span>
+              <Badge>{record.status}</Badge>
+            </span>
+            {purchase && (
+              <>
+                <span title="Order lifecycle state">Doc: <Badge>{(record as Purchase).documentStatus || 'Confirmed'}</Badge></span>
+                <span title="Payable status">Bill: <Badge>{(record as Purchase).billStatus || 'Posted'}</Badge></span>
+                <span title="Physical stock received">Stock: <Badge>{(record as Purchase).receiptStatus || 'Received'}</Badge></span>
+              </>
+            )}
+            <span>
+              Total <b>{money(roundedTotal(record))}</b>
+            </span>
+            {!quotation && (
+              <>
+                <span>
+                  Paid <b>{money(paid(state, record.id))}</b>
+                </span>
+                <span>
+                  Balance <b>{money(balance(state, record))}</b>
+                </span>
+                <Badge>
+                  {balance(state, record) === 0
+                    ? 'Paid'
+                    : paid(state, record.id) > 0
+                    ? 'Partly paid'
+                    : 'Unpaid'}
+                </Badge>
+              </>
+            )}
+          </div>
+
+          {purchase ? (
+            <div className="stack spaced">
+              <div className="tabs">
+                {(['Overview', 'Receipts', 'Payments', 'Returns', 'Credit notes'] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    className={detailTab === t ? 'active' : ''}
+                    onClick={() => setDetailTab(t)}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+
+              {detailTab === 'Overview' && (
+                <Card title="Purchase items">
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Item</th>
+                          <th>Type</th>
+                          <th>Ordered</th>
+                          <th>Received</th>
+                          <th>Rate</th>
+                          <th>Serials</th>
+                          <th>Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {record.lines.map((l: any, i: number) => (
+                          <tr key={l.clientLineKey || i}>
+                            <td>{l.name}</td>
+                            <td><Badge>{l.lineType || 'Product'}</Badge></td>
+                            <td>{l.quantityOrdered ?? l.qty}</td>
+                            <td>{l.quantityReceived ?? (record.status === 'Received' ? l.qty : 0)}</td>
+                            <td>{money(l.rate)}</td>
+                            <td>{l.serials?.join(', ') || 'Quantity tracked / not received'}</td>
+                            <td>{money(lineTotal(l, record.inclusive).total)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="body-pad spaced">
+                    <p>{record.notes || 'No printed notes.'}</p>
+                    <p>Supplier reference: {(record as Purchase).reference || '—'}</p>
+                    <p>Due date: {dateLabel(record.due)}</p>
+                  </div>
+                </Card>
+              )}
+
+              {detailTab === 'Receipts' && (
+                <Card title="Linked Stock Receipts">
+                  {rcptError ? (
+                    <div className="body-pad stack">
+                      <p className="error">{rcptError}</p>
+                      <Btn secondary onClick={loadReceipts}>Retry</Btn>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Receipt Number</th>
+                              <th>Date</th>
+                              <th>Received Lines</th>
+                              <th>Status</th>
+                              <th>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(rcptList.length ? rcptList : (detailData?.receipts || [])).map((rcpt: any) => (
+                              <tr key={rcpt._id || rcpt.id}>
+                                <td><strong>{rcpt.receiptNumber}</strong></td>
+                                <td>{dateLabel(rcpt.date || rcpt.receiptDate)}</td>
+                                <td>
+                                  {(rcpt.lines || []).map((l: any, idx: number) => (
+                                    <div key={idx}>
+                                      {l.productName || l.lineId}: {l.quantityReceived} unit(s)
+                                    </div>
+                                  ))}
+                                </td>
+                                <td>
+                                  <Badge>{rcpt.isReversed ? 'Reversed' : 'Completed'}</Badge>
+                                </td>
+                                <td>
+                                  {!rcpt.isReversed && (
+                                    rcpt.canReverse ? (
+                                      <Btn
+                                        secondary
+                                        onClick={() =>
+                                          setReversalModal({
+                                            open: true,
+                                            type: 'receipt',
+                                            id: rcpt._id || rcpt.id,
+                                            title: `Reverse Receipt ${rcpt.receiptNumber}`,
+                                          })
+                                        }
+                                      >
+                                        <RotateCcw size={14} /> Reverse receipt
+                                      </Btn>
+                                    ) : (
+                                      <small className="muted" title={rcpt.reverseBlockReason}>
+                                        {rcpt.reverseBlockReason || 'Cannot reverse'}
+                                      </small>
+                                    )
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                            {!(rcptList.length || detailData?.receipts?.length) && (
+                              <tr>
+                                <td colSpan={5} className="muted body-pad">
+                                  {rcptLoading ? 'Loading stock receipts…' : 'No stock receipt records linked to this purchase yet.'}
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      {rcptTotalPages > 1 && (
+                        <div className="table-footer" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                          <span>Page {rcptPage} of {rcptTotalPages} ({rcptTotal} receipts)</span>
+                          <div style={{display: 'flex', gap: '0.5rem'}}>
+                            <Btn secondary disabled={rcptPage <= 1 || rcptLoading} onClick={() => setRcptPage((p) => p - 1)}>Previous</Btn>
+                            <Btn secondary disabled={rcptPage >= rcptTotalPages || rcptLoading} onClick={() => setRcptPage((p) => p + 1)}>Next</Btn>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </Card>
+              )}
+
+              {detailTab === 'Payments' && (
+                <Card title="Linked Payments and Allocations">
+                  {allocError ? (
+                    <div className="body-pad stack">
+                      <p className="error">{allocError}</p>
+                      <Btn secondary onClick={loadAllocations}>Retry</Btn>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Date</th>
+                              <th>Payment / Allocation ID</th>
+                              <th>Account</th>
+                              <th>Amount</th>
+                              <th>Status</th>
+                              <th>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(allocList.length ? allocList : (detailData?.allocations || [])).map((alloc: any) => (
+                              <tr key={alloc._id || alloc.id}>
+                                <td>{dateLabel(alloc.date || alloc.effectiveDate || record.date)}</td>
+                                <td>Allocation: {alloc.allocationNumber || alloc._id || alloc.id}</td>
+                                <td>Advance / Direct</td>
+                                <td>{money((alloc.amountPaise || 0) / 100)}</td>
+                                <td><Badge>{alloc.isReversed ? 'Reversed' : 'Active'}</Badge></td>
+                                <td>
+                                  {!alloc.isReversed && (
+                                    alloc.canReverse ? (
+                                      <Btn
+                                        secondary
+                                        onClick={() =>
+                                          setReversalModal({
+                                            open: true,
+                                            type: 'allocation',
+                                            id: alloc._id || alloc.id,
+                                            title: 'Reverse Payment Allocation',
+                                          })
+                                        }
+                                      >
+                                        <RotateCcw size={14} /> Reverse allocation
+                                      </Btn>
+                                    ) : (
+                                      <small className="muted">{alloc.reverseBlockReason || 'Locked'}</small>
+                                    )
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                            {!(allocList.length || detailData?.allocations?.length) && (
+                              <tr>
+                                <td colSpan={6} className="muted body-pad">
+                                  {allocLoading ? 'Loading payment allocations…' : 'No settlement allocations recorded for this bill.'}
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      {allocTotalPages > 1 && (
+                        <div className="table-footer" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                          <span>Page {allocPage} of {allocTotalPages} ({allocTotal} allocations)</span>
+                          <div style={{display: 'flex', gap: '0.5rem'}}>
+                            <Btn secondary disabled={allocPage <= 1 || allocLoading} onClick={() => setAllocPage((p) => p - 1)}>Previous</Btn>
+                            <Btn secondary disabled={allocPage >= allocTotalPages || allocLoading} onClick={() => setAllocPage((p) => p + 1)}>Next</Btn>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </Card>
+              )}
+
+              {detailTab === 'Returns' && (
+                <Card title="Linked Supplier Returns">
+                  {retError ? (
+                    <div className="body-pad stack">
+                      <p className="error">{retError}</p>
+                      <Btn secondary onClick={loadReturns}>Retry</Btn>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Return ID</th>
+                              <th>Date</th>
+                              <th>Reason</th>
+                              <th>Items</th>
+                              <th>Status</th>
+                              <th>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(retList.length ? retList : (detailData?.returns || [])).map((ret: any) => (
+                              <tr key={ret._id || ret.id}>
+                                <td>{ret.returnNumber || ret._id || ret.id}</td>
+                                <td>{dateLabel(ret.date)}</td>
+                                <td>{ret.reason}</td>
+                                <td>
+                                  {(ret.lines || []).map((l: any, idx: number) => (
+                                    <div key={idx}>
+                                      {l.productName}: {l.quantity} unit(s)
+                                    </div>
+                                  ))}
+                                </td>
+                                <td><Badge>{ret.isReversed ? 'Reversed' : 'Completed'}</Badge></td>
+                                <td>
+                                  {!ret.isReversed && (
+                                    ret.canReverse ? (
+                                      <Btn
+                                        secondary
+                                        onClick={() =>
+                                          setReversalModal({
+                                            open: true,
+                                            type: 'return',
+                                            id: ret._id || ret.id,
+                                            title: `Reverse Return ${ret.returnNumber || ret.id}`,
+                                          })
+                                        }
+                                      >
+                                        <RotateCcw size={14} /> Reverse return
+                                      </Btn>
+                                    ) : (
+                                      <small className="muted">{ret.reverseBlockReason || 'Cannot reverse'}</small>
+                                    )
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                            {!(retList.length || detailData?.returns?.length) && (
+                              <tr>
+                                <td colSpan={6} className="muted body-pad">
+                                  {retLoading ? 'Loading returns…' : 'No returns linked to this purchase.'}
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      {retTotalPages > 1 && (
+                        <div className="table-footer" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                          <span>Page {retPage} of {retTotalPages} ({retTotal} returns)</span>
+                          <div style={{display: 'flex', gap: '0.5rem'}}>
+                            <Btn secondary disabled={retPage <= 1 || retLoading} onClick={() => setRetPage((p) => p - 1)}>Previous</Btn>
+                            <Btn secondary disabled={retPage >= retTotalPages || retLoading} onClick={() => setRetPage((p) => p + 1)}>Next</Btn>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </Card>
+              )}
+              {detailTab === 'Credit notes' && (
+                <Card title="Supplier credit notes">
+                  {cnError ? (
+                    <div className="body-pad stack">
+                      <p className="error">{cnError}</p>
+                      <Btn secondary onClick={loadCreditNotes}>Retry</Btn>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Credit note</th>
+                              <th>Date</th>
+                              <th>Return</th>
+                              <th>Amount</th>
+                              <th>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(cnList.length ? cnList : (detailData?.creditNotes || [])).map((note: any) => (
+                              <tr key={note._id || note.id}>
+                                <td>{note.creditNoteNumber || note.supplierCreditNoteNumber || note._id}</td>
+                                <td>{dateLabel(note.date)}</td>
+                                <td>{note.returnNumber || note.returnId || 'Standalone'}</td>
+                                <td>{money((note.amountPaise || 0) / 100)}</td>
+                                <td><Badge>{note.isReversed ? 'Reversed' : 'Accepted'}</Badge></td>
+                              </tr>
+                            ))}
+                            {!(cnList.length || detailData?.creditNotes?.length) && (
+                              <tr>
+                                <td colSpan={5} className="muted body-pad">
+                                  {cnLoading ? 'Loading credit notes…' : 'No credit notes linked to this purchase.'}
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      {cnTotalPages > 1 && (
+                        <div className="table-footer" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                          <span>Page {cnPage} of {cnTotalPages} ({cnTotal} credit notes)</span>
+                          <div style={{display: 'flex', gap: '0.5rem'}}>
+                            <Btn secondary disabled={cnPage <= 1 || cnLoading} onClick={() => setCnPage((p) => p - 1)}>Previous</Btn>
+                            <Btn secondary disabled={cnPage >= cnTotalPages || cnLoading} onClick={() => setCnPage((p) => p + 1)}>Next</Btn>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </Card>
+              )}
+            </div>
+          ) : (
+            <InvoicePaper bill={record as Bill} />
+          )}
+
+          <div className="detail-grid spaced screen-only">
+            <Card title={quotation ? 'Quotation actions' : 'Payment history'}>
+              {quotation ? (
+                <div className="body-pad actions">
+                  <Link className="btn secondary" href={`/quotations/new?from=${record.id}`}>
+                    Duplicate quotation
+                  </Link>
+                  <Link
+                    className="btn secondary"
+                    href={`/communication?customer=${(record as Bill).customerId}`}
+                  >
+                    Preview message
+                  </Link>
+                  {!['Converted', 'Cancelled'].includes(record.status) && (
+                    <Btn secondary onClick={() => setCancel(true)}>
+                      Cancel quotation
+                    </Btn>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Date</th>
+                          <th>Account</th>
+                          <th>Purpose</th>
+                          <th>Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {state.payments
+                          .filter((p) => p.reference === record.id)
+                          .map((p) => (
+                            <tr key={p.id}>
+                              <td>{p.date}</td>
+                              <td>{p.account}</td>
+                              <td>{p.purpose}</td>
+                              <td>{money(p.amount)}</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {!state.payments.some((p) => p.reference === record.id) && (
+                    <Empty
+                      title="No payments recorded"
+                      text="Record the payment when money is actually received or paid."
+                    />
+                  )}
+                </>
+              )}
+            </Card>
+
+            <Card title="Related actions">
+              <div className="body-pad stack">
+                {!purchase && !quotation && (
+                  <>
+                    <h3>Supplier payment reference</h3>
+                    <SupplyReference bill={record as Bill} state={state} />
+                  </>
+                )}
+                {!purchase && !quotation && (
+                  <Link className="text-link" href="/warranty">
+                    Add coverage, photos or manage warranty
+                  </Link>
+                )}
+                <Link
+                  className="text-link"
+                  href={`${purchase ? '/suppliers' : '/customers'}/${customer?.id}`}
+                >
+                  Open {purchase ? 'supplier' : 'customer'} profile <ArrowUpRight size={15} />
+                </Link>
+                {!quotation && (
+                  <Link className="text-link" href={`/returns?reference=${record.id}`}>
+                    Record {purchase ? 'supplier' : 'customer'} return <ArrowUpRight size={15} />
+                  </Link>
+                )}
+              </div>
+            </Card>
+          </div>
+        </>
+      ) : (
+        <Card>
+          <div className="toolbar" style={{flexWrap: 'wrap', gap: '0.75rem'}}>
+            <SearchBox value={q} onChange={setQ} placeholder="Search document or customer…" />
+
+            {purchase ? (
+              <>
+                <select
+                  aria-label="Document status"
+                  value={docStatusFilter}
+                  onChange={(e) => setDocStatusFilter(e.target.value)}
+                >
+                  <option value="All">All doc states</option>
+                  <option value="Draft">Draft</option>
+                  <option value="Confirmed">Confirmed</option>
+                  <option value="Cancelled">Cancelled</option>
+                </select>
+
+                <select
+                  aria-label="Bill status"
+                  value={billStatusFilter}
+                  onChange={(e) => setBillStatusFilter(e.target.value)}
+                >
+                  <option value="All">All bill states</option>
+                  <option value="NotPosted">Not posted</option>
+                  <option value="Posted">Posted</option>
+                </select>
+
+                <select
+                  aria-label="Receipt status"
+                  value={receiptStatusFilter}
+                  onChange={(e) => setReceiptStatusFilter(e.target.value)}
+                >
+                  <option value="All">All receipt states</option>
+                  <option value="NotReceived">Not received</option>
+                  <option value="PartlyReceived">Partly received</option>
+                  <option value="Received">Received</option>
+                  <option value="ClosedPartlyReceived">Closed partly received</option>
+                </select>
+
+                <select
+                  aria-label="Payment status"
+                  value={paymentStatusFilter}
+                  onChange={(e) => setPaymentStatusFilter(e.target.value)}
+                >
+                  <option value="All">All payment states</option>
+                  <option value="Unpaid">Unpaid</option>
+                  <option value="PartlyPaid">Partly paid</option>
+                  <option value="Paid">Paid</option>
+                </select>
+              </>
+            ) : (
+              <select
+                aria-label="Document status"
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+              >
+                <option value="All">All statuses</option>
+                {(quotation
+                  ? ['Draft', 'Shared', 'Converted', 'Expired', 'Cancelled']
+                  : ['Draft', 'Issued', 'Paid', 'Unpaid', 'Cancelled']
+                ).map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            )}
+
+            {!purchase && !quotation && (
+              <select
+                aria-label="Business category filter"
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+              >
+                <option>All categories</option>
+                <option>New goods</option>
+                <option>Used goods</option>
+                <option>Service</option>
+              </select>
+            )}
+
+            <input
+              aria-label="Document date"
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+            />
+            {date && (
+              <button type="button" className="link-button" onClick={() => setDate('')}>
+                Clear date
+              </button>
+            )}
+          </div>
+
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Document</th>
+                  <th>{purchase ? 'Supplier' : 'Customer'}</th>
+                  <th>Date</th>
+                  <th>Total</th>
+                  {!quotation && <th>Balance due</th>}
+                  <th>Status</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {list.map((b) => (
+                  <tr key={b.id}>
+                    <td>
+                      <Link className="record-link" href={path + '/' + b.id}>
+                        {purchase
+                          ? ((b as Purchase).purchaseNumber || b.id)
+                          : quotation
+                          ? ((b as any).quotationNumber || b.id)
+                          : ((b as any).invoiceNumber || b.id)}
+                      </Link>
+                      <small>
+                        {purchase
+                          ? (b as Purchase).reference || 'No ref'
+                          : (b as Bill).kind + ' · ' + (b as Bill).category}
+                      </small>
+                    </td>
+                    <td>
+                      {purchase
+                        ? (b as any).supplierSnapshot?.name || state.suppliers.find((c) => c.id === (b as Purchase).supplierId)?.name
+                        : (b as any).customerSnapshot?.name || (b as any).customerName || state.customers.find((c) => c.id === (b as Bill).customerId)?.name || 'Walk-in customer'}
+                    </td>
+                    <td>{dateLabel(b.date)}</td>
+                    <td className="amount">{money(purchase && isLive ? (b as Purchase).total || 0 : isLive && (b as any).total != null ? (b as any).total : roundedTotal(b))}</td>
+                    {!quotation && <td>{money(purchase && isLive ? (b as Purchase).dueAmount || 0 : isLive && (b as any).dueAmount != null ? (b as any).dueAmount : balance(state, b))}</td>}
+                    <td>
+                      {purchase ? (
+                        <div style={{display: 'flex', flexDirection: 'column', gap: '0.25rem', alignItems: 'flex-start'}}>
+                          <div style={{display: 'flex', gap: '0.25rem', flexWrap: 'wrap'}}>
+                            <span title="Document lifecycle state"><Badge>{(b as Purchase).documentStatus || 'Confirmed'}</Badge></span>
+                            <span title="Supplier bill status"><Badge>{(b as Purchase).billStatus || 'Posted'}</Badge></span>
+                          </div>
+                          <div style={{display: 'flex', gap: '0.25rem', flexWrap: 'wrap'}}>
+                            <span title="Physical stock receipt"><Badge>{(b as Purchase).receiptStatus || 'Received'}</Badge></span>
+                            <span title="Supplier payment settlement">
+                              <Badge>
+                                {(b as Purchase).paymentStatus || (
+                                  (b as Purchase).dueAmount === 0 || balance(state, b) === 0
+                                    ? 'Paid'
+                                    : ((b as any).paidAmount || paid(state, b.id)) > 0
+                                    ? 'PartlyPaid'
+                                    : 'Unpaid'
+                                )}
+                              </Badge>
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <Badge>
+                          {quotation
+                            ? b.status
+                            : b.status === 'Draft'
+                            ? 'Draft'
+                            : (isLive && (b as any).dueAmount != null ? (b as any).dueAmount === 0 : balance(state, b) === 0)
+                            ? 'Paid'
+                            : (isLive && (b as any).paidAmount != null ? (b as any).paidAmount > 0 : paid(state, b.id) > 0)
+                            ? 'Partly paid'
+                            : 'Unpaid'}
+                        </Badge>
+                      )}
+                    </td>
+                    <td>
+                      <Link className="text-link" href={path + '/' + b.id}>
+                        View <ArrowUpRight size={15} />
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {!list.length && <Empty />}
+          <div className="table-footer">
+            {purchase && isLive && purchasePageData ? (
+              <>
+                <span>{purchasePageData.total} matching records · Page {purchasePage} of {purchasePageData.totalPages}</span>
+                <div className="actions">
+                  <Btn secondary disabled={purchasePage <= 1 || purchaseListLoading} onClick={() => setPurchasePage(p => p - 1)}>Previous</Btn>
+                  <Btn secondary disabled={purchasePage >= purchasePageData.totalPages || purchaseListLoading} onClick={() => setPurchasePage(p => p + 1)}>Next</Btn>
+                </div>
+              </>
+            ) : quotation && isLive && quotationPageData ? (
+              <>
+                <span>{quotationPageData.total} matching quotations · Page {quotationPage} of {quotationPageData.totalPages}</span>
+                <div className="actions">
+                  <Btn secondary disabled={quotationPage <= 1 || quotationListLoading} onClick={() => setQuotationPage(p => p - 1)}>Previous</Btn>
+                  <Btn secondary disabled={quotationPage >= quotationPageData.totalPages || quotationListLoading} onClick={() => setQuotationPage(p => p + 1)}>Next</Btn>
+                </div>
+              </>
+            ) : !purchase && !quotation && isLive && invoicePageData ? (
+              <>
+                <span>{invoicePageData.total} matching invoices · Page {invoicePage} of {invoicePageData.totalPages}</span>
+                <div className="actions">
+                  <Btn secondary disabled={invoicePage <= 1 || invoiceListLoading} onClick={() => setInvoicePage(p => p - 1)}>Previous</Btn>
+                  <Btn secondary disabled={invoicePage >= invoicePageData.totalPages || invoiceListLoading} onClick={() => setInvoicePage(p => p + 1)}>Next</Btn>
+                </div>
+              </>
+            ) : (
+              <span>{list.length} records · All matching records shown</span>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {/* Reversal Reason Modal */}
+      {reversalModal.open && (
+        <Modal title={reversalModal.title} onClose={() => setReversalModal((m) => ({...m, open: false}))}>
+          <form onSubmit={handleExecuteReversal}>
+            <div className="form-body">
+              <p>
+                Reversal restores the prior accounting and stock condition. A clear reason is required for the audit log.
+              </p>
+              <Field label="Reason for reversal *">
+                <input
+                  required
+                  autoFocus
+                  placeholder="e.g. Wrong items scanned, data entry error..."
+                  value={reversalReason}
+                  onChange={(e) => setReversalReason(e.target.value)}
+                />
+              </Field>
+            </div>
+            <div className="form-actions">
+              <Btn secondary onClick={() => setReversalModal((m) => ({...m, open: false}))}>
+                Cancel
+              </Btn>
+              <Btn danger type="submit" disabled={reversalBusy}>
+                {reversalBusy ? 'Reversing…' : 'Confirm reversal'}
+              </Btn>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {print && record && !purchase && (
+        <PrintDialog bills={[record as Bill]} onClose={() => setPrint(false)} />
+      )}
+
+      {payment && record && (
+        purchase ? (
+          <SupplierSettlement
+            supplierId={(record as Purchase).supplierId}
+            defaultPurchaseId={(record as Purchase).id}
+            onClose={() => {
+              setPayment(false);
+              refreshDetail();
+            }}
+          />
+        ) : (
+          <PaymentDialog record={record} onClose={() => setPayment(false)} />
+        )
+      )}
+
+      {cancel && record && (
+        <Modal title="Cancel quotation?" onClose={() => setCancel(false)}>
+          <div className="form-body">
+            <p>
+              The quotation will remain in history as cancelled. No stock or payments are affected.
+            </p>
+          </div>
+          <div className="form-actions">
+            <Btn secondary onClick={() => setCancel(false)}>
+              Keep quotation
+            </Btn>
+            <Btn
+              danger
+              onClick={() => {
+                setState((s) => ({
+                  ...s,
+                  bills: s.bills.map((b) => (b.id === id ? {...b, status: 'Cancelled'} : b)),
+                }));
+                setCancel(false);
+                notify('Quotation cancelled.');
+              }}
+            >
+              Cancel quotation
+            </Btn>
+          </div>
+        </Modal>
+      )}
+
+      {/* Live Sales Phase 4 Lifecycle Modals */}
+      {issueModalOpen && issueTargetDraft && (
+        <IssueInvoiceModal
+          isOpen={issueModalOpen}
+          draft={issueTargetDraft}
+          onClose={() => {
+            setIssueModalOpen(false);
+            setIssueTargetDraft(null);
+          }}
+          onIssued={(issuedInvoice: any) => {
+            setIssueModalOpen(false);
+            setIssueTargetDraft(null);
+            notify(`Invoice ${issuedInvoice.invoiceNumber || issuedInvoice.id} issued successfully!`);
+            refreshDetail();
+            router.push(`/sales/${issuedInvoice.id || issueTargetDraft.id}`);
+          }}
+        />
+      )}
+
+      {receiptModalOpen && receiptTargetInvoice && (
+        <CustomerReceiptModal
+          isOpen={receiptModalOpen}
+          invoice={receiptTargetInvoice}
+          onClose={() => {
+            setReceiptModalOpen(false);
+            setReceiptTargetInvoice(null);
+          }}
+          onSuccess={() => {
+            setReceiptModalOpen(false);
+            setReceiptTargetInvoice(null);
+            notify('Payment received and settled.');
+            refreshDetail();
+          }}
+        />
+      )}
+
+      {quoteCancelOpen && record && (
+        <QuotationCancelModal
+          isOpen={quoteCancelOpen}
+          quotationId={record.id}
+          version={detailData?.raw?.version || 1}
+          onClose={() => setQuoteCancelOpen(false)}
+          onSuccess={() => {
+            setQuoteCancelOpen(false);
+            notify('Quotation cancelled.');
+            refreshDetail();
+          }}
+        />
+      )}
+
+      {quoteReopenOpen && record && (
+        <QuotationReopenModal
+          isOpen={quoteReopenOpen}
+          quotationId={record.id}
+          version={detailData?.raw?.version || 1}
+          onClose={() => setQuoteReopenOpen(false)}
+          onSuccess={() => {
+            setQuoteReopenOpen(false);
+            notify('Quotation reopened to Draft.');
+            refreshDetail();
+          }}
+        />
+      )}
+
+      {invCancelOpen && record && (
+        <InvoiceCancelModal
+          isOpen={invCancelOpen}
+          invoiceId={record.id}
+          version={detailData?.raw?.version || 1}
+          onClose={() => setInvCancelOpen(false)}
+          onSuccess={() => {
+            setInvCancelOpen(false);
+            notify('Invoice draft discarded.');
+            router.push('/sales');
+          }}
+        />
+      )}
+    </>
+  );
+}

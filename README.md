@@ -1,6 +1,6 @@
 # iTech Computers UI prototype
 
-A complete, local frontend workflow prototype for one computer shop in Salem. Built with Next.js App Router, React and TypeScript. The business screens use mock data. The initial backend foundation now connects to MongoDB Atlas with Better Auth account approval and private VPS file APIs. Payment processing and WhatsApp integration are not implemented. See [development phases](DEVELOPMENT-PHASES.md).
+A complete, local frontend workflow prototype for one computer shop in Salem. Built with Next.js App Router, React and TypeScript. Supports dual-mode operation: a standalone in-memory Demo Workspace when unauthenticated, and an approved multi-tenant Live Mode connecting to MongoDB Atlas. Phase 2 (Company setup, master data, serial units, stock lots, invoice templates, and Draft → Finalized opening setup) is fully implemented and tenant-isolated. Payment processing and WhatsApp integration are not implemented. See [development phases](DEVELOPMENT-PHASES.md).
 
 ## Development handoff
 
@@ -25,6 +25,7 @@ Open http://127.0.0.1:3000. The demo business date is **10 September 2026**, mat
 ```powershell
 npm run typecheck
 npm test
+npm run test:phase2
 npm run build
 ```
 
@@ -34,6 +35,7 @@ npm run build
 2. **Purchases**: create a purchase order, choose a supplier and products, enter rates and tax, then receive stock. For laptops, monitors, printers and prebuilt PCs, enter one serial per unit. Receive an order once. Pay fully, partly or later; split payments are available at purchase creation. Supplier profiles and Dues allow selecting purchased products across bills.
 3. **Customers and enquiries**: use the five mock customers or add one. Add a simple enquiry and follow-up. Search by text, category or status. Create a quotation from an enquiry.
 4. **Quotations**: add items, change prices, reorder rows, add assembly charges and inspect tax-inclusive/exclusive totals. Edit, duplicate, mark shared or cancel a quotation. Convert it to an invoice after selecting the sold serials.
+
 5. **Sales and invoices**: issue a new-goods, used-goods or separate service invoice. Use a line GST rate of 0% for an illustrative non-GST line. The demo is not a tax classification engine. Review the Tally-style invoice and use the browser print dialog to print or save PDF.
 6. **Payments and dues**: receive full or partial payment. At invoice creation, add Cash and GPay payment rows with the receiving bank account. Remaining outstanding calculates immediately. Follow the linked due until settled.
 7. **Service jobs**: record device, serial, condition, accessories and optional local photos. Progress the repair, add a stocked part, create a separate service invoice and hand over the device. Stocked parts are deducted once, when issued to the job.

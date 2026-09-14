@@ -1,5 +1,184 @@
 'use client';
-import {useState} from 'react';
+import {useState, useEffect} from 'react';
 import Link from 'next/link';
-import {PageHead,Card,Field,Btn} from './ui';
-export default function AccountAccess(){const [signup,setSignup]=useState(false),[busy,setBusy]=useState(false),[message,setMessage]=useState(''),[loggedIn,setLoggedIn]=useState(false),[form,setForm]=useState({name:'',companyName:'',email:'',password:'',profitPassword:''});return <><PageHead title="Company account" description="Backend foundation: each company has its own approved account and private files."/><div className="notice">Business screens still use demonstration data. This form calls the real authentication API and requires MongoDB configuration. Signup never creates an approved account automatically.</div><Card title={loggedIn?'Account session':signup?'Register your company':'Sign in'}><form onSubmit={async e=>{e.preventDefault();setBusy(true);setMessage('');try{const response=await fetch('/api/auth/'+(signup?'signup':'login'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(signup?form:{email:form.email,password:form.password})});const result=await response.json();if(!response.ok)throw new Error(result.error||result.message||'Request failed');setMessage(signup?'Account created. Awaiting administrator approval.':'Signed in to '+(result.user?.companyName||'your company')+'. Business-data integration is the next phase.');setLoggedIn(!signup);setForm(f=>({...f,password:'',profitPassword:''}));}catch(error){setMessage(error instanceof Error?error.message:'Unable to reach backend');}finally{setBusy(false);}}}><div className="form-body form-grid">{!loggedIn&&<>{signup&&<><Field label="Company name"><input required maxLength={120} value={form.companyName} onChange={e=>setForm({...form,companyName:e.target.value})}/></Field><Field label="Your name"><input required maxLength={100} value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></Field></>}<Field label="Email"><input required type="email" autoComplete="username" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></Field><Field label="Login password"><input required type="password" minLength={signup?12:1} maxLength={128} autoComplete={signup?'new-password':'current-password'} value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/></Field>{signup&&<Field label="Separate profit password (at least 12 characters)"><input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={form.profitPassword} onChange={e=>setForm({...form,profitPassword:e.target.value})}/></Field>}</>}{message&&<p className="full notice" role="status">{message}</p>}</div><div className="form-actions">{loggedIn?<Btn secondary onClick={async()=>{const response=await fetch('/api/auth/logout',{method:'POST'});if(response.ok){setLoggedIn(false);setMessage('Signed out.');}else setMessage('Sign out failed. Try again.');}}>Sign out</Btn>:<><Btn secondary onClick={()=>{setSignup(!signup);setMessage('');}}>{signup?'I already have an account':'Register company'}</Btn><Btn type="submit" disabled={busy}>{busy?'Please wait…':signup?'Create pending account':'Sign in'}</Btn></>}<Link className="btn secondary" href="/">Return to demo</Link></div></form></Card></>;}
+import {PageHead, Card, Field, Btn} from './ui';
+import {useStore} from './store';
+
+export default function AccountAccess() {
+  const {isLive, companySession, refreshMasterData} = useStore();
+  const [signup, setSignup] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [loggedIn, setLoggedIn] = useState(isLive);
+  const [form, setForm] = useState({
+    name: '',
+    companyName: '',
+    email: '',
+    password: '',
+    profitPassword: '',
+  });
+
+  useEffect(() => {
+    setLoggedIn(isLive);
+  }, [isLive]);
+
+  return (
+    <>
+      <PageHead
+        title="Company account"
+        description="Backend foundation: each company has its own approved account, private files, and isolated database records."
+      />
+      <div className="notice">
+        {isLive ? (
+          <span>
+            Connected to live company account: <b>{companySession?.company?.name}</b> ({companySession?.user?.email}).
+          </span>
+        ) : (
+          <span>
+            Operating in demonstration mode. Sign in to an approved company account to load and persist live master data.
+          </span>
+        )}
+      </div>
+      <Card title={loggedIn ? 'Account session' : signup ? 'Register your company' : 'Sign in'}>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setBusy(true);
+            setMessage('');
+            try {
+              const response = await fetch('/api/auth/' + (signup ? 'signup' : 'login'), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(signup ? form : {email: form.email, password: form.password}),
+              });
+              const result = await response.json();
+              if (!response.ok) throw new Error(result.error || result.message || 'Request failed');
+              if (signup) {
+                setMessage('Account created. Awaiting administrator approval before first sign-in.');
+              } else {
+                setMessage('Signed in to ' + (result.user?.companyName || 'your company') + '. Master data loaded.');
+                setLoggedIn(true);
+                await refreshMasterData();
+              }
+              setForm((f) => ({...f, password: '', profitPassword: ''}));
+            } catch (error) {
+              setMessage(error instanceof Error ? error.message : 'Unable to reach backend');
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <div className="form-body form-grid">
+            {loggedIn ? (
+              <div className="full stack" style={{padding: '12px 0'}}>
+                <p>
+                  Signed in as <b>{companySession?.user?.name || 'Company User'}</b> (
+                  {companySession?.user?.email || form.email})
+                </p>
+                <p className="muted">Company: {companySession?.company?.name || 'Your Company'}</p>
+              </div>
+            ) : (
+              <>
+                {signup && (
+                  <>
+                    <Field label="Company name">
+                      <input
+                        required
+                        maxLength={120}
+                        value={form.companyName}
+                        onChange={(e) => setForm({...form, companyName: e.target.value})}
+                      />
+                    </Field>
+                    <Field label="Your name">
+                      <input
+                        required
+                        maxLength={100}
+                        value={form.name}
+                        onChange={(e) => setForm({...form, name: e.target.value})}
+                      />
+                    </Field>
+                  </>
+                )}
+                <Field label="Email">
+                  <input
+                    required
+                    type="email"
+                    autoComplete="username"
+                    value={form.email}
+                    onChange={(e) => setForm({...form, email: e.target.value})}
+                  />
+                </Field>
+                <Field label="Login password">
+                  <input
+                    required
+                    type="password"
+                    minLength={signup ? 12 : 1}
+                    maxLength={128}
+                    autoComplete={signup ? 'new-password' : 'current-password'}
+                    value={form.password}
+                    onChange={(e) => setForm({...form, password: e.target.value})}
+                  />
+                </Field>
+                {signup && (
+                  <Field label="Separate profit password (at least 12 characters)">
+                    <input
+                      required
+                      type="password"
+                      minLength={12}
+                      maxLength={128}
+                      autoComplete="new-password"
+                      value={form.profitPassword}
+                      onChange={(e) => setForm({...form, profitPassword: e.target.value})}
+                    />
+                  </Field>
+                )}
+              </>
+            )}
+            {message && (
+              <p className="full notice" role="status">
+                {message}
+              </p>
+            )}
+          </div>
+          <div className="form-actions">
+            {loggedIn ? (
+              <Btn
+                secondary
+                onClick={async () => {
+                  const response = await fetch('/api/auth/logout', {method: 'POST'});
+                  if (response.ok) {
+                    await refreshMasterData();
+                    setLoggedIn(false);
+                    setMessage('Signed out.');
+                  } else {
+                    setMessage('Sign out failed. Try again.');
+                  }
+                }}
+              >
+                Sign out
+              </Btn>
+            ) : (
+              <>
+                <Btn
+                  secondary
+                  onClick={() => {
+                    setSignup(!signup);
+                    setMessage('');
+                  }}
+                >
+                  {signup ? 'I already have an account' : 'Register company'}
+                </Btn>
+                <Btn type="submit" disabled={busy}>
+                  {busy ? 'Please wait…' : signup ? 'Create pending account' : 'Sign in'}
+                </Btn>
+              </>
+            )}
+            <Link className="btn secondary" href="/">
+              Return to demo
+            </Link>
+          </div>
+        </form>
+      </Card>
+    </>
+  );
+}

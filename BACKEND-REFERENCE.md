@@ -44,13 +44,17 @@ flowchart LR
 
 | Record | Important fields and relations |
 |---|---|
-| Product | ID, SKU, name, category, condition, specifications, HSN, default tax, default selling and purchase prices, price-entry mode, warranty, serial-tracking rule, reorder level. Defaults do not replace document snapshots. |
-| Service catalogue | ID, name, description, SAC, default price/tax/warranty, active status. Has no stock quantity. |
-| Customer | ID, name, phone, alternate contact, business/GST details, billing and shipping address, state/PIN, payment terms, optional credit limit, notes/language. Avoid mandatory unnecessary personal data. |
-| Supplier | ID, business/contact/GST details, address, payment terms. Purchase dues are derived from bills, credits and allocations. |
+| Product | ID, SKU, name, category, condition, specifications, HSN, default taxBasisPoints, default sellingPricePaise and costPaise, priceEntryMode, warranty, isSerialTracked, low reorder level, preferredSupplierId (optional). Does not store authoritative stock or serial arrays. |
+| Stock lot (`stockLots`) | Stable lot ID, tenantId, productId, lotType (`Opening` / `Purchase`), originalQuantity, quantityRemaining, costPaise, receivedDate, reference. |
+| Serial unit (`serialUnits`) | Tenant-scoped serial unit ID, tenantId, productId, serialNormalized, status (`InStock`, `Sold`, `Reserved`, `Defective`), stockLotId, stockMovementId, createdDate. Compound unique index on `{tenantId: 1, serialNormalized: 1}`. |
+| Stock movement (`stockMovements`) | Movement ID, tenantId, productId, lotId, deltaQuantity, reason, reference, date, createdDate. |
+| Opening receivables (`openingReceivables`) | ID, tenantId, customerId, date, description, amountPaise, remainingAmountPaise, status. Allocatable source documents for later customer receipts. |
+| Opening payables (`openingPayables`) | ID, tenantId, supplierId, date, description, amountPaise, remainingAmountPaise, status. Allocatable source documents for later supplier payments. |
+| Service catalogue | ID, name, category, description, SAC, ratePaise, taxBasisPoints, warranty, active status. Has no stock quantity. |
+| Customer | ID, name, phone, email, type, GST, billing and shipping address, notes, details, status (`Active`/`Archived`). Non-blocking warnings for duplicate phone numbers. |
+| Supplier | ID, business/contact/GST details, address, payment terms, status (`Active`/`Archived`). Purchase dues are derived from bills, credits and allocations. |
 | Purchase | ID, supplier ID, order date, supplier invoice reference, due date, status, receipt date(s), item snapshots, price mode, totals. Receipt and payment status are different fields. |
 | Purchase item / stock lot | Stable item ID, product ID, quantity ordered/received/returned, serials, price/tax/discount snapshot, credited and allocated amounts. One product may occur in many purchases and at different costs. |
-| Stock movement | Product/lot/serial ID, signed quantity, date, reason and originating document ID. Use movements to explain every stock change. |
 | Invoice | ID/number, kind (sale/service), customer ID, immutable customer/company/address snapshots, date/due date, selected template/version, inclusive/exclusive mode, item/charge snapshots, totals, source quotation/job/enquiry. |
 | Invoice item | Stable line ID, product/service/charge kind, description, HSN/SAC, quantity, rate, tax, discount type/value, tax components, serials, purchase-lot allocation, warranty and photos. |
 | Payment | ID, date/time, direction, account ID, method, amount, counterparty, reason/reference, linked document and idempotency key. Store exact minor-unit amounts. |
@@ -58,9 +62,27 @@ flowchart LR
 | Return / credit | Original document/line/serial, quantity, credit value, stock disposition, date, refund due/paid and manual profit adjustment. Credit and refund are distinct events. |
 | Warranty | Invoice line/serial ID, customer, provider, start/end, notes/photos, claim history. Editing a claim does not rewrite the invoice. |
 | Daily closing | Business date, opening balances, receipts/outgoings/transfers, expected/actual cash and bank, discrepancies, manual profit completion, holiday flag, closer/time, immutable snapshot/version. |
-| Invoice template | ID, unique display name, revision, printed title, field/column visibility, column order/labels/alignment, paper, orientation, font, borders, colour, logo settings and footer. Layout does not determine whether a sale is taxable. |
+| Invoice template | ID, unique display name, currentRevision, printed title, fields allowlist, column configuration, paper, orientation, fontSize, borders, striped, accent, logoPosition, footer, status. |
+| Account movements (`accountMovements`) | Movement ID, tenantId, account (`Cash` / `Bank`), direction (`In` / `Out`), amountPaise, date, reason, reference, createdAt, createdBy. Used for physical cash and bank opening balances as well as transactional ledger entries. |
+| Template revision (`templateRevisions`) | Immutable historical snapshot ID, tenantId, templateId, revision number, complete configuration snapshot, createdBy, createdAt. Historical invoices point to exact revision. |
+| Audit history (`auditHistory`) | Append-only tenant-scoped audit entry: ID, tenantId, action, entityType, entityId, actor, before/after sanitized snapshot (passwords, hashes and secrets excluded), timestamp. |
 
-Use foreign keys/references conceptually even if MongoDB is chosen. Stable line/lot IDs are needed in production; the prototype uses product ID within a purchase because it prevents duplicate product rows there.
+### Opening Setup Lifecycle (Implemented in Phase 2)
+Opening setup operates with a strict Draft → Finalized lifecycle:
+1. **Draft Stage**: Edits to cutoff date, cash/bank ledger opening balances, opening stock lots with serial numbers, customer opening receivables, and supplier opening payables are stored as a draft in `openingSetups`. Draft saves post zero stock movements, zero serial units, and zero financial transactions.
+2. **Atomic Finalization**: Once reconciled, finalization executes within a single MongoDB transaction:
+   - Loads the previously persisted draft directly from `openingSetups` (rejects unpersisted changes or missing drafts).
+   - Validates all references within `{tenantId, _id}`.
+   - Inserts `stockLots` and `stockMovements` for opening inventory.
+   - Inserts individual `serialUnits` records enforcing intra-tenant uniqueness.
+   - Inserts allocatable `openingReceivables` and `openingPayables`.
+   - Posts opening cash and bank balance ledger source records directly into `accountMovements` (`direction: 'In'`).
+   - Records tenant audit entry.
+   - Marks opening setup as `Finalized`, permanently locking it against subsequent edits or backdating.
+3. **Lock & Adjustments**: Any post-finalization corrections must occur through current-day audited adjustment workflows in Phase 5.
+4. **Stock Adjustment Idempotency**: Stock adjustments support an `idempotencyKey` backed by a partial unique compound index `{tenantId: 1, idempotencyKey: 1}` on `stockMovements`, ensuring retried operations never duplicate stock.
+5. **Canonical API-to-Domain Mapping**: All backend entities are translated uniformly into frontend domain shapes with `id: _id` via `lib/mappers.ts`, preserving explicit zero values (`tax: 0`, `low: 0`, `warranty: 0`).
+
 
 ## 3. Money and stock rules
 

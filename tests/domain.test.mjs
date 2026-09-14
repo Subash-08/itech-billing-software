@@ -38,9 +38,10 @@ test('closed dates reject backdated financial changes',()=>{
 });
 test('closing requires the prior day, all profits and every account to match',()=>{
  let s=fresh();const count=date=>Object.fromEntries(Object.entries(closing.dayFacts(s,date).accounts).map(([a,v])=>[a,v.closing]));
- assert.throws(()=>closing.closeDay(s,d.TODAY,count(d.TODAY),''),/Close 2026-09-09 first/);
+ const firstOpen=closing.nextDate(s.closings.map(c=>c.date).sort().at(-1));
+ assert.throws(()=>closing.closeDay(s,d.TODAY,count(d.TODAY),''),new RegExp(`Close ${firstOpen} first`));
  s.bills=s.bills.map(b=>({...b,profit:0}));s.returns=s.returns.map(r=>({...r,profit:0}));
- s=closing.closeDay(s,'2026-09-09',count('2026-09-09'),'Reconciled');
+ for(let date=firstOpen;date<d.TODAY;date=closing.nextDate(date)){const isHol=s.holidays.some(h=>h.date===date);s=closing.closeDay(s,date,count(date),isHol?'Weekly holiday':'Reconciled',isHol);}
  const counts=count(d.TODAY);assert.throws(()=>closing.closeDay(s,d.TODAY,{...counts,'Bank account':counts['Bank account']+1},''),/does not tally/);
  s=closing.closeDay(s,d.TODAY,counts,'Reconciled');assert.ok(closing.isLocked(s,d.TODAY));
  assert.equal(closing.dayFacts(s,closing.nextDate(d.TODAY)).accounts.Cash.opening,counts.Cash);
