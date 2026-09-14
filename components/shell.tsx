@@ -75,10 +75,13 @@ const groups = [
 
 type ModuleMode = 'live' | 'mixed' | 'preview';
 const previewPaths = new Set([
-  '/', '/enquiries', '/documents', '/services',
-  '/warranty', '/register', '/dues', '/profit', '/reports', '/communication',
+  '/enquiries', '/documents', '/services',
+  '/register', '/profit', '/communication',
 ]);
-const mixedPaths = new Set(['/customers', '/templates', '/returns', '/sales', '/quotations', '/reservations']);
+const mixedPaths = new Set([
+  '/', '/customers', '/templates', '/returns', '/sales',
+  '/quotations', '/reservations', '/warranty', '/dues', '/reports',
+]);
 
 function moduleMode(url: string): ModuleMode {
   if (previewPaths.has(url)) return 'preview';
@@ -87,7 +90,7 @@ function moduleMode(url: string): ModuleMode {
 }
 
 function currentModuleMode(path: string): ModuleMode {
-  if (path === '/') return 'preview';
+  if (path === '/') return 'mixed';
   const root = `/${path.split('/').filter(Boolean)[0] || ''}`;
   return moduleMode(root);
 }

@@ -92,7 +92,8 @@ export function mapTemplateFromApi(doc: any): InvoiceTemplate {
     footer: doc.footer || '',
     isDefault: !!doc.isDefault,
     status: doc.status || 'Active',
-    revision: doc.currentRevision || 1,
+    revision: doc.currentRevision ?? doc.revision,
+    currentRevision: doc.currentRevision ?? doc.revision,
   };
 }
 
@@ -349,6 +350,7 @@ export function mapInvoiceFromApi(doc: any) {
     category: (doc.businessCategory === 'NewGoods' ? 'New goods' : doc.businessCategory === 'UsedGoods' ? 'Used goods' : 'Service') as any,
     status: doc.status || 'Draft',
     lines: (doc.lines || []).map((l: any) => ({
+      invoiceLineId: l.lineId || l._id || l.id,
       productId: l.productId || '',
       name: l.description || l.productSnapshot?.name || '',
       qty: l.quantity || 0,
@@ -356,6 +358,8 @@ export function mapInvoiceFromApi(doc: any) {
       discount: l.discountValue || 0,
       discountType: l.discountType || 'Percentage',
       tax: (l.taxBasisPoints || 0) / 100,
+      taxTreatment: (l.taxTreatment || 'Taxable') as 'Taxable' | 'Exempt' | 'NonGST',
+      returnedQuantity: l.returnedQuantity || 0,
       serials: (l.stockAllocations || []).flatMap((a: any) => a.serials || []),
       hsn: l.hsn || '',
       warranty: l.warrantyMonths || 0,
@@ -370,6 +374,7 @@ export function mapInvoiceFromApi(doc: any) {
     profit: null,
     customerSnapshot: doc.customerSnapshot ? mapCustomerFromApi(doc.customerSnapshot) : undefined,
     templateId: doc.templateId,
+    templateRevision: doc.templateRevision,
     shipTo: doc.shipTo,
     sourceId: doc.sourceQuotationId,
     total: (doc.totalPaise || 0) / 100,
@@ -392,6 +397,7 @@ export function mapQuotationFromApi(doc: any) {
     category: (doc.businessCategory === 'NewGoods' ? 'New goods' : doc.businessCategory === 'UsedGoods' ? 'Used goods' : 'Service') as any,
     status: doc.status || 'Draft',
     lines: (doc.lines || []).map((l: any) => ({
+      invoiceLineId: l.lineId || l._id || l.id,
       productId: l.productId || '',
       name: l.description || l.productSnapshot?.name || '',
       qty: l.quantity || 0,
@@ -399,6 +405,7 @@ export function mapQuotationFromApi(doc: any) {
       discount: l.discountValue || 0,
       discountType: l.discountType || 'Percentage',
       tax: (l.taxBasisPoints || 0) / 100,
+      taxTreatment: (l.taxTreatment || 'Taxable') as 'Taxable' | 'Exempt' | 'NonGST',
       serials: [],
       hsn: l.hsn || '',
       warranty: l.warrantyMonths || 0,
@@ -413,6 +420,7 @@ export function mapQuotationFromApi(doc: any) {
     profit: null,
     customerSnapshot: doc.customerSnapshot ? mapCustomerFromApi(doc.customerSnapshot) : undefined,
     templateId: doc.templateId,
+    templateRevision: doc.templateRevision,
     shipTo: doc.shipTo,
     total: (doc.totalPaise || 0) / 100,
     paid: 0,

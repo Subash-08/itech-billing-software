@@ -363,6 +363,12 @@ export const PostSaleWarrantySchema = z.object({
   idempotencyKey: z.string().trim().min(8, 'Idempotency key must be at least 8 characters.').max(200),
 });
 
+export async function getWarranty(db: Db, identity: Identity, warrantyId: string) {
+  const warranty = await col<WarrantyDocument>(db, 'warranties').findOne({_id: warrantyId, tenantId: identity.tenantId});
+  if (!warranty) throw new AppError(404, 'Warranty record not found.');
+  return {warranty};
+}
+
 export async function createWarrantyCoverage(db: Db, identity: Identity, raw: unknown) {
   const input = PostSaleWarrantySchema.parse(raw);
   const tenantId = identity.tenantId;
@@ -375,11 +381,15 @@ export async function createWarrantyCoverage(db: Db, identity: Identity, raw: un
     input.invoiceId,
     input,
     async (session: ClientSession) => {
-      const invoice = await col(db, 'invoices').findOne({
-        _id: input.invoiceId,
-        tenantId,
-        status: 'Issued',
-      }, {session});
+      const invoice = await col(db, 'invoices').findOneAndUpdate(
+        {
+          _id: input.invoiceId,
+          tenantId,
+          status: 'Issued',
+        },
+        {$inc: {warrantyLock: 1}},
+        {session, returnDocument: 'after'}
+      );
       if (!invoice) throw new AppError(404, 'Issued invoice not found.');
 
       const line = (invoice.lines || []).find((l: any) => l.lineId === input.invoiceLineId);
@@ -469,7 +479,14 @@ export async function createWarrantyCoverage(db: Db, identity: Identity, raw: un
         createdBy: identity.userId,
       };
 
-      await col(db, 'warranties').insertOne(doc, {session});
+      try {
+        await col(db, 'warranties').insertOne(doc, {session});
+      } catch (err: any) {
+        if (err.code === 11000) {
+          throw new AppError(409, `Active warranty coverage already exists for serial ${input.serialNumber || ''}.`);
+        }
+        throw err;
+      }
 
       await recordAudit(db, {
         identity,

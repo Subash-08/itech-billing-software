@@ -43,8 +43,9 @@ import {useStore} from './store';
 import {PageHead, Card, Btn, Field, Modal, SearchBox, Empty, Badge, csvDownload} from './ui';
 import {PaymentDialog} from './payments';
 import {PersonForm} from './people';
+import {InvoiceTemplate} from '@/lib/extensions';
 import {TemplateInvoice as InvoicePaper, PrintDialog} from './templates';
-import {mapPurchaseFromApi, mapInvoiceFromApi, mapQuotationFromApi} from '@/lib/mappers';
+import {mapPurchaseFromApi, mapInvoiceFromApi, mapQuotationFromApi, mapTemplateFromApi} from '@/lib/mappers';
 import {
   IssueInvoiceModal,
   StockAllocationModal,
@@ -63,10 +64,11 @@ const blankLine = (): Line => ({
   rate: 0,
   discount: 0,
   tax: 18,
+  taxTreatment: 'Taxable',
   serials: [],
   hsn: '998713',
   warranty: 0,
-  ...({clientLineKey: uid('CLK')} as any),
+  clientLineKey: uid('CLK'),
 });
 
 export function DocumentComposer({
@@ -340,6 +342,7 @@ export function DocumentComposer({
             discount: l.discount ?? (l.discountValue ? l.discountValue / 100 : 0),
             discountType: l.discountType || 'Percentage',
             tax: l.tax ?? (l.taxBasisPoints ? l.taxBasisPoints / 100 : 0),
+            taxTreatment: l.taxTreatment || 'Taxable',
             hsn: l.hsn || '',
             sac: l.sac || '',
             warranty: l.warranty ?? l.warrantyMonths ?? 0,
@@ -370,6 +373,7 @@ export function DocumentComposer({
               discount: l.discount ?? (l.discountValue ? l.discountValue / 100 : 0),
               discountType: l.discountType || 'Percentage',
               tax: l.tax ?? (l.taxBasisPoints ? l.taxBasisPoints / 100 : 0),
+              taxTreatment: l.taxTreatment || 'Taxable',
               hsn: l.hsn || '',
               sac: l.sac || '',
               warranty: l.warranty ?? l.warrantyMonths ?? 0,
@@ -406,6 +410,7 @@ export function DocumentComposer({
               discount: l.discount ?? (l.discountValue ? l.discountValue / 100 : 0),
               discountType: l.discountType || 'Percentage',
               tax: l.tax ?? (l.taxBasisPoints ? l.taxBasisPoints / 100 : 0),
+              taxTreatment: l.taxTreatment || 'Taxable',
               hsn: l.hsn || '',
               sac: l.sac || '',
               warranty: l.warranty ?? l.warrantyMonths ?? 0,
@@ -707,23 +712,68 @@ export function DocumentComposer({
 
     setBusy(true);
     try {
-      const templateRecord = state.templates.find((t) => t.id === templateId);
-      const chosenTemplateId = templateRecord?.id || state.defaultTemplateId || 'classic-tech';
-      const chosenTemplateRev = 1;
+      let templateRecord: InvoiceTemplate | undefined;
+      if (templateId) {
+        templateRecord = state.templates.find((t) => t.id === templateId);
+        if (!templateRecord || templateRecord.status === 'Archived') {
+          try {
+            const tRes = await fetch(`/api/master/templates/${encodeURIComponent(templateId)}`);
+            if (tRes.ok) {
+              const tDoc = await tRes.json();
+              templateRecord = mapTemplateFromApi(tDoc);
+            }
+          } catch {}
+        }
+        if (!templateRecord || templateRecord.status === 'Archived') {
+          notify('The selected invoice template is unavailable or archived. Please select an active template.');
+          setBusy(false);
+          return;
+        }
+      } else {
+        templateRecord = state.templates.find((t) => t.id === state.defaultTemplateId && t.status !== 'Archived')
+          || state.templates.find((t) => t.status !== 'Archived');
+        if (!templateRecord) {
+          notify('No active invoice template is available. Please configure an invoice template.');
+          setBusy(false);
+          return;
+        }
+      }
 
-      const linesPayload = lines.map((l: any) => {
+      let chosenTemplateRev = templateRecord.currentRevision ?? templateRecord.revision;
+      if (typeof chosenTemplateRev !== 'number' || chosenTemplateRev < 1) {
+        try {
+          const tRes = await fetch(`/api/master/templates/${encodeURIComponent(templateRecord.id)}`);
+          if (tRes.ok) {
+            const tDoc = await tRes.json();
+            const reloaded = mapTemplateFromApi(tDoc);
+            chosenTemplateRev = reloaded.currentRevision ?? reloaded.revision;
+          }
+        } catch {}
+      }
+
+      if (typeof chosenTemplateRev !== 'number' || chosenTemplateRev < 1) {
+        notify(`Template configuration error: revision information is missing for template "${templateRecord.name}". Please reload or edit the template.`);
+        setBusy(false);
+        return;
+      }
+
+      const chosenTemplateId = templateRecord.id;
+
+      const linesPayload = lines.map((l: Line) => {
         const isProd = l.lineType !== 'Service' && l.lineType !== 'Charge';
         const isSvc = l.lineType === 'Service';
         const isChg = l.lineType === 'Charge';
+        const treatment = (l.taxTreatment || 'Taxable') as 'Taxable' | 'Exempt' | 'NonGST';
+        const isZeroTax = treatment === 'Exempt' || treatment === 'NonGST';
         const common = {
           clientLineKey: l.clientLineKey || uid('CLK'),
-          description: (l.name || l.description || 'Item').trim(),
+          description: (l.name || 'Item').trim(),
           quantity: Math.max(1, Math.round(l.qty || 1)),
           unitRatePaise: Math.round((l.rate || 0) * 100),
           discountType: (l.discountType || 'Percentage') as 'Percentage' | 'Amount',
           discountValue: Math.round((l.discount || 0) * 100),
-          taxBasisPoints: Math.round((l.tax || 0) * 100),
-          taxTreatment: 'Taxable' as const,
+          taxBasisPoints: isZeroTax ? 0 : Math.round((l.tax || 0) * 100),
+          taxTreatment: treatment,
         };
 
         if (isChg) {
@@ -1318,10 +1368,28 @@ export function DocumentComposer({
                     </td>
                     <td>
                       <select
-                        aria-label={`Item ${i + 1} GST`}
+                        aria-label={`Item ${i + 1} tax treatment`}
                         className="table-input"
                         disabled={isPosted}
-                        value={l.tax}
+                        style={{marginBottom: 4}}
+                        value={l.taxTreatment || 'Taxable'}
+                        onChange={(e) => {
+                          const val = e.target.value as 'Taxable' | 'Exempt' | 'NonGST';
+                          update(i, 'taxTreatment', val);
+                          if (val === 'Exempt' || val === 'NonGST') {
+                            update(i, 'tax', 0);
+                          }
+                        }}
+                      >
+                        <option value="Taxable">Taxable</option>
+                        <option value="Exempt">Exempt</option>
+                        <option value="NonGST">Non-GST</option>
+                      </select>
+                      <select
+                        aria-label={`Item ${i + 1} GST`}
+                        className="table-input"
+                        disabled={isPosted || l.taxTreatment === 'Exempt' || l.taxTreatment === 'NonGST'}
+                        value={l.taxTreatment === 'Exempt' || l.taxTreatment === 'NonGST' ? 0 : l.tax}
                         onChange={(e) => update(i, 'tax', +e.target.value)}
                       >
                         {[0, 5, 12, 18, 28].map((v) => (

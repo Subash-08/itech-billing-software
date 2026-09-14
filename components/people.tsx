@@ -12,10 +12,12 @@ export function PersonForm({
   supplier = false,
   existing,
   onClose,
+  onSuccess,
 }: {
   supplier?: boolean;
   existing?: Customer | Supplier;
   onClose: () => void;
+  onSuccess?: () => void;
 }) {
   const {
     state,
@@ -76,11 +78,17 @@ export function PersonForm({
       if (supplier) {
         const res = await saveSupplierApi({...form}, existing?.id);
         if (res.warning) setWarning(res.warning);
-        if (res.success) onClose();
+        if (res.success) {
+          onSuccess?.();
+          onClose();
+        }
       } else {
         const res = await saveCustomerApi({...form, details}, existing?.id);
         if (res.warning) setWarning(res.warning);
-        if (res.success) onClose();
+        if (res.success) {
+          onSuccess?.();
+          onClose();
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save.');
@@ -96,7 +104,10 @@ export function PersonForm({
       const ok = supplier
         ? await archiveSupplierApi(existing.id)
         : await archiveCustomerApi(existing.id);
-      if (ok) onClose();
+      if (ok) {
+        onSuccess?.();
+        onClose();
+      }
     } finally {
       setBusy(false);
     }
@@ -205,7 +216,10 @@ export function PersonForm({
                   const ok = supplier
                     ? await restoreSupplierApi(existing.id)
                     : await restoreCustomerApi(existing.id);
-                  if (ok) onClose();
+                  if (ok) {
+                    onSuccess?.();
+                    onClose();
+                  }
                 } finally {
                   setBusy(false);
                 }
@@ -238,41 +252,87 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
   const [type, setType] = useState('All');
   const [page, setPage] = useState(1);
   const [serverData, setServerData] = useState<{records: any[]; total: number; totalPages: number} | null>(null);
+  const [listLoading, setListLoading] = useState(false);
+  const [listError, setListError] = useState('');
+  const [refreshIndex, setRefreshIndex] = useState(0);
   const [detailRecord, setDetailRecord] = useState<Customer | Supplier | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  const isDetailRoute = Boolean(id && id !== 'new');
+
+  // Reset detail state whenever id OR supplier section changes
+  useEffect(() => {
+    setDetailRecord(null);
+    setDetailLoading(false);
+  }, [id, supplier]);
 
   useEffect(() => {
     setPage(1);
   }, [q, type, supplier]);
 
   useEffect(() => {
-    if (isLive && !id) {
+    if (isLive && !isDetailRoute) {
+      let active = true;
+      setListLoading(true);
+      setListError('');
       const fetchFn = supplier ? fetchSuppliersPage : fetchCustomersPage;
-      fetchFn({page, limit: 10, q: q.trim() || undefined, ...(supplier || type === 'All' ? {} : {type})}).then((res) => {
-        setServerData(res);
-      }).catch(() => {});
+      fetchFn({
+        page,
+        limit: 10,
+        q: q.trim() || undefined,
+        ...(supplier || type === 'All' ? {} : {type}),
+      })
+        .then((res) => {
+          if (!active) return;
+          setServerData(res);
+          if (res && res.totalPages > 0 && page > res.totalPages) {
+            setPage(res.totalPages);
+          }
+        })
+        .catch((err) => {
+          if (!active) return;
+          setListError(err instanceof Error ? err.message : 'Failed to load records.');
+        })
+        .finally(() => {
+          if (active) setListLoading(false);
+        });
+      return () => {
+        active = false;
+      };
     }
-  }, [isLive, supplier, page, q, type, id, fetchCustomersPage, fetchSuppliersPage]);
+  }, [isLive, supplier, page, q, type, isDetailRoute, refreshIndex, fetchCustomersPage, fetchSuppliersPage]);
 
   useEffect(() => {
-    if (!isLive || !id || id === 'new') return;
+    if (!isLive || !isDetailRoute || !id) return;
+    let active = true;
     setDetailLoading(true);
     fetch(`/api/master/${supplier ? 'suppliers' : 'customers'}/${encodeURIComponent(id)}`)
       .then(async (res) => {
         if (!res.ok) throw new Error('Record not found');
         const data = await res.json();
-        setDetailRecord(supplier ? mapSupplierFromApi(data) : mapCustomerFromApi(data));
+        if (active) {
+          setDetailRecord(supplier ? mapSupplierFromApi(data) : mapCustomerFromApi(data));
+        }
       })
-      .catch(() => setDetailRecord(null))
-      .finally(() => setDetailLoading(false));
-  }, [isLive, id, supplier]);
+      .catch(() => {
+        if (active) setDetailRecord(null);
+      })
+      .finally(() => {
+        if (active) setDetailLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isLive, id, supplier, isDetailRoute, refreshIndex]);
 
-  const collection = isLive && serverData ? serverData.records : (supplier ? state.suppliers : state.customers);
-  const person = detailRecord || (supplier ? state.suppliers : state.customers).find((p) => p.id === id || (p as any)._id === id) || (serverData?.records || []).find((p) => p.id === id || (p as any)._id === id);
+  const collection = isLive ? (serverData?.records || []) : (supplier ? state.suppliers : state.customers);
+  const person = isDetailRoute
+    ? (detailRecord || (supplier ? state.suppliers : state.customers).find((p) => p.id === id) || (serverData?.records || []).find((p) => p.id === id) || null)
+    : null;
   const path = supplier ? '/suppliers' : '/customers';
 
-  if (id && isLive && detailLoading) return <Empty title="Loading record…" />;
-  if (id && !person) {
+  if (isDetailRoute && isLive && detailLoading) return <Empty title="Loading record…" />;
+  if (isDetailRoute && !person) {
     return (
       <Empty
         title="Record not found"
@@ -490,28 +550,45 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
               </select>
             )}
             <span className="muted">
-              {collection.length} {supplier ? 'suppliers' : 'customers'}
+              {isLive && serverData ? serverData.total : collection.length} {supplier ? 'suppliers' : 'customers'}
             </span>
           </div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>{supplier ? 'Supplier' : 'Customer'}</th>
-                  <th>Contact</th>
-                  <th>{supplier ? 'Credit period' : 'Type'}</th>
-                  <th>Outstanding</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {collection
-                  .filter(
-                    (p) =>
-                      (p.name + p.phone).toLowerCase().includes(q.toLowerCase()) &&
-                      (supplier || type === 'All' || (p as Customer).type === type)
-                  )
-                  .map((p) => {
+
+          {listLoading && !serverData ? (
+            <div className="table-wrap" style={{padding: '32px', textAlign: 'center'}}>
+              <span className="muted">Loading records…</span>
+            </div>
+          ) : listError ? (
+            <div className="table-wrap" style={{padding: '32px', textAlign: 'center'}}>
+              <p className="error" style={{marginBottom: 12}}>{listError}</p>
+              <Btn secondary onClick={() => setRefreshIndex((r) => r + 1)}>Retry</Btn>
+            </div>
+          ) : !collection.length ? (
+            <Empty
+              title={q ? 'No matching records' : `No ${supplier ? 'suppliers' : 'customers'} found`}
+              text={q ? 'Try another search term or filter.' : `Click Add ${supplier ? 'supplier' : 'customer'} above to create the first record.`}
+            />
+          ) : (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>{supplier ? 'Supplier' : 'Customer'}</th>
+                    <th>Contact</th>
+                    <th>{supplier ? 'Credit period' : 'Type'}</th>
+                    <th>Outstanding</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {(isLive
+                    ? collection
+                    : collection.filter(
+                        (p) =>
+                          (p.name + p.phone).toLowerCase().includes(q.toLowerCase()) &&
+                          (supplier || type === 'All' || (p as Customer).type === type)
+                      )
+                  ).map((p) => {
                     const docs = supplier
                       ? state.purchases.filter((b) => b.supplierId === p.id)
                       : state.bills.filter((b) => b.customerId === p.id && b.kind !== 'Quotation');
@@ -546,33 +623,44 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
                       </tr>
                     );
                   })}
-              </tbody>
-            </table>
-          </div>
-          <div className="table-footer">
-            <span>
-              {isLive && serverData
-                ? `Showing ${collection.length} of ${serverData.total} records`
-                : `${collection.length} matching records`}
-            </span>
-            {isLive && serverData && serverData.totalPages > 1 && (
-              <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
-                <span className="muted" style={{marginRight: 8}}>
-                  Page {page} of {serverData.totalPages}
-                </span>
-                <Btn secondary disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
-                  Previous
-                </Btn>
-                <Btn secondary disabled={page >= serverData.totalPages} onClick={() => setPage((p) => p + 1)}>
-                  Next
-                </Btn>
-              </div>
-            )}
-          </div>
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {collection.length > 0 && (
+            <div className="table-footer">
+              <span>
+                {isLive && serverData
+                  ? `Showing ${collection.length} of ${serverData.total} records`
+                  : `${collection.length} matching records`}
+              </span>
+              {isLive && serverData && serverData.totalPages > 1 && (
+                <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
+                  <span className="muted" style={{marginRight: 8}}>
+                    Page {page} of {serverData.totalPages}
+                  </span>
+                  <Btn secondary disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+                    Previous
+                  </Btn>
+                  <Btn secondary disabled={page >= serverData.totalPages} onClick={() => setPage((p) => p + 1)}>
+                    Next
+                  </Btn>
+                </div>
+              )}
+            </div>
+          )}
         </Card>
       )}
 
-      {edit && <PersonForm supplier={supplier} existing={person} onClose={() => setEdit(false)} />}
+      {edit && (
+        <PersonForm
+          supplier={supplier}
+          existing={person || undefined}
+          onClose={() => setEdit(false)}
+          onSuccess={() => setRefreshIndex((r) => r + 1)}
+        />
+      )}
     </>
   );
 }

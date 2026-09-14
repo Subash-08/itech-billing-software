@@ -33,11 +33,12 @@ export function TemplateInvoice({
   const details = 'details' in (c || {}) ? (c as {details?: Record<string, string>}).details : undefined;
   const hsn = Object.values(
     bill.lines.reduce<
-      Record<string, {code: string; base: number; tax: number; rate: number; cgst: number; sgst: number; igst: number}>
+      Record<string, {code: string; base: number; tax: number; rate: number; cgst: number; sgst: number; igst: number; treatment?: string}>
     >((a, l) => {
-      const k = l.hsn + '-' + l.tax;
+      const treatment = l.taxTreatment || 'Taxable';
+      const k = treatment + '-' + l.hsn + '-' + l.tax;
       const x = lineTotal(l, bill.inclusive, bill.taxMode);
-      a[k] ??= {code: l.hsn, base: 0, tax: 0, rate: l.tax, cgst: 0, sgst: 0, igst: 0};
+      a[k] ??= {code: l.hsn, base: 0, tax: 0, rate: (treatment === 'Exempt' || treatment === 'NonGST') ? 0 : l.tax, cgst: 0, sgst: 0, igst: 0, treatment};
       a[k].base += x.base;
       a[k].tax += x.tax;
       a[k].cgst += x.cgst;
@@ -153,7 +154,7 @@ export function TemplateInvoice({
                     </>
                   ),
                   hsn: l.hsn,
-                  tax: l.tax + '%',
+                  tax: l.taxTreatment === 'Exempt' ? 'Exempt' : l.taxTreatment === 'NonGST' ? 'Non-GST' : l.tax + '%',
                   qty: l.qty + ' Nos',
                   rateIncl: money(bill.inclusive ? l.rate : l.rate * (1 + l.tax / 100)),
                   rateExcl: money(bill.inclusive ? l.rate / (1 + l.tax / 100) : l.rate),

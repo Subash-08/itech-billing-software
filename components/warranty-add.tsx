@@ -18,12 +18,32 @@ export default function WarrantyAdd({onClose}: {onClose: () => void}) {
   const [attachmentIds, setAttachmentIds] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [idempotencyKey] = useState(() => uid('WCOV'));
+  const [conflictError, setConflictError] = useState<string | null>(null);
+  const [reloadingInvoice, setReloadingInvoice] = useState(false);
 
   // Authoritative live invoice lines
   const [liveInvoice, setLiveInvoice] = useState<any>(null);
   const [loadingInvoice, setLoadingInvoice] = useState(false);
 
   const demoBill = state.bills.find((b) => b.id === invoiceId);
+
+  async function handleReloadInvoice() {
+    if (!invoiceId) return;
+    setReloadingInvoice(true);
+    try {
+      const data = await fetchInvoiceDetailApi(invoiceId);
+      if (data && data.invoice) {
+        setLiveInvoice(data.invoice);
+        setConflictError(null);
+        notify('Reloaded invoice details. Re-verify coverage eligibility and resubmit.');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'Failed to reload invoice.');
+    } finally {
+      setReloadingInvoice(false);
+    }
+  }
 
   useEffect(() => {
     if (isLive && invoiceId) {
@@ -125,11 +145,14 @@ export default function WarrantyAdd({onClose}: {onClose: () => void}) {
           startDate,
           notes: notes.trim(),
           attachmentIds,
-          idempotencyKey: uid('WCOV'),
+          idempotencyKey,
         });
         if (res.success) {
           notify('Warranty coverage created successfully.');
+          setConflictError(null);
           onClose();
+        } else if (res.status === 409 || (res.error && (res.error.toLowerCase().includes('already exists') || res.error.toLowerCase().includes('conflict')))) {
+          setConflictError(res.error || 'Active warranty coverage already exists or line state was updated concurrently.');
         } else {
           notify(res.error || 'Failed to create warranty coverage.');
         }
@@ -174,6 +197,38 @@ export default function WarrantyAdd({onClose}: {onClose: () => void}) {
     <Modal title="Add warranty coverage" onClose={onClose}>
       <form onSubmit={handleSubmit}>
         <div className="form-body stack">
+          {conflictError && (
+            <div
+              className="alert-conflict"
+              style={{
+                padding: '12px',
+                borderRadius: '6px',
+                backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                color: '#dc2626',
+                fontSize: '13px',
+              }}
+            >
+              <strong style={{display: 'block', marginBottom: '4px'}}>
+                Conflict Detected (409):
+              </strong>
+              <div>{conflictError}</div>
+              <div style={{marginTop: '8px', display: 'flex', gap: '8px'}}>
+                <Btn
+                  secondary
+                  type="button"
+                  onClick={handleReloadInvoice}
+                  disabled={reloadingInvoice}
+                >
+                  {reloadingInvoice ? 'Reloading…' : 'Reload invoice details'}
+                </Btn>
+                <Btn secondary type="button" onClick={() => setConflictError(null)}>
+                  Dismiss
+                </Btn>
+              </div>
+            </div>
+          )}
+
           <Field label="Original sales invoice *">
             <select
               required

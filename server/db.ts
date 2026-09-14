@@ -210,6 +210,11 @@ export async function ensureIndexes() {
         safeCreateIndex(db.collection('customerAdvances'), {tenantId: 1, customerId: 1, status: 1}),
 
         safeCreateIndex(db.collection('warranties'), {tenantId: 1, invoiceId: 1}),
+        safeCreateIndex(
+          db.collection('warranties'),
+          {tenantId: 1, invoiceId: 1, invoiceLineId: 1, serial: 1},
+          {unique: true, partialFilterExpression: {status: 'Active', serial: {$type: 'string', $gt: ''}}}
+        ),
         safeCreateIndex(db.collection('warranties'), {tenantId: 1, customerId: 1, status: 1}),
         safeCreateIndex(db.collection('warranties'), {tenantId: 1, productId: 1, status: 1}),
 

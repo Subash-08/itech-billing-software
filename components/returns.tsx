@@ -58,7 +58,11 @@ export default function Returns() {
       serials: [] as string[],
       amount: 0,
       reason: '',
-      disposition: returnType === 'Supplier' ? 'Return to supplier' : 'Restock',
+      disposition: returnType === 'Supplier' ? 'Return to supplier' : 'RestockSellable',
+      settlement: 'CustomerCredit' as 'CustomerCredit' | 'RefundNow',
+      refundAccount: 'Cash' as 'Cash' | 'Bank',
+      refundMethod: 'Cash' as 'Cash' | 'UPI' | 'BankTransfer',
+      refundReference: '',
       status: 'Completed',
       idempotencyKey: uid('IDEM'),
     };
@@ -102,8 +106,9 @@ export default function Returns() {
     (original as any)?.lines ||
     []
   ).map((l: any) => {
-    const lineId = l.lineId || l._id || l.id || l.productId;
+    const lineId = l.lineId || l.clientLineKey || l._id || l.id || l.productId;
     const name = l.description || l.productSnapshot?.name || l.name || 'Item';
+    const lineType = l.lineType || (l.productId ? 'Product' : 'Service');
     const totalQty = l.quantity ?? l.qty ?? 1;
     const returnedQty = l.returnedQuantity ?? 0;
     const returnable = Math.max(0, totalQty - returnedQty);
@@ -118,6 +123,7 @@ export default function Returns() {
       lineId,
       productId: l.productId,
       name,
+      lineType,
       totalQty,
       returnedQty,
       returnable,
@@ -134,7 +140,10 @@ export default function Returns() {
     ? balance(state, original)
     : 0;
   const returnTotalAmount = form?.amount || 0;
-  const maxRefundAllowed = Math.max(0, Math.round((returnTotalAmount - unpaidDue) * 100) / 100);
+  const creditToDue = Math.min(returnTotalAmount, unpaidDue);
+  const eligibleSurplusPaise = Math.max(0, Math.round((returnTotalAmount - creditToDue) * 100));
+  const eligibleSurplus = eligibleSurplusPaise / 100;
+  const maxRefundAllowed = eligibleSurplus;
 
   function selectCustomerLine(lineId: string) {
     const found = customerLines.find((l: any) => l.lineId === lineId);
@@ -147,6 +156,7 @@ export default function Returns() {
       productId: found.productId,
       qty,
       amount,
+      disposition: found.lineType !== 'Product' ? 'NoStock' : 'RestockSellable',
       serials: [],
     });
     setRefund(0);
@@ -194,22 +204,40 @@ export default function Returns() {
         }
         setBusy(true);
         try {
-          const res = await recordCustomerReturnApi({
+          const isProduct = selectedCustomerLine?.lineType === 'Product';
+          const stockDisposition = !isProduct
+            ? 'NoStock'
+            : (form.disposition === 'Quarantine' || form.disposition === 'Defective')
+              ? 'Quarantine'
+              : 'RestockSellable';
+
+          const settlementMode = (eligibleSurplus > 0 && form.settlement === 'RefundNow') ? 'RefundNow' : 'CustomerCredit';
+
+          const refundComponents = settlementMode === 'RefundNow'
+            ? [
+                {
+                  account: form.refundAccount as 'Cash' | 'Bank',
+                  method: form.refundAccount === 'Cash' ? 'Cash' : (form.refundMethod as 'UPI' | 'BankTransfer'),
+                  amountPaise: eligibleSurplusPaise,
+                  reference: form.refundReference?.trim() || '',
+                },
+              ]
+            : [];
+
+          const payload = {
             invoiceId: form.reference,
-            lines: [
-              {
-                invoiceLineId: form.invoiceLineId,
-                productId: form.productId,
-                quantity: form.qty,
-                serials: form.serials.length ? form.serials : undefined,
-                stockCondition: form.disposition === 'Restock' ? 'sellable' : 'defective',
-              },
-            ],
-            refundPaise: Math.round(refund * 100),
-            refundAccount: refund > 0 ? account : undefined,
+            invoiceLineId: form.invoiceLineId,
+            quantity: form.qty,
+            serials: form.serials || [],
+            date: form.date || TODAY,
             reason: form.reason.trim(),
+            stockDisposition,
+            settlement: settlementMode,
+            refundComponents,
             idempotencyKey: form.idempotencyKey,
-          });
+          };
+
+          const res = await recordCustomerReturnApi(payload);
           if (res.success) {
             notify('Customer return recorded successfully.');
             setForm(null);
@@ -535,22 +563,30 @@ export default function Returns() {
                 </Field>
 
                 <Field label="Stock condition / disposition">
-                  <select
-                    value={form.disposition}
-                    onChange={(e) => setForm({...form, disposition: e.target.value})}
-                  >
-                    {form.type === 'Customer' ? (
-                      <>
-                        <option value="Restock">Restock (Sellable stock)</option>
-                        <option value="Quarantine damaged item">Defective return (Quarantine)</option>
-                      </>
+                  {form.type === 'Customer' ? (
+                    selectedCustomerLine?.lineType !== 'Product' ? (
+                      <input
+                        readOnly
+                        value="No stock adjustment (Service / charge line)"
+                      />
                     ) : (
-                      <>
-                        <option value="Return to supplier">Return to supplier</option>
-                        <option value="Defective return">Defective return</option>
-                      </>
-                    )}
-                  </select>
+                      <select
+                        value={form.disposition}
+                        onChange={(e) => setForm({...form, disposition: e.target.value})}
+                      >
+                        <option value="RestockSellable">Restock (Sellable stock)</option>
+                        <option value="Quarantine">Defective return (Quarantine)</option>
+                      </select>
+                    )
+                  ) : (
+                    <select
+                      value={form.disposition}
+                      onChange={(e) => setForm({...form, disposition: e.target.value})}
+                    >
+                      <option value="Return to supplier">Return to supplier</option>
+                      <option value="Defective return">Defective return</option>
+                    </select>
+                  )}
                 </Field>
 
                 <Field label="Reason *">
@@ -614,46 +650,85 @@ export default function Returns() {
 
               {/* Settlement Equation Notice */}
               {form.type === 'Customer' && form.reference && (
-                <div className="notice">
-                  <strong>Settlement policy:</strong> Due-first settlement.
+                <div className="notice" style={{lineHeight: 1.6}}>
+                  <strong>Settlement policy (Due-first):</strong>
                   <br />
-                  Invoice unpaid due: {money(unpaidDue)}. Return credit ({money(returnTotalAmount)}) offsets due first ({money(Math.min(returnTotalAmount, unpaidDue))}).
-                  {maxRefundAllowed > 0 ? (
-                    <>
-                      <br />
-                      Surplus paid amount eligible for direct refund or advance credit: <strong>{money(maxRefundAllowed)}</strong>.
-                    </>
+                  • Total return credit: <strong>{money(returnTotalAmount)}</strong>
+                  <br />
+                  • Applied to offset unpaid invoice due: <strong>{money(creditToDue)}</strong> (Original unpaid due: {money(unpaidDue)})
+                  <br />
+                  {eligibleSurplus > 0 ? (
+                    <span>
+                      • Eligible surplus paid by customer: <strong style={{color: 'var(--success, #16a34a)'}}>{money(eligibleSurplus)}</strong>
+                    </span>
                   ) : (
-                    <>
-                      <br />
-                      No surplus paid amount. Remaining invoice due after return: {money(Math.max(0, unpaidDue - returnTotalAmount))}.
-                    </>
+                    <span>
+                      • Entire return credit offsets unpaid due. Remaining invoice due after return: <strong>{money(Math.max(0, unpaidDue - returnTotalAmount))}</strong>
+                    </span>
                   )}
                 </div>
               )}
 
-              {/* Direct Cash / Bank refund input if surplus paid amount exists */}
-              {form.type === 'Customer' && maxRefundAllowed > 0 && (
-                <div className="form-grid">
-                  <Field label={`Direct refund amount (Max ${money(maxRefundAllowed)})`}>
-                    <input
-                      type="number"
-                      min="0"
-                      max={maxRefundAllowed}
-                      step="0.01"
-                      value={refund}
-                      onChange={(e) => setRefund(Math.min(maxRefundAllowed, Math.max(0, +e.target.value)))}
-                    />
-                  </Field>
-                  {refund > 0 && (
-                    <Field label="Refund payment account">
-                      <select value={account} onChange={(e) => setAccount(e.target.value)}>
-                        <option value="Cash">Cash in hand</option>
-                        <option value="Bank account">Bank account</option>
+              {/* Settlement Option for Surplus Paid Amount */}
+              {form.type === 'Customer' && (
+                eligibleSurplus > 0 ? (
+                  <div className="stack-sm">
+                    <Field label="Surplus Settlement Option *">
+                      <select
+                        value={form.settlement}
+                        onChange={(e) => setForm({...form, settlement: e.target.value as any})}
+                      >
+                        <option value="CustomerCredit">Customer credit (Hold {money(eligibleSurplus)} as advance credit note)</option>
+                        <option value="RefundNow">Refund now (Disburse {money(eligibleSurplus)} immediately)</option>
                       </select>
                     </Field>
-                  )}
-                </div>
+
+                    {form.settlement === 'RefundNow' && (
+                      <div className="form-grid">
+                        <Field label="Refund Account *">
+                          <select
+                            value={form.refundAccount}
+                            onChange={(e) => {
+                              const acc = e.target.value as 'Cash' | 'Bank';
+                              setForm({
+                                ...form,
+                                refundAccount: acc,
+                                refundMethod: acc === 'Cash' ? 'Cash' : 'BankTransfer',
+                              });
+                            }}
+                          >
+                            <option value="Cash">Cash in hand</option>
+                            <option value="Bank">Bank account</option>
+                          </select>
+                        </Field>
+
+                        {form.refundAccount === 'Bank' && (
+                          <Field label="Payment Method *">
+                            <select
+                              value={form.refundMethod}
+                              onChange={(e) => setForm({...form, refundMethod: e.target.value as any})}
+                            >
+                              <option value="BankTransfer">Bank transfer / NEFT / IMPS</option>
+                              <option value="UPI">UPI</option>
+                            </select>
+                          </Field>
+                        )}
+
+                        <Field label="Payment Reference / UTR">
+                          <input
+                            placeholder="Optional transaction reference"
+                            value={form.refundReference}
+                            onChange={(e) => setForm({...form, refundReference: e.target.value})}
+                          />
+                        </Field>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-secondary" style={{fontSize: '13px'}}>
+                    Settlement: Automatic CustomerCredit offset against invoice due balance. No cash payout.
+                  </div>
+                )
               )}
 
               {form.type === 'Supplier' && original && (

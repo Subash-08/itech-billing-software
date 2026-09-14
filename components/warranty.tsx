@@ -15,6 +15,7 @@ export default function WarrantyPage() {
     notify,
     isLive,
     fetchWarrantiesPage,
+    fetchWarrantyDetailApi,
     claimWarrantyApi,
   } = useStore();
 
@@ -33,6 +34,9 @@ export default function WarrantyPage() {
   const [claimAttachmentIds, setClaimAttachmentIds] = useState<string[]>([]);
   const [uploadingPhotos, setUploadingPhotos] = useState(false);
   const [claimBusy, setClaimBusy] = useState(false);
+  const [claimIdempotencyKey, setClaimIdempotencyKey] = useState('');
+  const [conflictError, setConflictError] = useState<string | null>(null);
+  const [reloadingWarranty, setReloadingWarranty] = useState(false);
 
   const loadLiveWarranties = useCallback(async () => {
     if (!isLive) return;
@@ -80,6 +84,25 @@ export default function WarrantyPage() {
     setClaimNotes('');
     setReplacementSerial('');
     setClaimAttachmentIds([]);
+    setClaimIdempotencyKey(uid('WCL'));
+    setConflictError(null);
+  }
+
+  async function handleReloadWarranty() {
+    if (!form) return;
+    setReloadingWarranty(true);
+    try {
+      const res = await fetchWarrantyDetailApi(form._id || form.id);
+      if (res && res.warranty) {
+        setForm(res.warranty);
+        setConflictError(null);
+        notify('Loaded latest warranty details. Please review and explicitly resubmit.');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'Failed to reload warranty record.');
+    } finally {
+      setReloadingWarranty(false);
+    }
   }
 
   async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -135,12 +158,15 @@ export default function WarrantyPage() {
           notes: claimNotes.trim() || undefined,
           attachmentIds: claimAttachmentIds.length ? claimAttachmentIds : undefined,
           expectedVersion: form.version ?? 1,
-          idempotencyKey: uid('WCL'),
+          idempotencyKey: claimIdempotencyKey || uid('WCL'),
         });
         if (res.success) {
           notify(`Warranty claim recorded as ${claimAction}.`);
           setForm(null);
+          setConflictError(null);
           loadLiveWarranties();
+        } else if (res.status === 409 || (res.error && res.error.toLowerCase().includes('version mismatch'))) {
+          setConflictError(res.error || 'Warranty record was updated concurrently. Reload the latest state before submitting.');
         } else {
           notify(res.error || 'Failed to submit warranty claim.');
         }
@@ -279,6 +305,38 @@ export default function WarrantyPage() {
                 <br />
                 Invoice: {form.invoiceNumber || form.invoiceId} · Coverage until {dateLabel(form.endDate || form.end)}
               </div>
+
+              {conflictError && (
+                <div
+                  className="alert-conflict"
+                  style={{
+                    padding: '12px',
+                    borderRadius: '6px',
+                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    color: '#dc2626',
+                    fontSize: '13px',
+                  }}
+                >
+                  <strong style={{display: 'block', marginBottom: '4px'}}>
+                    Version Conflict (409):
+                  </strong>
+                  <div>{conflictError}</div>
+                  <div style={{marginTop: '8px', display: 'flex', gap: '8px'}}>
+                    <Btn
+                      secondary
+                      type="button"
+                      onClick={handleReloadWarranty}
+                      disabled={reloadingWarranty}
+                    >
+                      {reloadingWarranty ? 'Reloading…' : 'Reload latest warranty record'}
+                    </Btn>
+                    <Btn secondary type="button" onClick={() => setConflictError(null)}>
+                      Dismiss
+                    </Btn>
+                  </div>
+                </div>
+              )}
 
               <div className="form-grid">
                 <Field label="Claim action *">

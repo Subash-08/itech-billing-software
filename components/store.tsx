@@ -167,8 +167,9 @@ type Store = {
   recordCustomerReturnApi: (payload: any) => Promise<{success: boolean; returnDoc?: any; error?: string}>;
   fetchCustomerReturnsPage: (query?: any) => Promise<any>;
   fetchWarrantiesPage: (query?: any) => Promise<any>;
-  claimWarrantyApi: (id: string, payload: any) => Promise<{success: boolean; error?: string}>;
-  createWarrantyCoverageApi: (payload: any) => Promise<{success: boolean; warrantyId?: string; error?: string}>;
+  claimWarrantyApi: (id: string, payload: any) => Promise<{success: boolean; status?: number; error?: string}>;
+  createWarrantyCoverageApi: (payload: any) => Promise<{success: boolean; status?: number; warrantyId?: string; error?: string}>;
+  fetchWarrantyDetailApi: (id: string) => Promise<{warranty: any}>;
 };
 
 const Context = createContext<Store | null>(null);
@@ -2181,7 +2182,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to claim warranty.');
+      if (!res.ok) return {success: false, status: res.status, error: data.error || 'Failed to claim warranty.'};
       await refreshMasterData();
       return {success: true};
     } catch (err: any) {
@@ -2201,12 +2202,19 @@ export function StoreProvider({children}: {children: ReactNode}) {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to create warranty coverage.');
+      if (!res.ok) return {success: false, status: res.status, error: data.error || 'Failed to create warranty coverage.'};
       await refreshMasterData();
       return {success: true, warrantyId: data.warrantyId};
     } catch (err: any) {
       return {success: false, error: err.message};
     }
+  }
+
+  async function fetchWarrantyDetailApi(id: string) {
+    const res = await fetch(`/api/sales/warranties/${id}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load warranty.');
+    return data;
   }
 
   return (
@@ -2314,6 +2322,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
         fetchWarrantiesPage,
         claimWarrantyApi,
         createWarrantyCoverageApi,
+        fetchWarrantyDetailApi,
       }}
     >
       {children}
