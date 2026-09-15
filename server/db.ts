@@ -223,6 +223,7 @@ export async function ensureIndexes() {
         safeCreateIndex(db.collection('stockReservations'), {tenantId: 1, expiresAt: 1, status: 1}),
         safeCreateIndex(db.collection('stockMovements'), {tenantId: 1, reservationId: 1}),
         safeCreateIndex(db.collection('serialUnits'), {tenantId: 1, reservationId: 1}),
+        safeCreateIndex(db.collection('tenantSerialGates'), {tenantId: 1}, {unique: true}),
       ]);
     })().catch(e => {
       globalDb.itechIndexes = undefined;

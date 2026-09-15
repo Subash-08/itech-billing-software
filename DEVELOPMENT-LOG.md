@@ -248,3 +248,50 @@ All six defect categories and five adjustments identified in `PHASE4-COMPLETION-
   - Phase 3 & 3.5: Live
   - Phase 4: **Live** (authoritative master verified by 11 acceptance chains + 25 isolation scenarios)
   - Phase 5: **Pending** (untouched)
+
+## 2026-09-15 — Phase 4 Live Browser Verification & Supplier Workflow Invariants Verified
+
+1. **Browser Acceptance Evidence & Verification Chains**:
+   - **Chain A (Signup, Admin Approval, Live Header, Opening Setup Finalization & Customer Directory)**:
+     - Automated CDP signup and approval verified in live Next.js UI (`http://127.0.0.1:3000`).
+     - Awaiting approval status confirmed and screenshot captured: `chain_a_awaiting_approval.png`.
+     - Live header authenticated state confirmed: `chain_a_live_header.png`.
+     - Opening setup finalized and locked in live UI with Cash ₹25,000 (2,500,000 paise), Bank ₹50,000 (5,000,000 paise), Cutoff 2026-09-10. Screenshot captured: `chain_a_opening_finalized.png`.
+     - Database ledger balances confirmed: `tenantAccountBalances` Cash = ₹25,000, Bank = ₹50,000.
+     - Customer table view confirmed: `chain_a_customers_table.png`.
+
+2. **Prioritized Supplier Workflow & Financial Invariant Verification**:
+   - Executed focused test `tests/focused-supplier-scenario.test.mjs` verifying exact end-to-end user scenario:
+     1. Unpaid purchase bill: 3 units @ ₹60,000 = ₹180,000 total (due: ₹180,000).
+     2. Goods receipt: Received all 3 serial units (SN-001, SN-002, SN-003).
+     3. Customer sale: Sold 1 unit (SN-001) for ₹75,000 Cash.
+     4. **Invariant 1 Verified**: Supplier liability is STILL ₹180,000 after customer sale (customer sales never reduce supplier liability).
+     5. Supplier return: Returned 1 unsold unit (SN-002) to supplier TechSource Wholesale.
+     6. **Invariant 2 Verified**: Pre-acceptance supplier liability is STILL ₹180,000 (1 sold, 1 returned, 1 in stock).
+     7. Credit note acceptance: Accepted ₹60,000 credit note (prefilled reduction) with `allocateToBillDue: true`.
+     8. **Invariant 3 Verified**:
+        - Supplier remaining due: exactly ₹120,000 (reduced by ₹60,000).
+        - Stock on hand: 1 available (SN-003).
+        - Cash balance: ₹100,000 (opening ₹25k + sale ₹75k; ZERO change from supplier credit note).
+        - Bank balance: ₹50,000 (ZERO change from supplier credit note).
+        - Supplier account movements: ₹0 (NO money created or moved by supplier credit note).
+     9. Settle remainder: Returned 2nd unsold unit (SN-003), accepted ₹60,000 credit -> due became ₹60,000. Paid remaining ₹60,000 from Cash -> due became ₹0, status became Paid, Cash balance updated to ₹40,000.
+
+3. **Defects Diagnosed & Corrected**:
+   - **Cross-Module Serial Normalization**: `server/sales-service.ts` line 588 was updated to match serials flexibly across `serialNormalized` (normalized lowercase), uppercase (`raw.toUpperCase()`), and `serialOriginal`, bridging the gap between goods receipt storage and sales issue.
+   - **Operational Date Validation**: Confirmed operational posting fence strictly requires current business day in Kolkata (`todayInKolkata()`).
+
+4. **Automated Verification Suite Execution (100% Passing)**:
+   - `npm run typecheck`: Passed (0 errors).
+   - `npm test`: Passed (26/26).
+   - `npm run test:phase2`: Passed (27/27).
+   - `npm run test:phase3`: Passed (50/50).
+   - `node tests/phase4-corrections.test.mjs`: Passed (10/10 acceptance chains).
+   - `node tests/focused-supplier-scenario.test.mjs`: Passed (100% verified across all invariants).
+   - `npm run build`: Production Next.js build succeeded (51 static/dynamic routes compiled cleanly).
+
+5. **Tenant Isolation & Scope Guarantees**:
+   - User company `test 1` (`test1@gmail.com`, `95687d2f-0b5f-4aad-be5c-947d589b7cc4`) was completely untouched.
+   - All tests executed against dynamically generated UUID test tenants and completely torn down upon exit.
+   - Phase 5 remains untouched.
+

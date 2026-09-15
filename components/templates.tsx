@@ -3,7 +3,7 @@ import {amountWords} from '@/lib/amount-words';
 import {useState} from 'react';
 import Link from 'next/link';
 import {Copy, Pencil, Printer, ArrowUp, ArrowDown, Check, FileText, Plus} from 'lucide-react';
-import {InvoiceTemplate, templateFields} from '@/lib/extensions';
+import {InvoiceTemplate, templateFields, extensionSeed} from '@/lib/extensions';
 import {Bill, uid, money, totals, lineTotal, dateLabel, paid, balance} from '@/lib/domain';
 import {useStore} from './store';
 import {PageHead, Card, Btn, Modal, Field, Badge} from './ui';
@@ -24,6 +24,7 @@ export function TemplateInvoice({
     template ||
     state.templates.find((t) => t.id === (templateId || bill.templateId || state.defaultTemplateId)) ||
     state.templates[0];
+  if (!t) return <div className="notice">Select a saved invoice template to preview this document.</div>;
   const f = t.fields;
   const s = bill.shopSnapshot || state.settings;
   const c = supplier || bill.customerSnapshot || state.customers.find((c) => c.id === bill.customerId);
@@ -389,6 +390,7 @@ export default function Templates() {
     setState,
     notify,
     isLive,
+    updateLogoApi,
     saveTemplateApi,
     setDefaultTemplateApi,
     archiveTemplateApi,
@@ -399,6 +401,7 @@ export default function Templates() {
   const [sampleId, setSampleId] = useState(state.bills[0]?.id || '');
   const [print, setPrint] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [logoBusy, setLogoBusy] = useState(false);
 
   const sample = state.bills.find((b) => b.id === sampleId) || state.bills[0];
 
@@ -437,23 +440,8 @@ export default function Templates() {
   }
 
   function handleNewTemplate() {
-    const base = state.templates[0] || {
-      name: 'Custom invoice',
-      title: 'Tax Invoice',
-      fields: {},
-      columns: [],
-      paper: 'A4',
-      orientation: 'portrait',
-      fontSize: 11,
-      accent: '#6246e5',
-      borders: true,
-      striped: false,
-      logoPosition: 'left',
-      footer: '',
-      isDefault: false,
-      status: 'Active',
-      revision: 1,
-    };
+    // An unsaved starter layout is editor input, never a live template identity.
+    const base = state.templates.find(t => t.status !== 'Archived') || extensionSeed.templates[0];
     const t: InvoiceTemplate = {
       ...structuredClone(base),
       id: '',
@@ -515,18 +503,18 @@ export default function Templates() {
                   <input
                     type="file"
                     accept="image/*"
-                    onChange={(e) => {
+                    disabled={logoBusy || saving}
+                    onChange={async (e) => {
                       const file = e.target.files?.[0];
                       if (!file) return;
-                      if (file.size > 2 * 1024 * 1024) {
-                        notify('Choose a logo under 2 MB.');
-                        return;
-                      }
-                      const logo = URL.createObjectURL(file);
-                      setState((s) => ({...s, settings: {...s.settings, logo}}));
+                      setLogoBusy(true);
+                      await updateLogoApi(file);
+                      setLogoBusy(false);
+                      e.target.value = '';
                     }}
                   />
                 </Field>
+                {logoBusy && <p className="muted" style={{fontSize: '0.85rem'}}>Saving logo to company settings…</p>}
                 {state.settings.logo && (
                   <>
                     <img
@@ -534,7 +522,15 @@ export default function Templates() {
                       alt="Company logo"
                       style={{maxWidth: 120, maxHeight: 80, objectFit: 'contain'}}
                     />
-                    <Btn secondary onClick={() => setState((s) => ({...s, settings: {...s.settings, logo: ''}}))}>
+                    <Btn
+                      secondary
+                      disabled={logoBusy || saving}
+                      onClick={async () => {
+                        setLogoBusy(true);
+                        await updateLogoApi(null);
+                        setLogoBusy(false);
+                      }}
+                    >
                       Remove logo
                     </Btn>
                   </>
@@ -724,6 +720,20 @@ export default function Templates() {
             {sample && <TemplateInvoice bill={{...sample, shopSnapshot: state.settings}} template={editing} />}
           </div>
         </div>
+      ) : state.templates.length === 0 ? (
+        <Card title="Invoice templates">
+          <div style={{textAlign: 'center', padding: '3rem 1.5rem'}}>
+            <FileText size={48} style={{margin: '0 auto 1rem', color: '#9ca3af'}} />
+            <h3 style={{fontSize: '1.1rem', fontWeight: 600, marginBottom: '0.5rem'}}>No invoice templates saved yet</h3>
+            <p className="muted" style={{marginBottom: '1.5rem', maxWidth: '420px', marginInline: 'auto'}}>
+              Create your company&apos;s first invoice layout to start issuing invoices with custom columns, header fields and branding.
+            </p>
+            <Btn onClick={handleNewTemplate}>
+              <Plus size={16} />
+              Create first template
+            </Btn>
+          </div>
+        </Card>
       ) : (
         <div className="grid-3">
           {state.templates.map((t) => (

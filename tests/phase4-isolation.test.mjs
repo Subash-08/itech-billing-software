@@ -170,6 +170,7 @@ try {
       name: 'Standard Tax Invoice',
       isDefault: true,
       currentRevision: 1,
+      status: 'Active',
       createdAt: new Date(),
     });
     tracked.templates.push(templateId);
@@ -181,7 +182,10 @@ try {
       templateId,
       revision: 1,
       name: 'Revision 1',
-      snapshot: {columns: ['description', 'hsn', 'quantity', 'rate', 'tax', 'total']},
+      snapshot: {
+        columns: ['description', 'hsn', 'quantity', 'rate', 'tax', 'total'],
+        fields: {logo: true, shopName: true, number: true, date: true},
+      },
       createdAt: new Date(),
     });
     tracked.templateRevisions.push(revisionId);

@@ -220,13 +220,16 @@ All six defect categories and five adjustments from `PHASE4-COMPLETION-REVIEW-AN
 ### Test Execution & Gate Verification:
 | Test Suite | Result | Status |
 |------------|--------|--------|
+| `tests/focused-supplier-scenario.test.mjs` (Prioritized Supplier Workflow) | Passed (100% Invariants) | Pass |
 | `tests/phase4-corrections.test.mjs` (10 Acceptance Chains + 8b) | 11 / 11 Passed | Pass (100%) |
 | `tests/phase4-isolation.test.mjs` (25 Scenarios) | 25 / 25 Passed | Pass (100%) |
 | `tests/phase35-isolation.test.mjs` (32 Scenarios) | 32 / 32 Passed | Pass (100%) |
+| `npm run test:phase3` (50 Scenarios) | 50 / 50 Passed | Pass (100%) |
 | `npm run test:phase2` (27 Scenarios) | 27 / 27 Passed | Pass (100%) |
 | `npm test` (`tests/domain.test.mjs` - 26 Tests) | 26 / 26 Passed | Pass (100%) |
 | `npm run typecheck` (`tsc --noEmit`) | 0 Errors | Pass |
-| `npm run build` (Next.js Production Bundle) | Exit 0 | Pass |
+| `npm run build` (Next.js Production Bundle) | Exit 0 (51 routes) | Pass |
+| Live Browser Walkthrough (Chain A Signup, Header, Opening Finalize & Customers) | Verified (4 Screenshots) | Pass |
 
 ### Verified File Fingerprints (SHA-256):
 - `server/stock-reservations.ts`: `8ea34c1f89ee43b85091312db923aade5f59957eeeb3b485848f76c43ab52945`
@@ -238,6 +241,7 @@ All six defect categories and five adjustments from `PHASE4-COMPLETION-REVIEW-AN
 - `server/sales-service.ts`: `9c27705149b1a8a14582beaa0a8d41278c083ea47b0a1d59c4f8228e75f1ccc0`
 - `tests/phase4-corrections.test.mjs`: `d22139f77d523ff88a987e9e91cd5e593edd77bb2b71056a339f0a21af518287`
 - `tests/phase4-isolation.test.mjs`: `06748f5a5a36b69a637cf5bee4ea4505618a8743dd5c8f44729b70be45c71407`
+- `tests/focused-supplier-scenario.test.mjs`: `00445d4f3b7d7bc341d3fa54e58b1a8d0526715f4e42cbfe7b3a0e1b6fbb7257`
 
 ### Module Status:
 - Phase 1 & 2 (Master data, settings, auth, inventory): Live

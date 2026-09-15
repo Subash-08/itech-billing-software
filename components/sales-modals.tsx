@@ -1,6 +1,6 @@
 'use client';
 
-import {useState, useEffect} from 'react';
+import {useState, useEffect, useRef} from 'react';
 import {Modal, Field, Btn, Badge} from './ui';
 import {money, TODAY, uid, Line} from '@/lib/domain';
 import {useStore} from './store';
@@ -312,6 +312,10 @@ export function StockAllocationModal({
   onSave: (allocations: any[], serials: string[]) => void;
 }) {
   const {fetchInventoryLotsApi, fetchReservationsPage, fetchInventorySerialsApi, notify} = useStore();
+  const api = useRef({fetchInventoryLotsApi, fetchReservationsPage, fetchInventorySerialsApi, notify});
+  api.current = {fetchInventoryLotsApi, fetchReservationsPage, fetchInventorySerialsApi, notify};
+  const [loadError, setLoadError] = useState('');
+  const [reload, setReload] = useState(0);
   const [lots, setLots] = useState<any[]>([]);
   const [reservations, setReservations] = useState<any[]>([]);
   const [serialsInStock, setSerialsInStock] = useState<any[]>([]);
@@ -334,26 +338,37 @@ export function StockAllocationModal({
 
   useEffect(() => {
     if (!isOpen || !line.productId) return;
-    setLoading(true);
+    let active = true;
+    setLoading(true); setLoadError('');
+    // Paginate rather than silently considering only the first inventory page.
+    async function pages(fetcher: (query: any) => Promise<any>, query: any, alias: string) {
+      const rows: any[] = [];
+      for (let page = 1; page <= 20; page++) {
+        const result = await fetcher({...query, page, limit: 100});
+        rows.push(...(result.records ?? result[alias] ?? []));
+        if (page >= (result.totalPages ?? 1)) return rows;
+        if (!active) return [];
+      }
+      throw new Error('This product has more than 2,000 stock records. A paginated stock search is required; no partial selection was loaded.');
+    }
     Promise.all([
-      fetchInventoryLotsApi({productId: line.productId}),
-      fetchReservationsPage({customerId: customerId || undefined, productId: line.productId, status: 'Active'}),
-      fetchInventorySerialsApi({productId: line.productId, status: 'InStock'}),
-    ])
-      .then(([lotRes, resRes, serRes]: any) => {
-        const availableLots = (lotRes?.lots || []).filter((l: any) => (l.quantitySellable || 0) > 0);
-        setLots(availableLots);
-        setReservations(resRes?.records || []);
-        setSerialsInStock(serRes?.serials || []);
-      })
-      .catch(() => notify('Could not load inventory stock for product.'))
-      .finally(() => setLoading(false));
-  }, [isOpen, line.productId, customerId, fetchInventoryLotsApi, fetchReservationsPage, fetchInventorySerialsApi, notify]);
+      pages(api.current.fetchInventoryLotsApi, {productId: line.productId}, 'lots'),
+      customerId ? pages(api.current.fetchReservationsPage, {customerId, productId: line.productId, status: 'Active'}, 'records') : Promise.resolve([]),
+      pages(api.current.fetchInventorySerialsApi, {productId: line.productId, status: 'InStock'}, 'serials'),
+    ]).then(([lotRows, holds, serialRows]) => {
+      if (!active) return;
+      setLots(lotRows.filter(l => l.quantitySellable > 0).sort((a, b) =>
+        String(a.receivedDate ?? '').localeCompare(String(b.receivedDate ?? '')) || String(a._id ?? a.id).localeCompare(String(b._id ?? b.id))));
+      setReservations(holds); setSerialsInStock(serialRows);
+    }).catch(error => { if (active) setLoadError(error instanceof Error ? error.message : 'Unable to load stock.'); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [isOpen, line.productId, customerId, reload]);
 
   if (!isOpen) return null;
 
   const totalAllocated = allocRows.reduce((sum, r) => sum + (r.quantity || 0), 0);
-  const isSerialTracked = serialsInStock.length > 0 || (line as any).isSerialTracked;
+  const isSerialTracked = !!((line as any).isSerialTracked || lots.some(l => l.product?.isSerialTracked) || serialsInStock.length || reservations.some(r => r.serials?.length));
 
   const addAllocationRow = () => {
     if (!lots.length && !reservations.length) {
@@ -361,7 +376,9 @@ export function StockAllocationModal({
       return;
     }
     const defaultLot = lots[0]?._id || lots[0]?.id || '';
-    setAllocRows((rows) => [...rows, {lotId: defaultLot, quantity: 1, serials: []}]);
+    const hold = !defaultLot ? reservations.find(r => (r.remainingQuantity ?? r.qty) > 0) : undefined;
+    setAllocRows((rows) => [...rows, {lotId: defaultLot || hold?.lotId || '',
+      reservationId: hold ? hold._id || hold.id : undefined, quantity: 1, serials: []}]);
   };
 
   const autoAllocate = () => {
@@ -373,7 +390,9 @@ export function StockAllocationModal({
     const newRows: Array<{lotId: string; reservationId?: string; quantity: number; serials: string[]}> = [];
     for (const lot of lots) {
       if (remaining <= 0) break;
-      const take = Math.min(remaining, lot.quantitySellable || remaining);
+      const availableSerials = serialsInStock.filter(s => s.lotId === (lot._id || lot.id));
+      const take = Math.min(remaining, lot.quantitySellable ?? 0, isSerialTracked ? availableSerials.length : remaining);
+      if (take <= 0) continue;
       const lotSerials = isSerialTracked
         ? serialsInStock.filter((s) => (s.lotId === lot._id || s.lotId === lot.id)).slice(0, take).map((s) => s.serial || s.serialOriginal)
         : [];
@@ -389,11 +408,20 @@ export function StockAllocationModal({
   };
 
   const handleSave = () => {
-    if (allocRows.length > 0 && totalAllocated !== qtyRequired) {
+    if (loading || loadError) { notify(loadError || 'Wait for stock to load.'); return; }
+    if (totalAllocated !== qtyRequired) {
       notify(`Allocated quantity (${totalAllocated}) must equal line quantity (${qtyRequired}).`);
       return;
     }
+    const used = new Map<string, number>();
     for (const r of allocRows) {
+      if (!Number.isInteger(r.quantity) || r.quantity <= 0) { notify('Enter a positive whole quantity.'); return; }
+      const source = r.reservationId ? reservations.find(h => (h._id || h.id) === r.reservationId) : lots.find(l => (l._id || l.id) === r.lotId);
+      const capacity = r.reservationId ? source?.remainingQuantity ?? source?.qty ?? 0 : source?.quantitySellable ?? 0;
+      const sourceKey = r.reservationId ? `hold:${r.reservationId}` : `lot:${r.lotId}`;
+      used.set(sourceKey, (used.get(sourceKey) ?? 0) + r.quantity);
+      if (!source || used.get(sourceKey)! > capacity) { notify('Selected quantity exceeds available stock. Reload the picker.'); return; }
+
       if (!r.lotId) {
         notify('Each allocation line must specify a stock lot.');
         return;
@@ -404,12 +432,16 @@ export function StockAllocationModal({
       }
     }
     const allSerials = allocRows.flatMap((r) => r.serials);
+    const normalized = allSerials.map(s => s.replace(/[^a-zA-Z0-9]/g, '').toLowerCase());
+    if (new Set(normalized).size !== normalized.length || normalized.some(s => !s)) {
+      notify('Select each serial only once.'); return;
+    }
     onSave(allocRows, allSerials);
     onClose();
   };
 
   return (
-    <Modal title={`Stock Allocations · ${line.name}`} onClose={onClose} wide>
+    <Modal title={`Select stock · ${line.name}`} onClose={onClose} wide>
       <div className="form-body stack">
         <div
           style={{
@@ -433,6 +465,7 @@ export function StockAllocationModal({
           </div>
         </div>
 
+        {loadError && <div role="alert" className="notice">{loadError} <Btn secondary onClick={() => setReload(n => n + 1)}>Retry stock loading</Btn></div>}
         {loading ? (
           <p>Loading available lots and reservations…</p>
         ) : (
@@ -522,26 +555,26 @@ export function StockAllocationModal({
                             onChange={(e) => {
                               const q = parseInt(e.target.value, 10) || 1;
                               setAllocRows((rs) =>
-                                rs.map((r, i) => (i === idx ? {...r, quantity: q} : r))
+                                rs.map((r, i) => (i === idx ? {...r, quantity: q, serials: []} : r))
                               );
                             }}
                           />
                         </td>
                         {isSerialTracked && (
                           <td>
-                            <input
-                              placeholder="Comma-separated serial numbers"
-                              value={row.serials.join(', ')}
-                              onChange={(e) => {
-                                const list = e.target.value
-                                  .split(/[\n,]+/)
-                                  .map((s) => s.trim())
-                                  .filter(Boolean);
-                                setAllocRows((rs) =>
-                                  rs.map((r, i) => (i === idx ? {...r, serials: list} : r))
-                                );
-                              }}
-                            />
+                            <div className="stack">
+                              {(row.reservationId
+                                ? (reservations.find(h => (h._id || h.id) === row.reservationId)?.serials ?? [])
+                                : serialsInStock.filter(s => s.lotId === row.lotId).map(s => s.serialOriginal ?? s.serial ?? s.serialNormalized)
+                              ).map((serial: string) => <label key={serial}>
+                                <input type="checkbox" checked={row.serials.includes(serial)} onChange={event => {
+                                  const checked = event.target.checked;
+                                  setAllocRows(rows => rows.map((r, i) => i === idx ? {...r, serials: checked
+                                    ? [...r.serials, serial] : r.serials.filter(s => s !== serial)} : r));
+                                }} /> {serial}
+                              </label>)}
+                              <small>{row.serials.length} / {row.quantity} selected</small>
+                            </div>
                           </td>
                         )}
                         <td>
@@ -574,8 +607,8 @@ export function StockAllocationModal({
         <Btn secondary onClick={onClose}>
           Cancel
         </Btn>
-        <Btn onClick={handleSave}>
-          Save Allocations
+        <Btn disabled={loading || !!loadError || totalAllocated !== qtyRequired} onClick={handleSave}>
+          Use selected stock
         </Btn>
       </div>
     </Modal>

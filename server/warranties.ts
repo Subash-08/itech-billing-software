@@ -1,6 +1,6 @@
 import 'server-only';
 import {z} from 'zod';
-import {normalizeSerial} from './master-schema';
+import {canonicalSerialKey, resolveSerialUnit, transitionSerialUnit} from './serial-identity';
 import {todayInKolkata} from './purchase-schema';
 import {assertSalePostingDay, addWarrantyMonths} from './sales-posting';
 import {Db, ClientSession} from 'mongodb';
@@ -61,8 +61,12 @@ export async function listWarranties(
   if (query.invoiceId) filter.invoiceId = query.invoiceId;
   if (query.status && query.status !== 'All') filter.status = query.status;
   if (query.serial) {
-    const sNorm = normalizeSerial(query.serial);
-    filter.$or = [{serialNumber: sNorm}, {serial: sNorm}];
+    try {
+      const sNorm = canonicalSerialKey(query.serial);
+      filter.$or = [{serialNumber: sNorm}, {serial: sNorm}, {serial: query.serial}];
+    } catch {
+      filter.$or = [{serialNumber: query.serial}, {serial: query.serial}];
+    }
   }
   if (query.search) {
     const escaped = query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -139,20 +143,21 @@ export async function claimWarranty(db: Db, identity: Identity, warrantyId: stri
       if (!line) throw new AppError(409, 'Warranty has no valid invoice-line linkage.');
 
       const isTracked = !!line.productSnapshot?.isSerialTracked;
-      const oldSerial = isTracked ? normalizeSerial(warranty.serialNumber ?? warranty.serial ?? '') : '';
       let oldUnit: any = null;
+      let oldVersion: number = 1;
 
       if (isTracked) {
-        if (!oldSerial) throw new AppError(409, 'Serialized warranty record is missing serial information.');
-        oldUnit = await col(db, 'serialUnits').findOne({
-          tenantId,
+        const rawSerial = warranty.serialNumber ?? warranty.serial ?? '';
+        if (!rawSerial) throw new AppError(409, 'Serialized warranty record is missing serial information.');
+        const res = await resolveSerialUnit(db, session, tenantId, rawSerial, {
           productId: warranty.productId,
-          serialNormalized: oldSerial,
-          status: 'Sold',
-        }, {session});
+          expectedStatus: 'Sold',
+          expectedInvoiceId: warranty.invoiceId,
+        });
+        oldUnit = res.unit;
+        oldVersion = res.version;
 
-        if (!oldUnit || (oldUnit.invoiceId ?? oldUnit.soldInvoiceId) !== warranty.invoiceId ||
-            oldUnit.invoiceLineId !== warranty.invoiceLineId || oldUnit.replacedBySerial) {
+        if (oldUnit.invoiceLineId !== warranty.invoiceLineId || oldUnit.replacedBySerial) {
           throw new AppError(409, 'Claimed serial is no longer owned by this invoice line.');
         }
       } else {
@@ -166,27 +171,26 @@ export async function claimWarranty(db: Db, identity: Identity, warrantyId: stri
       const claimId = uid('WCL');
       let replacementSerial: string | undefined;
       let repSerialToStore: string | undefined;
-      const oldSerialToStore = oldUnit?.serial || warranty.serialNumber || oldSerial;
+      const oldSerialToStore = oldUnit?.serialOriginal || oldUnit?.serial || warranty.serialNumber || warranty.serial;
 
       if (input.action === 'Replaced') {
         if (!isTracked) {
           throw new AppError(400, 'Unit replacement is currently supported for serialized products.');
         }
 
-        replacementSerial = normalizeSerial(input.replacementSerial ?? '');
-        if (!oldUnit || !replacementSerial || replacementSerial === oldSerial) {
-          throw new AppError(400, 'Select a different replacement serial for this serialized product.');
+        if (!input.replacementSerial) {
+          throw new AppError(400, 'Replacement serial is required for this serialized product.');
         }
 
-        const replacement = await col(db, 'serialUnits').findOne({
-          tenantId,
+        const repRes = await resolveSerialUnit(db, session, tenantId, input.replacementSerial, {
           productId: warranty.productId,
-          serialNormalized: replacementSerial,
-          status: 'InStock',
-        }, {session});
+          expectedStatus: 'InStock',
+        });
+        const replacement = repRes.unit;
+        const replacementVersion = repRes.version;
 
-        if (!replacement) {
-          throw new AppError(400, 'Replacement serial not found or not currently InStock.');
+        if (!oldUnit || replacement._id === oldUnit._id) {
+          throw new AppError(400, 'Select a different replacement serial for this serialized product.');
         }
 
         if (!replacement.lotId || !oldUnit.lotId) {
@@ -210,44 +214,48 @@ export async function claimWarranty(db: Db, identity: Identity, warrantyId: stri
           throw new AppError(409, 'Stock changed. Reload before replacing this unit.');
         }
 
-        repSerialToStore = replacement.serial || input.replacementSerial || replacementSerial;
+        repSerialToStore = replacement.serialOriginal || input.replacementSerial;
 
-        const removed = await col(db, 'serialUnits').updateOne(
-          {_id: oldUnit._id, tenantId, status: 'Sold'},
-          {
-            $set: {
-              status: 'Defective',
-              replacedBySerial: repSerialToStore,
-              warrantyClaimId: claimId,
-              invoiceId: null,
-              soldInvoiceId: null,
-              invoiceLineId: null,
-              updatedAt: now,
-            },
-          },
-          {session}
-        );
-
-        const supplied = await col(db, 'serialUnits').updateOne(
-          {_id: replacement._id, tenantId, status: 'InStock'},
-          {
-            $set: {
-              status: 'Sold',
+        await transitionSerialUnit(db, session, oldUnit._id, {
+          transition: 'WarrantyReplacementClaim',
+          expected: {
+            tenantId,
+            productId: warranty.productId,
+            lotId: oldUnit.lotId,
+            status: 'Sold',
               invoiceId: warranty.invoiceId,
-              soldInvoiceId: warranty.invoiceId,
               invoiceLineId: warranty.invoiceLineId,
-              replacesSerial: oldSerialToStore,
-              warrantyClaimId: claimId,
-              soldAt: now,
-              updatedAt: now,
-            },
+            version: oldVersion,
           },
-          {session}
-        );
+          nextState: {
+            status: 'Defective',
+            replacedBySerial: repSerialToStore,
+            warrantyClaimId: claimId,
+            invoiceId: null,
+            soldInvoiceId: null,
+            invoiceLineId: null,
+          },
+        });
 
-        if (removed.matchedCount !== 1 || supplied.matchedCount !== 1) {
-          throw new AppError(409, 'Serial changed. Replacement was rolled back.');
-        }
+        await transitionSerialUnit(db, session, replacement._id, {
+          transition: 'WarrantyReplacementSupply',
+          expected: {
+            tenantId,
+            productId: warranty.productId,
+            lotId: replacement.lotId,
+            status: 'InStock',
+            version: replacementVersion,
+          },
+          nextState: {
+            status: 'Sold',
+            invoiceId: warranty.invoiceId,
+            soldInvoiceId: warranty.invoiceId,
+            invoiceLineId: warranty.invoiceLineId,
+            replacesSerial: oldSerialToStore,
+            warrantyClaimId: claimId,
+            soldAt: now,
+          },
+        });
 
         await col(db, 'stockMovements').insertMany([
           {
@@ -402,30 +410,28 @@ export async function createWarrantyCoverage(db: Db, identity: Identity, raw: un
         if (!input.serialNumber) {
           throw new AppError(400, 'Serial number is required for serialized product warranty coverage.');
         }
-        sNorm = normalizeSerial(input.serialNumber);
 
-        const unit = await col(db, 'serialUnits').findOne({
-          tenantId,
+        const {unit} = await resolveSerialUnit(db, session, tenantId, input.serialNumber, {
           productId: line.productId,
-          serialNormalized: sNorm,
-        }, {session});
+          expectedStatus: 'Sold',
+          expectedInvoiceId: invoice._id,
+        });
 
-        if (!unit) {
-          throw new AppError(404, `Serial unit ${input.serialNumber} not found.`);
-        }
-        if ((unit.invoiceId ?? unit.soldInvoiceId) !== invoice._id || unit.invoiceLineId !== line.lineId || unit.status !== 'Sold') {
-          throw new AppError(409, `Serial ${input.serialNumber} is not currently sold on invoice ${invoice.invoiceNumber}.`);
+        if (unit.invoiceLineId !== line.lineId) {
+          throw new AppError(409, `Serial ${input.serialNumber} is not currently sold on invoice line.`);
         }
         if (unit.replacedBySerial) {
           throw new AppError(409, `Serial ${input.serialNumber} has already been replaced under warranty.`);
         }
+
+        sNorm = canonicalSerialKey(input.serialNumber);
 
         // Prevent duplicate coverage
         const existing = await col(db, 'warranties').findOne({
           tenantId,
           invoiceId: invoice._id,
           invoiceLineId: line.lineId,
-          $or: [{serial: sNorm}, {serialNumber: sNorm}],
+          $or: [{serial: sNorm}, {serialNumber: sNorm}, {serial: input.serialNumber}, {serialNumber: input.serialNumber}],
           status: 'Active',
         }, {session});
 

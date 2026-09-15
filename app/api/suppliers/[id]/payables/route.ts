@@ -26,7 +26,7 @@ export async function GET(request: Request, context: {params: Promise<{id: strin
         remainingDuePaise: '$remainingAmountPaise', createdAt: {$ifNull: ['$createdAt', new Date(0)]},
       }},
       {$unionWith: {coll: 'purchases', pipeline: [
-        {$match: {tenantId: identity.tenantId, supplierId: id, billStatus: 'Posted', duePaise: {$gt: 0}}},
+        {$match: {tenantId: identity.tenantId, supplierId: id, billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']}, duePaise: {$gt: 0}}},
         {$unwind: '$lines'},
         {$match: {'lines.remainingDuePaise': {$gt: 0}}},
         {$project: {

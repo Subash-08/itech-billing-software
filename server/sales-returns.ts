@@ -5,7 +5,7 @@ import {Identity} from './security';
 import {recordAudit} from './audit';
 import {uid} from '../lib/domain';
 import {todayInKolkata} from './purchase-schema';
-import {normalizeSerial} from './master-schema';
+import {canonicalSerialKey, resolveSerialUnit, transitionSerialUnit} from './serial-identity';
 import {sumSalePaise, prorateSaleReturnComponents} from './sales-calculations';
 import {
   CreateCustomerReturnSchema,
@@ -137,8 +137,8 @@ export async function createCustomerReturn(
       // Restorations must be backed by this exact invoice line's issued allocations.
       const lotRestorations: Array<{lotId: string; qty: number}> = [];
       const serialDocs: any[] = [];
-      const normalizedSerials = (input.serials || []).map(normalizeSerial);
-      if (normalizedSerials.some(s => !s) || new Set(normalizedSerials).size !== normalizedSerials.length) {
+      const canonicalSerials = (input.serials || []).map(canonicalSerialKey);
+      if (new Set(canonicalSerials).size !== canonicalSerials.length) {
         throw new AppError(400, 'Return serial numbers must be distinct.');
       }
 
@@ -148,7 +148,7 @@ export async function createCustomerReturn(
         }
 
         const tracked = !!line.productSnapshot?.isSerialTracked;
-        if (tracked ? normalizedSerials.length !== input.quantity : normalizedSerials.length !== 0) {
+        if (tracked ? canonicalSerials.length !== input.quantity : canonicalSerials.length !== 0) {
           throw new AppError(400, tracked ? 'Select every returned serial number.' : 'This product does not track serial numbers.');
         }
 
@@ -158,7 +158,7 @@ export async function createCustomerReturn(
         for (const allocation of allocations) {
           issuedPerLot.set(allocation.lotId, (issuedPerLot.get(allocation.lotId) ?? 0) + allocation.quantity);
           for (const serial of allocation.serials ?? []) {
-            issuedSerialLots.set(normalizeSerial(serial), allocation.lotId);
+            issuedSerialLots.set(canonicalSerialKey(serial), allocation.lotId);
           }
         }
 
@@ -174,27 +174,24 @@ export async function createCustomerReturn(
 
         if (tracked) {
           const lots = new Map<string, number>();
-          for (const serial of normalizedSerials) {
-            const unit = await col(db, 'serialUnits').findOne(
-              {tenantId, productId: line.productId, serialNormalized: serial, status: 'Sold'},
-              {session}
-            );
-            if (
-              !unit ||
-              (unit.invoiceId ?? unit.soldInvoiceId) !== invoice._id ||
-              (unit.invoiceLineId && unit.invoiceLineId !== line.lineId)
-            ) {
-              throw new AppError(400, `Serial ${serial} was not sold on this invoice line or is not available for return.`);
+          for (const rawSerial of (input.serials || [])) {
+            const {unit, version} = await resolveSerialUnit(db, session, tenantId, rawSerial, {
+              productId: line.productId,
+              expectedStatus: 'Sold',
+              expectedInvoiceId: invoice._id,
+            });
+            if (unit.invoiceLineId && unit.invoiceLineId !== line.lineId) {
+              throw new AppError(400, `Serial ${rawSerial} was not sold on this invoice line or is not available for return.`);
             }
             if (unit.replacedBySerial) {
-              throw new AppError(409, `Serial ${serial} was already replaced under warranty and cannot be returned directly.`);
+              throw new AppError(409, `Serial ${rawSerial} was already replaced under warranty and cannot be returned directly.`);
             }
 
             const lotId = unit.lotId;
             if (!lotId) {
-              throw new AppError(409, `Serial ${serial} has no traceable source stock lot.`);
+              throw new AppError(409, `Serial ${rawSerial} has no traceable source stock lot.`);
             }
-            serialDocs.push(unit);
+            serialDocs.push({unit, version});
             lots.set(lotId, (lots.get(lotId) ?? 0) + 1);
           }
           for (const [lotId, qty] of lots) {
@@ -263,23 +260,27 @@ export async function createCustomerReturn(
           );
         }
 
-        for (const unit of serialDocs) {
-          const changed = await col(db, 'serialUnits').updateOne(
-            {_id: unit._id, tenantId, status: 'Sold'},
-            {
-              $set: {
-                status: restock ? 'InStock' : 'Defective',
-                lastReturnId: returnId,
-                reservationId: null,
-                invoiceId: null,
-                soldInvoiceId: null,
-                invoiceLineId: null,
-                updatedAt: now,
-              },
+        for (const item of serialDocs) {
+          await transitionSerialUnit(db, session, item.unit._id, {
+            transition: 'CustomerReturn',
+            expected: {
+              tenantId,
+              productId: line.productId,
+              lotId: item.unit.lotId,
+              status: 'Sold',
+              invoiceId: invoice._id,
+              invoiceLineId: line.lineId,
+              version: item.version,
             },
-            {session}
-          );
-          if (changed.matchedCount !== 1) throw new AppError(409, 'Serial changed during return.');
+            nextState: {
+              status: restock ? 'InStock' : 'Defective',
+              lastReturnId: returnId,
+              reservationId: null,
+              invoiceId: null,
+              soldInvoiceId: null,
+              invoiceLineId: null,
+            },
+          });
         }
 
         // Warranty adjustments
@@ -289,7 +290,12 @@ export async function createCustomerReturn(
               tenantId,
               invoiceId: invoice._id,
               invoiceLineId: line.lineId,
-              serial: {$in: normalizedSerials},
+              $or: [
+                {serial: {$in: canonicalSerials}},
+                {serialNumber: {$in: canonicalSerials}},
+                {serial: {$in: input.serials || []}},
+                {serialNumber: {$in: input.serials || []}},
+              ],
             },
             {
               $set: {status: 'Returned', returnId, returnedAt: now, updatedAt: now},

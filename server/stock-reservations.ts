@@ -7,7 +7,7 @@ import {recordAudit} from './audit';
 import {uid} from '../lib/domain';
 import {col, executeIdempotentTransaction} from './purchase-service';
 import {todayInKolkata} from './purchase-schema';
-import {normalizeSerial} from './master-schema';
+import {canonicalSerialKey, resolveSerialUnit, transitionSerialUnit} from './serial-identity';
 import {assertSalePostingDay} from './sales-posting';
 import {CreateStockReservationSchema, ReleaseStockReservationSchema, ReservationListQuerySchema} from './sales-schema';
 
@@ -30,7 +30,7 @@ function assertHold(hold: StockHold) {
 }
 
 function serialKeys(serials: string[]) {
-  const normalized = serials.map(normalizeSerial);
+  const normalized = serials.map(canonicalSerialKey);
   if (normalized.some(s => !s) || new Set(normalized).size !== normalized.length) throw new AppError(400, 'Invalid or duplicate serial number.');
   return normalized;
 }
@@ -68,6 +68,17 @@ export async function createStockReservation(db: Db, identity: Identity, raw: z.
     }
     const normalized = serialKeys(input.serials);
     if (product.isSerialTracked ? normalized.length !== input.quantity : normalized.length > 0) throw new AppError(400, 'Serial count must match the product tracking mode and hold quantity.');
+    const resolvedSerials: Array<{unit: any; version: number}> = [];
+    if (product.isSerialTracked) {
+      for (const serial of input.serials) {
+        const res = await resolveSerialUnit(db, session, tenantId, serial, {
+          productId: input.productId,
+          lotId: input.lotId,
+          expectedStatus: 'InStock',
+        });
+        resolvedSerials.push(res);
+      }
+    }
     const now = new Date();
     const hold: StockHold = {_id: uid('HOLD'), tenantId, customerId: input.customerId, productId: input.productId,
       lotId: input.lotId, schemaVersion: 1, version: 1, status: 'Active', quantity: input.quantity,
@@ -79,11 +90,21 @@ export async function createStockReservation(db: Db, identity: Identity, raw: z.
       $expr: {$eq: ['$quantitySellable', '$quantityRemaining']}},
       {$inc: {quantitySellable: -input.quantity, quantityRemaining: -input.quantity, quantityReserved: input.quantity, version: 1}, $set: {updatedAt: now}}, {session});
     if (changed.matchedCount !== 1) throw new AppError(409, 'Insufficient available stock, or lot balances need reconciliation.');
-    for (const serial of normalized) {
-      const changedSerial = await col(db, 'serialUnits').updateOne({tenantId, productId: input.productId,
-        lotId: input.lotId, serialNormalized: serial, status: 'InStock'},
-        {$set: {status: 'Reserved', reservationId: hold._id, updatedAt: now}}, {session});
-      if (changedSerial.matchedCount !== 1) throw new AppError(409, 'Serial is no longer available in this lot.');
+    for (const item of resolvedSerials) {
+      await transitionSerialUnit(db, session, item.unit._id, {
+        transition: 'Hold',
+        expected: {
+          tenantId,
+          productId: input.productId,
+          lotId: input.lotId,
+          status: 'InStock',
+          version: item.version,
+        },
+        nextState: {
+          status: 'Reserved',
+          reservationId: hold._id,
+        },
+      });
     }
     await col<StockHold>(db, 'stockReservations').insertOne(hold, {session});
     await movement(db, identity, session, hold, 'Hold', input.quantity, input.serials);
@@ -112,12 +133,33 @@ export async function consumeStockReservation(db: Db, identity: Identity, sessio
   if (hold.isSerialTracked ? serials.length !== input.quantity : serials.length > 0) throw new AppError(400, 'Incorrect serial count for held stock.');
   if (serials.some(s => !hold.remainingSerials.includes(s))) throw new AppError(409, 'Serial is not part of this remaining hold.');
   const now = new Date();
-  for (const serial of serials) {
-    const changed = await col(db, 'serialUnits').updateOne({tenantId, productId: hold.productId, lotId: hold.lotId,
-      serialNormalized: serial, status: 'Reserved', reservationId: hold._id},
-      {$set: {status: 'Sold', invoiceId: input.invoiceId, soldInvoiceId: input.invoiceId, invoiceLineId: input.invoiceLineId, soldAt: now,
-        fulfilledReservationId: hold._id, updatedAt: now}, $unset: {reservationId: ''}}, {session});
-    if (changed.matchedCount !== 1) throw new AppError(409, 'Reserved serial changed; reload.');
+  for (const serial of input.serials) {
+    const {unit, version} = await resolveSerialUnit(db, session, tenantId, serial, {
+      productId: hold.productId,
+      lotId: hold.lotId,
+      expectedStatus: 'Reserved',
+      expectedReservationId: hold._id,
+    });
+    await transitionSerialUnit(db, session, unit._id, {
+      transition: 'Sale',
+      expected: {
+        tenantId,
+        productId: hold.productId,
+        lotId: hold.lotId,
+        status: 'Reserved',
+        reservationId: hold._id,
+        version,
+      },
+      nextState: {
+        status: 'Sold',
+        invoiceId: input.invoiceId,
+        soldInvoiceId: input.invoiceId,
+        invoiceLineId: input.invoiceLineId,
+        soldAt: now,
+        reservationId: null,
+        fulfilledReservationId: hold._id,
+      },
+    });
   }
   const lot = await col(db, 'stockLots').updateOne({_id: hold.lotId, tenantId, productId: hold.productId,
     quantityReserved: {$gte: input.quantity}, quantitySellable: {$gte: 0},
@@ -140,10 +182,27 @@ async function releaseWithinTransaction(db: Db, identity: Identity, session: Cli
   const tenantId = identity.tenantId;
   const now = new Date();
   for (const serial of hold.remainingSerials) {
-    const changed = await col(db, 'serialUnits').updateOne({tenantId, productId: hold.productId, lotId: hold.lotId,
-      serialNormalized: serial, status: 'Reserved', reservationId: hold._id},
-      {$set: {status: 'InStock', updatedAt: now}, $unset: {reservationId: ''}}, {session});
-    if (changed.matchedCount !== 1) throw new AppError(409, 'Held serial state is inconsistent.');
+    const {unit, version} = await resolveSerialUnit(db, session, tenantId, serial, {
+      productId: hold.productId,
+      lotId: hold.lotId,
+      expectedStatus: 'Reserved',
+      expectedReservationId: hold._id,
+    });
+    await transitionSerialUnit(db, session, unit._id, {
+      transition: expired ? 'Expire' : 'Release',
+      expected: {
+        tenantId,
+        productId: hold.productId,
+        lotId: hold.lotId,
+        status: 'Reserved',
+        reservationId: hold._id,
+        version,
+      },
+      nextState: {
+        status: 'InStock',
+        reservationId: null,
+      },
+    });
   }
   const changedLot = await col(db, 'stockLots').updateOne({_id: hold.lotId, tenantId, productId: hold.productId,
     quantityReserved: {$gte: hold.remainingQuantity}, quantitySellable: {$gte: 0, $lte: Number.MAX_SAFE_INTEGER - hold.remainingQuantity},

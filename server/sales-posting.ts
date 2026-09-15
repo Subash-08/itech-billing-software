@@ -13,7 +13,17 @@ import type {IssueInvoiceInput} from './sales-schema';
 export async function assertSalePostingDay(db: Db, tenantId: string, date: string, session: ClientSession) {
   if (!isValidCalendarDate(date) || date !== todayInKolkata()) throw new AppError(400, 'Issue invoices on the current business date in Asia/Kolkata. Update the draft date first.');
   const opening = await col(db, 'openingSetups').findOne({tenantId}, {session});
-  if (opening?.status !== 'Finalized' || !opening.cutoffDate || date <= opening.cutoffDate) throw new AppError(409, 'Finalize opening setup with an earlier cutoff before posting.');
+  if (opening?.status !== 'Finalized' || !opening.cutoffDate) {
+    throw new AppError(409, 'Finalize opening setup before posting.');
+  }
+  if (date <= opening.cutoffDate) {
+    const [year, month, day] = opening.cutoffDate.split('-').map(Number);
+    const nextDate = new Date(Date.UTC(year, month - 1, day + 1));
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const cutoffFormatted = `${day} ${months[month - 1]} ${year}`;
+    const nextFormatted = `${nextDate.getUTCDate()} ${months[nextDate.getUTCMonth()]} ${nextDate.getUTCFullYear()}`;
+    throw new AppError(409, `Opening setup is finalized through ${cutoffFormatted}. Sales and purchases can be posted from ${nextFormatted}.`);
+  }
   await assertPhase3MigrationComplete(db, tenantId, session);
   // Phase 5 must extend this guard AND all purchase writers with the same
   // transactional business-day fence; a read-only closed-day check is insufficient.

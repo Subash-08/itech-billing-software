@@ -575,7 +575,7 @@ export interface StockLotDocument {
   _id: string;
   tenantId: string;
   productId: string;
-  lotType: 'Opening' | 'Purchase';
+  lotType: 'Opening' | 'Purchase' | 'Adjustment';
   purchaseId?: string;
   purchaseLineId?: string;
   purchaseReceiptId?: string;
@@ -591,6 +591,7 @@ export interface StockLotDocument {
   quantityDefective: number;
   quantityReturned: number;
   quantitySold: number;
+  quantityRemoved?: number;
 
   createdAt: Date;
   updatedAt: Date;
@@ -602,6 +603,8 @@ export interface StockMovementDocument {
   date: string;
   productId: string;
   lotId?: string;
+  lotAllocations?: Array<{lotId: string; quantity: number; serials: string[]}>;
+  removedDelta?: number;
   qty: number; // Signed integer (+N In, -N Out)
   onHandDelta?: number;
   sellableDelta?: number;
@@ -951,25 +954,23 @@ export function prorateLineReturnValuation(params: {
     taxBasisPoints,
   } = params;
 
-  if (quantityReturned <= 0 || lineOrderedQty <= 0) {
-    throw new Error('Invalid quantities for return proration');
+  if (![quantityReturned, lineOrderedQty, previouslyReturnedQty, lineTaxableBasePaise,
+    lineCgstPaise, lineSgstPaise, lineIgstPaise, lineTotalPaise].every(Number.isSafeInteger) ||
+    quantityReturned <= 0 || lineOrderedQty <= 0 || previouslyReturnedQty < 0 ||
+    previouslyReturnedQty + quantityReturned > lineOrderedQty ||
+    [lineTaxableBasePaise, lineCgstPaise, lineSgstPaise, lineIgstPaise, lineTotalPaise].some(n => n < 0)) {
+    throw new Error('Invalid quantities or amounts for return proration');
   }
-
-  const isFinalReturn = (previouslyReturnedQty + quantityReturned) >= lineOrderedQty;
-
-  const proratedTaxableBase = Math.floor((lineTaxableBasePaise * quantityReturned) / lineOrderedQty);
-  const proratedCgst = Math.floor((lineCgstPaise * quantityReturned) / lineOrderedQty);
-  const proratedSgst = Math.floor((lineSgstPaise * quantityReturned) / lineOrderedQty);
-  const proratedIgst = Math.floor((lineIgstPaise * quantityReturned) / lineOrderedQty);
-  let totalReturnCreditPaise = proratedTaxableBase + proratedCgst + proratedSgst + proratedIgst;
-  let roundingRemainderPaise = 0;
-
-  if (isFinalReturn) {
-    const priorProratedTotal = Math.floor((lineTotalPaise * previouslyReturnedQty) / lineOrderedQty);
-    const expectedFinalCredit = lineTotalPaise - priorProratedTotal;
-    roundingRemainderPaise = expectedFinalCredit - totalReturnCreditPaise;
-    totalReturnCreditPaise = expectedFinalCredit;
-  }
+  // Differences of cumulative shares conserve every paise across split returns.
+  const share = (amount: number) => Number(
+    BigInt(amount) * BigInt(previouslyReturnedQty + quantityReturned) / BigInt(lineOrderedQty) -
+    BigInt(amount) * BigInt(previouslyReturnedQty) / BigInt(lineOrderedQty));
+  const proratedTaxableBase = share(lineTaxableBasePaise);
+  const proratedCgst = share(lineCgstPaise);
+  const proratedSgst = share(lineSgstPaise);
+  const proratedIgst = share(lineIgstPaise);
+  const totalReturnCreditPaise = share(lineTotalPaise);
+  const roundingRemainderPaise = totalReturnCreditPaise - proratedTaxableBase - proratedCgst - proratedSgst - proratedIgst;
 
   return {
     unitCostPaise,

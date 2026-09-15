@@ -150,9 +150,17 @@ try {
   ]);
   tracked.tenantAccountBalances.push(`tab-cash-${tenantId}`, `tab-bank-${tenantId}`);
 
+  const movCash = new ObjectId();
+  const movBank = new ObjectId();
+  await db.collection('accountMovements').insertMany([
+    {_id: movCash.toString(), tenantId, date: '2026-09-09', account: 'Cash', qty: 50000000, amountPaise: 50000000, direction: 'In', reason: 'Opening cash balance', reference: 'OPENING-SETUP'},
+    {_id: movBank.toString(), tenantId, date: '2026-09-09', account: 'Bank', qty: 50000000, amountPaise: 50000000, direction: 'In', reason: 'Opening bank balance', reference: 'OPENING-SETUP'},
+  ]);
+  tracked.accountMovements.push(movCash.toString(), movBank.toString());
+
   // Create default invoice template in canonical invoiceTemplates & templateRevisions
   const defTplId = `tpl-def-${Date.now()}`;
-  await db.collection('invoiceTemplates').insertOne({
+  const tplRecord = {
     _id: defTplId,
     tenantId,
     name: 'Default Tax Invoice',
@@ -161,12 +169,18 @@ try {
     isDefault: true,
     currentRevision: 1,
     status: 'Active',
-    fields: {},
-    columns: [],
+    fields: {logo: true, shopName: true, number: true, date: true},
+    columns: [
+      {id: 'index', label: '#', show: true, align: 'left'},
+      {id: 'description', label: 'Item & Description', show: true, align: 'left'},
+      {id: 'qty', label: 'Qty', show: true, align: 'right'},
+      {id: 'amount', label: 'Amount', show: true, align: 'right'},
+    ],
     createdAt: new Date(),
     updatedAt: new Date(),
     createdBy: userId.toString(),
-  });
+  };
+  await db.collection('invoiceTemplates').insertOne(tplRecord);
   tracked.invoiceTemplates.push(defTplId);
 
   await db.collection('templateRevisions').insertOne({
@@ -174,7 +188,7 @@ try {
     templateId: defTplId,
     tenantId,
     revision: 1,
-    snapshot: {name: 'Default Tax Invoice', title: 'TAX INVOICE'},
+    snapshot: tplRecord,
     createdAt: new Date(),
     createdBy: userId.toString(),
   });

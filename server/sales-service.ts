@@ -32,6 +32,7 @@ import {
 } from './sales-schema';
 import {z} from 'zod';
 import {normalizeSerial} from './master-schema';
+import {canonicalSerialKey, resolveSerialUnit, transitionSerialUnit} from './serial-identity';
 import {assertSalePostingDay, settleInvoiceOnIssue, addWarrantyMonths} from './sales-posting';
 import {consumeStockReservation} from './stock-reservations';
 import {
@@ -257,8 +258,12 @@ async function resolveCustomer(db: Db, tenantId: string, customerId: string, ses
 }
 
 async function resolveTemplate(db: Db, tenantId: string, templateId: string, templateRevision: number, session?: ClientSession) {
+  const active = await col(db, 'invoiceTemplates').findOne({_id: templateId, tenantId, status: 'Active'}, sessionOpt(session));
+  if (!active) throw new AppError(404, 'Selected invoice template is unavailable or archived.');
   const rev = await col(db, 'templateRevisions').findOne({tenantId, templateId, revision: templateRevision}, sessionOpt(session));
   if (!rev) throw new AppError(404, `Invoice template revision ${templateRevision} not found.`);
+  if (!Array.isArray(rev.snapshot?.columns) || !rev.snapshot?.fields)
+    throw new AppError(409, 'Selected template revision has an incomplete layout snapshot. Select a complete saved revision.');
   return rev;
 }
 
@@ -565,26 +570,48 @@ export async function issueInvoice(db: Db, identity: Identity, rawInput: IssueIn
     for (const line of lines) {
       if (line.lineType !== 'Product') continue;
       for (const allocation of line.stockAllocations!) {
-        const serials = allocation.serials.map(normalizeSerial);
-        if (line.productSnapshot!.isSerialTracked ? serials.length !== allocation.quantity : serials.length !== 0)
+        const rawSerials = allocation.serials || [];
+        if (line.productSnapshot!.isSerialTracked ? rawSerials.length !== allocation.quantity : rawSerials.length !== 0)
           throw new AppError(400, 'Serial count does not match product tracking and allocated quantity.');
         if (allocation.reservationId) {
-          for (const serial of serials) {
-            if (!serial || usedSerials.has(serial)) throw new AppError(400, 'Invalid or duplicate serial.');
-            usedSerials.add(serial);
+          for (const rawSerial of rawSerials) {
+            const key = canonicalSerialKey(rawSerial);
+            if (!key || usedSerials.has(key)) throw new AppError(400, 'Invalid or duplicate serial.');
+            usedSerials.add(key);
           }
           await consumeStockReservation(db, identity, session, {reservationId: allocation.reservationId,
             customerId: draft.customerId, productId: line.productId!, lotId: allocation.lotId,
             quantity: allocation.quantity, serials: allocation.serials, invoiceId: draft._id, invoiceLineId: line.lineId});
           continue;
         }
-        for (const serial of serials) {
-          if (!serial || usedSerials.has(serial)) throw new AppError(400, 'Invalid or duplicate serial.');
-          usedSerials.add(serial);
-          const r = await col(db, 'serialUnits').updateOne({tenantId, productId: line.productId,
-            lotId: allocation.lotId, serialNormalized: serial, status: 'InStock'},
-            {$set: {status: 'Sold', soldAt: now, invoiceId: draft._id, soldInvoiceId: draft._id, invoiceLineId: line.lineId, updatedAt: now}}, {session});
-          if (r.matchedCount !== 1) throw new AppError(409, 'Serial is unavailable, reserved, or belongs to another product/lot.');
+        for (let sIdx = 0; sIdx < rawSerials.length; sIdx++) {
+          const rawSerial = (rawSerials[sIdx] || '').trim();
+          const {unit, version} = await resolveSerialUnit(db, session, tenantId, rawSerial, {
+            productId: line.productId,
+            lotId: allocation.lotId,
+            expectedStatus: 'InStock',
+          });
+          const key = unit.serialNormalized;
+          if (usedSerials.has(key)) throw new AppError(400, 'Invalid or duplicate serial.');
+          usedSerials.add(key);
+
+          await transitionSerialUnit(db, session, unit._id, {
+            transition: 'Sale',
+            expected: {
+              tenantId,
+              productId: line.productId,
+              lotId: allocation.lotId,
+              status: 'InStock',
+              version,
+            },
+            nextState: {
+              status: 'Sold',
+              soldAt: now,
+              invoiceId: draft._id,
+              soldInvoiceId: draft._id,
+              invoiceLineId: line.lineId,
+            },
+          });
         }
         const r = await col(db, 'stockLots').updateOne({_id: allocation.lotId, tenantId, productId: line.productId,
           quantitySellable: {$gte: allocation.quantity}, quantityRemaining: {$gte: allocation.quantity},
@@ -792,4 +819,3 @@ export async function getSalesSummary(
     totalCustomerAdvanceAvailablePaise: advancesRes?.totalRemainingPaise ?? 0,
   };
 }
-

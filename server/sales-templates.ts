@@ -26,14 +26,14 @@ async function transaction<T>(db: Db, identity: Identity, work: (session: Client
 }
 
 function settings(raw: any) {
-  const {
-    _id, tenantId, nameNormalized, status, currentRevision, createdAt, updatedAt, createdBy,
-    ...cleanRaw
-  } = raw || {};
-  const parsed = InvoiceTemplateInputSchema.parse(cleanRaw);
-  // Strip request metadata such as expectedRevision from persisted template snapshots
-  const {expectedRevision, ...cleanSettings} = parsed;
-  return cleanSettings;
+  // Stored records contain audit/archive metadata. Validate only editable settings
+  // so subsequent edits, copies and restores cannot leak metadata into strict input.
+  const keys = ['name', 'title', 'paper', 'orientation', 'fontSize', 'accent',
+    'borders', 'striped', 'logoPosition', 'fields', 'columns', 'footer', 'isDefault'];
+  const input = Object.fromEntries(keys.filter(key => raw?.[key] !== undefined)
+    .map(key => [key, raw[key]]));
+  const {expectedRevision, ...result} = InvoiceTemplateInputSchema.parse(input);
+  return result;
 }
 
 async function requireTemplate(db: Db, identity: Identity, id: string, session: ClientSession) {
@@ -159,7 +159,9 @@ async function update(db: Db, identity: Identity, existing: any, raw: any, sessi
     );
   }
 
-  const nextRevision = (existing.currentRevision ?? 1) + 1;
+  if (!Number.isSafeInteger(existing.currentRevision) || existing.currentRevision < 1)
+    throw new AppError(409, 'Stored template revision needs reconciliation before editing.');
+  const nextRevision = existing.currentRevision + 1;
   const now = new Date();
   const record = {
     ...existing,
@@ -194,11 +196,8 @@ async function update(db: Db, identity: Identity, existing: any, raw: any, sessi
 export async function updateTemplate(db: Db, identity: Identity, id: string, raw: any) {
   return transaction(db, identity, async session => {
     const existing = await requireTemplate(db, identity, id, session);
-    if (raw.expectedRevision !== undefined) {
-      if (!Number.isSafeInteger(raw.expectedRevision) || raw.expectedRevision !== (existing.currentRevision ?? 1)) {
-        throw new AppError(409, 'Template changed or revision is missing. Reload before saving.');
-      }
-    }
+    if (!Number.isSafeInteger(raw.expectedRevision) || raw.expectedRevision < 1 || raw.expectedRevision !== existing.currentRevision)
+      throw new AppError(409, 'Template changed or revision is missing. Reload before saving.');
     return update(db, identity, existing, raw, session);
   });
 }

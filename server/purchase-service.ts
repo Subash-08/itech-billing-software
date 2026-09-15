@@ -1,4 +1,5 @@
 import 'server-only';
+import {ensureAccountBalances, initializeAccountBalances, signedAccountMovementPaise} from './account-initialization';
 import {Db, ClientSession, Filter, Document} from 'mongodb';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {randomUUID} from 'node:crypto';
@@ -58,6 +59,13 @@ import {
   MAX_PURCHASE_TOTAL_PAISE,
   MAX_EXPORT_ROWS,
 } from './purchase-schema';
+import {
+  canonicalSerialKey,
+  assertTenantSerialReady,
+  assertSerialsAvailableForCreation,
+  resolveSerialUnit,
+  transitionSerialUnit,
+} from './serial-identity';
 
 const purchaseTransaction = new AsyncLocalStorage<ClientSession>();
 
@@ -110,121 +118,44 @@ export async function assertOperationalPostingAllowed(db: Db, tenantId: string, 
 
 // Phase 3 Migration & Account Projection
 export async function assertPhase3MigrationComplete(db: Db, tenantId: string, session?: ClientSession) {
-  const settings = await col(db, 'companySettings').findOne({tenantId}, session ? {session} : {});
-  if (settings?.phase3Migration?.status !== 'Completed') {
-    throw new AppError(400, 'Phase 3 account balance initialization required before financial posting.');
-  }
+  await ensureAccountBalances(db, tenantId, session ?? purchaseTransaction.getStore());
 }
 
 export async function migratePhase3AccountBalances(db: Db, identity: Identity) {
-  const tenantId = identity.tenantId;
-  const settings = await col(db, 'companySettings').findOne({tenantId});
-  if (settings?.phase3Migration?.status === 'Completed') {
-    const cash = await col<TenantAccountBalanceDocument>(db, 'tenantAccountBalances').findOne({tenantId, account: 'Cash'});
-    const bank = await col<TenantAccountBalanceDocument>(db, 'tenantAccountBalances').findOne({tenantId, account: 'Bank'});
-    return {
-      status: 'Completed',
-      alreadyMigrated: true,
-      initialCashPaise: cash?.balancePaise || 0,
-      initialBankPaise: bank?.balancePaise || 0,
-    };
-  }
-
-  // Calculate sum of existing signed account movements
-  const movements = await col(db, 'accountMovements').find({tenantId}).toArray();
-  let cashSum = 0;
-  let bankSum = 0;
-
-  for (const m of movements) {
-    const qty = typeof m.qty === 'number' ? m.qty : 0;
-    if (m.account === 'Cash') cashSum += qty;
-    if (m.account === 'Bank' || m.account === 'Bank account') bankSum += qty;
-  }
-
-  // In a transaction, create balances and set migration marker
-  const client = await (await import('./db')).mongo();
-  const session = client.startSession();
+  const session = (await (await import('./db')).mongo()).startSession();
   try {
-    let result: any;
-    await session.withTransaction(async () => {
-      // Check if version > 1 already exists
-      const existingCash = await col<TenantAccountBalanceDocument>(db, 'tenantAccountBalances').findOne(
-        {tenantId, account: 'Cash'},
-        {session}
-      );
-      if (existingCash && existingCash.version > 1) {
-        throw new AppError(409, 'Live Phase 3 balances already exist. Migration cannot overwrite active balances.');
-      }
-
-      const now = new Date();
-      await col(db, 'tenantAccountBalances').updateOne(
-        {_id: `BAL-${tenantId}-Cash`, tenantId, account: 'Cash'},
-        {$set: {balancePaise: Math.max(0, cashSum), version: 1, updatedAt: now}},
-        {upsert: true, session}
-      );
-
-      await col(db, 'tenantAccountBalances').updateOne(
-        {_id: `BAL-${tenantId}-Bank`, tenantId, account: 'Bank'},
-        {$set: {balancePaise: Math.max(0, bankSum), version: 1, updatedAt: now}},
-        {upsert: true, session}
-      );
-
-      await col(db, 'companySettings').updateOne(
-        {tenantId},
-        {
-          $set: {
-            'phase3Migration.status': 'Completed',
-            'phase3Migration.initializedAt': now,
-            'phase3Migration.initialCashPaise': cashSum,
-            'phase3Migration.initialBankPaise': bankSum,
-            'phase3Migration.version': 1,
-          },
-        },
-        {session}
-      );
-
-      result = {
-        status: 'Completed',
-        initialCashPaise: cashSum,
-        initialBankPaise: bankSum,
-      };
+    return await session.withTransaction(async () => {
+      const result = await initializeAccountBalances(db, identity.tenantId, session);
+      await recordAudit(db, {identity, action: 'Initialize accounts', entityType: 'companySettings',
+        entityId: identity.tenantId, detail: 'Reconciled Cash and Bank projections against account movements.',
+        after: result}, session);
+      return result;
     });
-    return result;
-  } finally {
-    await session.endSession();
-  }
+  } finally { await session.endSession(); }
 }
 
 export async function reconcileTenantAccountBalances(db: Db, identity: Identity) {
   const tenantId = identity.tenantId;
-  const [cashBal, bankBal, movements] = await Promise.all([
+  const [cashBal, bankBal] = await Promise.all([
     col<TenantAccountBalanceDocument>(db, 'tenantAccountBalances').findOne({tenantId, account: 'Cash'}),
     col<TenantAccountBalanceDocument>(db, 'tenantAccountBalances').findOne({tenantId, account: 'Bank'}),
-    col(db, 'accountMovements').find({tenantId}).toArray(),
   ]);
-
-  let cashMovementsSum = 0;
-  let bankMovementsSum = 0;
-  for (const m of movements) {
-    const qty = typeof m.qty === 'number' ? m.qty : 0;
-    if (m.account === 'Cash') cashMovementsSum += qty;
-    if (m.account === 'Bank' || m.account === 'Bank account') bankMovementsSum += qty;
+  let cash = 0n, bank = 0n;
+  for await (const m of col(db, 'accountMovements').find({tenantId}).batchSize(500)) {
+    const value = BigInt(signedAccountMovementPaise(m));
+    if (m.account === 'Cash') cash += value;
+    else if (m.account === 'Bank' || m.account === 'Bank account') bank += value;
+    else throw new AppError(409, 'Unrecognized account in financial history.');
   }
-
-  const liveCash = cashBal?.balancePaise || 0;
-  const liveBank = bankBal?.balancePaise || 0;
-
+  const max = BigInt(Number.MAX_SAFE_INTEGER);
+  if (cash > max || cash < -max || bank > max || bank < -max)
+    throw new AppError(409, 'Account ledger total exceeds supported paise range.');
+  const cashSum = Number(cash), bankSum = Number(bank);
   return {
-    cash: {
-      projectedBalancePaise: liveCash,
-      ledgerSignedSumPaise: cashMovementsSum,
-      reconciled: liveCash === cashMovementsSum,
-    },
-    bank: {
-      projectedBalancePaise: liveBank,
-      ledgerSignedSumPaise: bankMovementsSum,
-      reconciled: liveBank === bankMovementsSum,
-    },
+    cash: {projectedBalancePaise: cashBal?.balancePaise ?? null, ledgerSignedSumPaise: cashSum,
+      reconciled: !!cashBal && cashBal.balancePaise === cashSum},
+    bank: {projectedBalancePaise: bankBal?.balancePaise ?? null, ledgerSignedSumPaise: bankSum,
+      reconciled: !!bankBal && bankBal.balancePaise === bankSum},
   };
 }
 
@@ -747,7 +678,7 @@ export async function postPurchaseBill(
       session ? {session} : {}
     );
     if (!existing) throw new AppError(404, 'Purchase record not found.');
-    if (existing.billStatus === 'Posted') {
+    if (['Posted', 'Credited', 'FullyCredited'].includes(existing.billStatus)) {
       throw new AppError(400, 'Bill is already posted.');
     }
     if (existing.documentStatus === 'Cancelled') {
@@ -850,7 +781,7 @@ export async function cancelPurchaseOrder(
     if (existing.documentStatus === 'Cancelled') {
       return existing; // idempotent
     }
-    if (existing.billStatus === 'Posted') {
+    if (['Posted', 'Credited', 'FullyCredited'].includes(existing.billStatus)) {
       throw new AppError(400, 'Cannot cancel a purchase order with a posted supplier bill. Use credit notes or returns instead.');
     }
     if (existing.receiptStatus !== 'NotReceived') {
@@ -1021,7 +952,7 @@ export async function receivePurchaseStock(
     async session => {
       const purchase = await col<PurchaseDocument>(db, 'purchases').findOne({_id: purchaseId, tenantId}, {session});
       if (!purchase) throw new AppError(404, 'Purchase record not found.');
-      if (purchase.billStatus !== 'Posted') {
+      if (!['Posted', 'Credited', 'FullyCredited'].includes(purchase.billStatus)) {
         throw new AppError(400, 'Goods receipt requires the supplier bill to be posted first.');
       }
       if (purchase.receiptStatus === 'Received' || purchase.receiptStatus === 'ClosedPartlyReceived') {
@@ -1041,7 +972,8 @@ export async function receivePurchaseStock(
         lotId: string;
         serialOriginal: string;
         serialNormalized: string;
-        status: 'InStock' | 'Sold' | 'Reserved' | 'Returned' | 'Defective';
+        status: 'InStock' | 'Sold' | 'Reserved' | 'Returned' | 'Defective' | 'Removed';
+        version: number;
         createdAt: Date;
         updatedAt: Date;
       }> = [];
@@ -1061,6 +993,7 @@ export async function receivePurchaseStock(
           );
         }
 
+        let canonicalMap = new Map<string, string>();
         if (line.productSnapshot.isSerialTracked) {
           if (!rl.serials || rl.serials.length !== rl.quantityReceived) {
             throw new AppError(
@@ -1068,20 +1001,7 @@ export async function receivePurchaseStock(
               `Serialized product ${line.productSnapshot.name} requires exactly ${rl.quantityReceived} serial numbers.`
             );
           }
-
-          const normSet = new Set<string>();
-          for (const s of rl.serials) {
-            const norm = s.trim().toUpperCase();
-            if (normSet.has(norm)) {
-              throw new AppError(400, `Duplicate serial ${s} provided in receipt payload.`);
-            }
-            normSet.add(norm);
-
-            const existingSerial = await col(db, 'serialUnits').findOne({tenantId, serialNormalized: norm}, {session});
-            if (existingSerial) {
-              throw new AppError(400, `Serial number ${s} already exists in company inventory.`);
-            }
-          }
+          canonicalMap = await assertSerialsAvailableForCreation(db, session, tenantId, rl.serials);
         }
 
         const lotId = uid('LOT');
@@ -1117,8 +1037,9 @@ export async function receivePurchaseStock(
               productId: line.productId,
               lotId,
               serialOriginal: s.trim(),
-              serialNormalized: s.trim().toUpperCase(),
+              serialNormalized: canonicalMap.get(s)!,
               status: 'InStock',
+              version: 1,
               createdAt: now,
               updatedAt: now,
             });
@@ -1154,7 +1075,16 @@ export async function receivePurchaseStock(
 
       // Bulk write lots, serials, movements
       if (lotInserts.length) await col(db, 'stockLots').insertMany(lotInserts, {session});
-      if (serialInserts.length) await col(db, 'serialUnits').insertMany(serialInserts, {session});
+      if (serialInserts.length) {
+        try {
+          await col(db, 'serialUnits').insertMany(serialInserts, {session});
+        } catch (err: any) {
+          if (err?.code === 11000) {
+            throw new AppError(409, 'One or more serial numbers are already registered in company inventory.');
+          }
+          throw err;
+        }
+      }
       if (movementInserts.length) await col(db, 'stockMovements').insertMany(movementInserts, {session});
 
       // Update purchase lines quantityReceived
@@ -1336,16 +1266,19 @@ export async function canReverseReceipt(
       lot.quantityDefective > 0 ||
       lot.quantitySold > 0 ||
       lot.quantityReserved > 0 ||
+      (lot.quantityRemoved ?? 0) > 0 ||
       lot.quantityReturned > 0
     ) {
       return { canReverse: false, reverseBlockReason: 'Stock has downstream movements' };
     }
     if (line.serials && line.serials.length > 0) {
-      const serials = await col(db, 'serialUnits')
-        .find({ tenantId, lotId: lot._id, serialOriginal: { $in: line.serials } }, session ? { session } : {})
-        .toArray();
-      for (const s of serials) {
-        if (s.status !== 'InStock') {
+      for (const s of line.serials) {
+        try {
+          await resolveSerialUnit(db, session, tenantId, s, {
+            lotId: lot._id,
+            expectedStatus: 'InStock',
+          });
+        } catch {
           return { canReverse: false, reverseBlockReason: 'Stock has downstream movements' };
         }
       }
@@ -1363,6 +1296,13 @@ export async function canReverseSupplierReturn(
   if (supplierReturn.isReversed) {
     return { canReverse: false, reverseBlockReason: 'Already reversed' };
   }
+  // Split-return rounding depends on the preceding active quantity. Undo in
+  // reverse order rather than silently repricing later credit notes.
+  const laterReturn = await col<SupplierReturnDocument>(db, 'supplierReturns').findOne({
+    tenantId, purchaseId: supplierReturn.purchaseId, purchaseLineId: supplierReturn.purchaseLineId,
+    _id: {$ne: supplierReturn._id}, isReversed: {$ne: true}, createdAt: {$gte: supplierReturn.createdAt},
+  }, session ? {session} : {});
+  if (laterReturn) return {canReverse: false, reverseBlockReason: 'Reverse later returns on this purchase line first to preserve credit rounding.'};
   if (supplierReturn.status === 'CreditAccepted' || supplierReturn.status === 'Completed') {
     if (supplierReturn.creditNoteId) {
       const cn = await col<SupplierCreditNoteDocument>(db, 'supplierCreditNotes').findOne(
@@ -1435,11 +1375,25 @@ export async function reversePurchaseReceipt(
         );
 
         if (line.serials && line.serials.length > 0) {
-          await col(db, 'serialUnits').updateMany(
-            { tenantId, lotId: lot._id, serialOriginal: { $in: line.serials } },
-            { $set: { status: 'Returned', updatedAt: now } },
-            { session }
-          );
+          for (const s of line.serials) {
+            const {unit} = await resolveSerialUnit(db, session, tenantId, s, {
+              lotId: lot._id,
+              expectedStatus: 'InStock',
+            });
+            await transitionSerialUnit(db, session, unit._id, {
+              transition: 'SupplierReturn',
+              expected: {
+                tenantId,
+                productId: line.productId,
+                lotId: lot._id,
+                status: 'InStock',
+                version: unit.version,
+              },
+              nextState: {
+                status: 'Returned',
+              },
+            });
+          }
         }
 
         const movDoc: StockMovementDocument = {
@@ -1560,19 +1514,17 @@ export async function quarantineStockLot(
         throw new AppError(400, `Insufficient sellable stock (${lot.quantitySellable}) to quarantine ${input.quantity} units.`);
       }
 
+      const resolvedSerials: Array<{unit: any; version: number}> = [];
       if (input.serials && input.serials.length > 0) {
         if (input.serials.length !== input.quantity) {
           throw new AppError(400, 'Serials count must match quarantine quantity.');
         }
-        const serialsInDb = await col(db, 'serialUnits').find({
-          tenantId,
-          lotId: lot._id,
-          serialNormalized: { $in: (input.serials || []).map((s: string) => s.trim().toUpperCase()) },
-          status: 'InStock',
-        }, { session }).toArray();
-
-        if (serialsInDb.length !== input.serials.length) {
-          throw new AppError(400, 'One or more serials are not available in InStock status for quarantine.');
+        for (const s of input.serials) {
+          const res = await resolveSerialUnit(db, session, tenantId, s, {
+            lotId: lot._id,
+            expectedStatus: 'InStock',
+          });
+          resolvedSerials.push(res);
         }
       }
 
@@ -1594,12 +1546,22 @@ export async function quarantineStockLot(
         throw new AppError(409, 'Failed to quarantine stock due to concurrent update.');
       }
 
-      if (input.serials && input.serials.length > 0) {
-        await col(db, 'serialUnits').updateMany(
-          { tenantId, lotId: lot._id, serialNormalized: { $in: (input.serials || []).map((s: string) => s.trim().toUpperCase()) } },
-          { $set: { status: 'Defective', updatedAt: now } },
-          { session }
-        );
+      if (resolvedSerials.length > 0) {
+        for (const item of resolvedSerials) {
+          await transitionSerialUnit(db, session, item.unit._id, {
+            transition: 'Quarantine',
+            expected: {
+              tenantId,
+              productId: lot.productId,
+              lotId: lot._id,
+              status: 'InStock',
+              version: item.version,
+            },
+            nextState: {
+              status: 'Defective',
+            },
+          });
+        }
       }
 
       // Internal condition transfer movement (qty: 0, onHandDelta: 0)
@@ -1664,19 +1626,17 @@ export async function restoreDefectiveStock(
         throw new AppError(400, `Insufficient defective stock (${lot.quantityDefective}) to restore ${input.quantity} units.`);
       }
 
+      const resolvedSerials: Array<{unit: any; version: number}> = [];
       if (input.serials && input.serials.length > 0) {
         if (input.serials.length !== input.quantity) {
           throw new AppError(400, 'Serials count must match restore quantity.');
         }
-        const serialsInDb = await col(db, 'serialUnits').find({
-          tenantId,
-          lotId: lot._id,
-          serialNormalized: { $in: (input.serials || []).map((s: string) => s.trim().toUpperCase()) },
-          status: 'Defective',
-        }, { session }).toArray();
-
-        if (serialsInDb.length !== input.serials.length) {
-          throw new AppError(400, 'One or more serials are not in Defective status for restoration.');
+        for (const s of input.serials) {
+          const res = await resolveSerialUnit(db, session, tenantId, s, {
+            lotId: lot._id,
+            expectedStatus: 'Defective',
+          });
+          resolvedSerials.push(res);
         }
       }
 
@@ -1698,12 +1658,22 @@ export async function restoreDefectiveStock(
         throw new AppError(409, 'Failed to restore stock due to concurrent update.');
       }
 
-      if (input.serials && input.serials.length > 0) {
-        await col(db, 'serialUnits').updateMany(
-          { tenantId, lotId: lot._id, serialNormalized: { $in: (input.serials || []).map((s: string) => s.trim().toUpperCase()) } },
-          { $set: { status: 'InStock', updatedAt: now } },
-          { session }
-        );
+      if (resolvedSerials.length > 0) {
+        for (const item of resolvedSerials) {
+          await transitionSerialUnit(db, session, item.unit._id, {
+            transition: 'Restore',
+            expected: {
+              tenantId,
+              productId: lot.productId,
+              lotId: lot._id,
+              status: 'Defective',
+              version: item.version,
+            },
+            nextState: {
+              status: 'InStock',
+            },
+          });
+        }
       }
 
       // Internal condition transfer movement (qty: 0, onHandDelta: 0)
@@ -1790,11 +1760,25 @@ export async function reverseSupplierReturn(
       // Restore serials
       if (ret.serials && ret.serials.length > 0) {
         const nextSerialStatus = ret.condition === 'Defective' ? 'Defective' : 'InStock';
-        await col(db, 'serialUnits').updateMany(
-          { tenantId, lotId: ret.lotId, serialNormalized: { $in: (ret.serials || []).map((s: string) => s.trim().toUpperCase()) } },
-          { $set: { status: nextSerialStatus, updatedAt: now } },
-          { session }
-        );
+        for (const s of ret.serials) {
+          const {unit} = await resolveSerialUnit(db, session, tenantId, s, {
+            lotId: ret.lotId,
+            expectedStatus: 'Returned',
+          });
+          await transitionSerialUnit(db, session, unit._id, {
+            transition: 'SupplierReturnReversal',
+            expected: {
+              tenantId,
+              productId: ret.productId,
+              lotId: ret.lotId,
+              status: 'Returned',
+              version: unit.version,
+            },
+            nextState: {
+              status: nextSerialStatus,
+            },
+          });
+        }
       }
 
       // Decrement quantityReturned on purchase line
@@ -1986,7 +1970,7 @@ export async function recordSupplierPayment(
             {
               _id: alloc.targetId,
               tenantId,
-              billStatus: 'Posted',
+              billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']},
               lines: {
                 $elemMatch: {
                   lineId: alloc.purchaseLineId,
@@ -2185,7 +2169,7 @@ export async function allocateSupplierAdvance(
             {
               _id: alloc.targetId,
               tenantId,
-              billStatus: 'Posted',
+              billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']},
               lines: {
                 $elemMatch: {
                   lineId: alloc.purchaseLineId,
@@ -2514,7 +2498,7 @@ export async function recordSupplierReturn(
     async session => {
       const purchase = await col<PurchaseDocument>(db, 'purchases').findOne({_id: input.purchaseId, tenantId}, {session});
       if (!purchase) throw new AppError(404, 'Purchase record not found.');
-      if (purchase.billStatus !== 'Posted') throw new AppError(400, 'Cannot return goods for an unposted bill.');
+      if (!['Posted', 'Credited', 'FullyCredited'].includes(purchase.billStatus)) throw new AppError(400, 'Cannot return goods for an unposted bill.');
 
       const line = purchase.lines.find((l: any) => l.lineId === input.purchaseLineId);
       if (!line || line.lineType !== 'Product') {
@@ -2529,6 +2513,13 @@ export async function recordSupplierReturn(
       // Check stockLot
       const lot = await col<StockLotDocument>(db, 'stockLots').findOne({_id: input.lotId, tenantId}, {session});
       if (!lot) throw new AppError(404, 'Stock lot not found.');
+      if (lot.purchaseId !== purchase._id || lot.purchaseLineId !== line.lineId || lot.productId !== line.productId) {
+        throw new AppError(400, 'Choose a stock lot received against this exact purchase line.');
+      }
+      const serialKeys = (input.serials || []).map(s => canonicalSerialKey(s));
+      if (new Set(serialKeys).size !== serialKeys.length) throw new AppError(400, 'Duplicate serial numbers are not allowed.');
+      if (!line.productSnapshot.isSerialTracked && (input.serials || []).length) throw new AppError(400, 'Quantity-tracked products do not accept serial selections.');
+
 
       if (input.condition === 'Defective') {
         if (lot.quantityDefective < input.quantity) {
@@ -2541,21 +2532,19 @@ export async function recordSupplierReturn(
       }
 
       // Serial check
+      const resolvedSerials: Array<{unit: any; version: number}> = [];
       if (line.productSnapshot.isSerialTracked) {
         if (!input.serials || input.serials.length !== input.quantity) {
           throw new AppError(400, `Serialized return requires exactly ${input.quantity} serial numbers.`);
         }
 
+        const expectedStatus = input.condition === 'Defective' ? 'Defective' : 'InStock';
         for (const s of input.serials) {
-          const norm = s.trim().toUpperCase();
-          const expectedStatus = input.condition === 'Defective' ? 'Defective' : 'InStock';
-          const su = await col(db, 'serialUnits').findOne({tenantId, lotId: input.lotId, serialNormalized: norm}, {session});
-          if (!su) {
-            throw new AppError(400, `Serial ${s} does not belong to this stock lot.`);
-          }
-          if (su.status !== expectedStatus && su.status !== 'InStock' && su.status !== 'Defective') {
-            throw new AppError(400, `Serial ${s} has status ${su.status} and cannot be returned.`);
-          }
+          const res = await resolveSerialUnit(db, session, tenantId, s, {
+            lotId: input.lotId,
+            expectedStatus,
+          });
+          resolvedSerials.push(res);
         }
       }
 
@@ -2585,8 +2574,8 @@ export async function recordSupplierReturn(
         quantityReturned: input.quantity,
       };
       if (input.condition === 'Sellable') lotIncrement.quantityRemaining = -input.quantity;
-      await col(db, 'stockLots').updateOne(
-        {_id: input.lotId, tenantId},
+      const changedLot = await col(db, 'stockLots').updateOne(
+        {_id: input.lotId, tenantId, [lotField]: {$gte: input.quantity}},
         {
           $inc: lotIncrement,
           $set: {updatedAt: now},
@@ -2594,14 +2583,24 @@ export async function recordSupplierReturn(
         {session}
       );
 
+      if (changedLot.modifiedCount !== 1) throw new AppError(409, 'Stock changed. Reload available stock before returning.');
+
       // Update serials if serialized
-      if (line.productSnapshot.isSerialTracked && input.serials) {
-        for (const s of input.serials) {
-          await col(db, 'serialUnits').updateOne(
-            {tenantId, lotId: input.lotId, serialNormalized: s.trim().toUpperCase()},
-            {$set: {status: 'Returned', updatedAt: now}},
-            {session}
-          );
+      if (line.productSnapshot.isSerialTracked && resolvedSerials.length > 0) {
+        for (const item of resolvedSerials) {
+          await transitionSerialUnit(db, session, item.unit._id, {
+            transition: 'SupplierReturn',
+            expected: {
+              tenantId,
+              productId: line.productId,
+              lotId: input.lotId,
+              status: input.condition === 'Defective' ? 'Defective' : 'InStock',
+              version: item.version,
+            },
+            nextState: {
+              status: 'Returned',
+            },
+          });
         }
       }
 
@@ -2690,6 +2689,10 @@ export async function acceptReturnCreditNote(
       if (!ret) throw new AppError(404, 'Supplier return record not found.');
       if (ret.status !== 'PendingCreditAcceptance') {
         throw new AppError(400, 'Credit note for this return was already accepted.');
+      }
+      if (ret.isReversed) throw new AppError(409, 'This stock return was reversed.');
+      if (input.acceptedCreditPaise > ret.totalReturnCreditPaise) {
+        throw new AppError(400, 'Return credit cannot exceed the recorded return value. Record unrelated supplier adjustments separately.');
       }
 
       const purchase = await col<PurchaseDocument>(db, 'purchases').findOne({_id: ret.purchaseId, tenantId}, {session});
@@ -2969,19 +2972,26 @@ export async function reverseSupplierCreditNote(
         );
       }
 
-      // If any liability was allocated to a bill, restore it
+      // Credit reversal must restore the same line, not just the bill header.
       if (creditNote.allocatedLiabilityPaise > 0 && creditNote.purchaseId) {
-        await col(db, 'purchases').updateOne(
-          {_id: creditNote.purchaseId, tenantId},
-          {
-            $inc: {
-              creditedLiabilityPaise: -creditNote.allocatedLiabilityPaise,
-              duePaise: creditNote.allocatedLiabilityPaise,
-            },
-            $set: {billStatus: 'Posted', paymentStatus: 'Unpaid', updatedAt: now},
-          },
-          {session}
+        if (creditNote.lines.length !== 1 || !creditNote.lines[0].lineId) {
+          throw new AppError(409, 'This credit needs explicit line allocation history before reversal. No balances were changed.');
+        }
+        const lineId = creditNote.lines[0].lineId;
+        const amount = creditNote.allocatedLiabilityPaise;
+        const restored = await col(db, 'purchases').findOneAndUpdate(
+          {_id: creditNote.purchaseId, tenantId, creditedLiabilityPaise: {$gte: amount},
+            lines: {$elemMatch: {lineId, creditedLiabilityPaise: {$gte: amount}}}},
+          {$inc: {creditedLiabilityPaise: -amount, duePaise: amount,
+            'lines.$[line].creditedLiabilityPaise': -amount, 'lines.$[line].remainingDuePaise': amount},
+           $set: {updatedAt: now, updatedBy: identity.userId}},
+          {session, returnDocument: 'after', arrayFilters: [{'line.lineId': lineId}]}
         );
+        if (!restored) throw new AppError(409, 'Credit allocation history does not reconcile with the bill. No balances were changed.');
+        await col(db, 'purchases').updateOne({_id: creditNote.purchaseId, tenantId}, {$set: {
+          billStatus: restored.creditedLiabilityPaise > 0 ? 'Credited' : 'Posted',
+          paymentStatus: restored.duePaise === 0 ? 'Paid' : restored.allocatedPaidPaise > 0 ? 'PartlyPaid' : 'Unpaid',
+        }}, {session});
       }
 
       const revDoc: SupplierCreditNoteReversalDocument = {
@@ -3266,7 +3276,7 @@ export async function getSupplierStatement(
             $match: {
               tenantId,
               supplierId,
-              billStatus: 'Posted',
+              billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']},
               postingDate: dateFilter,
             },
           },
@@ -3511,7 +3521,7 @@ export async function getSupplierStatement(
       {$group: {_id: null, sum: {$sum: '$remainingAmountPaise'}}},
     ]).toArray(),
     col<PurchaseDocument>(db, 'purchases').aggregate([
-      {$match: {tenantId, supplierId, billStatus: 'Posted', duePaise: {$gt: 0}}},
+      {$match: {tenantId, supplierId, billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']}, duePaise: {$gt: 0}}},
       {$group: {_id: null, sum: {$sum: '$duePaise'}}},
     ]).toArray(),
     col<SupplierAdvanceDocument>(db, 'supplierAdvances').aggregate([
@@ -3599,7 +3609,7 @@ export async function listPurchases(
   const filter: Filter<PurchaseDocument> = {tenantId};
 
   if (params.hasDue) {
-    filter.billStatus = 'Posted';
+    filter.billStatus = {$in: ['Posted', 'Credited', 'FullyCredited']} as any;
     filter.duePaise = {$gt: 0};
   }
 
@@ -3637,7 +3647,7 @@ export async function listPurchases(
     if (params.status === 'Draft' || params.status === 'Confirmed' || params.status === 'Cancelled') {
       filter.documentStatus = params.status;
     } else if (params.status === 'Posted') {
-      filter.billStatus = 'Posted';
+      filter.billStatus = {$in: ['Posted', 'Credited', 'FullyCredited']} as any;
     } else if (params.status === 'Unpaid' || params.status === 'PartlyPaid' || params.status === 'Paid') {
       filter.paymentStatus = params.status;
     }
@@ -3683,7 +3693,7 @@ export async function getPurchaseSummary(
             {$count: 'count'},
           ],
           postedTotals: [
-            {$match: {billStatus: 'Posted'}},
+            {$match: {billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']}}},
             {
               $group: {
                 _id: null,
@@ -3694,11 +3704,11 @@ export async function getPurchaseSummary(
             },
           ],
           unpaidDue: [
-            {$match: {billStatus: 'Posted', paymentStatus: {$in: ['Unpaid', 'PartlyPaid']}}},
+            {$match: {billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']}, paymentStatus: {$in: ['Unpaid', 'PartlyPaid']}}},
             {$group: {_id: null, sum: {$sum: '$duePaise'}}},
           ],
           awaitingReceiptCount: [
-            {$match: {billStatus: 'Posted', receiptStatus: 'NotReceived'}},
+            {$match: {billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']}, receiptStatus: 'NotReceived'}},
             {$count: 'count'},
           ],
           partlyReceivedCount: [
@@ -3960,7 +3970,7 @@ export async function migratePhase35StockMovements(
                 (lot.quantityReserved || 0) +
                 (lot.quantityDefective || 0) +
                 (lot.quantitySold || 0) +
-                (lot.quantityReturned || 0);
+                (lot.quantityReturned || 0) + (lot.quantityRemoved || 0);
     if (sum !== lot.quantityReceived) {
       anomalies.push(`Lot ${lot._id} conservation invariant failed: received=${lot.quantityReceived}, sum=${sum}`);
     }
@@ -4045,6 +4055,7 @@ export async function migratePhase35StockMovements(
           quantityDefective: lot.quantityDefective ?? 0,
           quantitySold: lot.quantitySold ?? 0,
           quantityReturned: lot.quantityReturned ?? 0,
+          quantityRemoved: lot.quantityRemoved ?? 0,
           updatedAt: lot.updatedAt ?? new Date(),
         }}
       );

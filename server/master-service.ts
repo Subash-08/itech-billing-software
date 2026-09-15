@@ -1,4 +1,6 @@
 import 'server-only';
+import {removeAvailableStock} from './stock-adjustment-core';
+import {initializeAccountBalances} from './account-initialization';
 import {Db, ClientSession} from 'mongodb';
 import {database, mongo, AppError} from './db';
 import {Identity} from './security';
@@ -10,6 +12,7 @@ import {
   SupplierInput,
   ProductInput,
   StockAdjustmentInput,
+  StockAdjustmentInputSchema,
   ServiceCatalogInput,
   InvoiceTemplateInput,
   OpeningDraftInput,
@@ -20,6 +23,12 @@ import {
   normalizePhone,
   SERIALIZED_CATEGORIES,
 } from './master-schema';
+import {
+  canonicalSerialKey,
+  resolveSerialUnit,
+  transitionSerialUnit,
+  assertSerialsAvailableForCreation,
+} from './serial-identity';
 
 export const uid = (prefix: string) =>
   `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
@@ -105,6 +114,25 @@ export async function updateCompanySettings(identity: Identity, input: CompanySe
   } finally {
     await session.endSession();
   }
+}
+
+export async function updateCompanyLogo(identity: Identity, logoFileId: string | null) {
+  const db = await database();
+  if (logoFileId) {
+    const file = await col(db, 'files').findOne({_id: logoFileId, tenantId: identity.tenantId});
+    if (!file) {
+      throw new AppError(404, 'Logo file not found.');
+    }
+    if (file.mime && !file.mime.startsWith('image/')) {
+      throw new AppError(400, 'Logo file must be an image (PNG, JPEG, WebP, SVG).');
+    }
+  }
+  await col(db, 'companySettings').updateOne(
+    {tenantId: identity.tenantId},
+    {$set: {logoFileId, updatedAt: new Date(), updatedBy: identity.userId}},
+    {upsert: true}
+  );
+  return {success: true, logoFileId};
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,6 +1062,7 @@ export async function restoreProduct(identity: Identity, id: string) {
 }
 
 export async function adjustProductStock(identity: Identity, id: string, input: StockAdjustmentInput) {
+  input = StockAdjustmentInputSchema.parse(input);
   const client = await mongo();
   const session = client.startSession();
 
@@ -1052,9 +1081,9 @@ export async function adjustProductStock(identity: Identity, id: string, input: 
           idempotencyKey: input.idempotencyKey,
         }, {session});
         if (existing) {
-          const requestedSerials = [...(input.serials || [])].map(String).sort();
-          const existingSerials = [...(existing.serials || [])].map(String).sort();
-          const sameRequest = existing.productId === id && existing.qty === input.delta &&
+          const requestedSerials = [...(input.serials || [])].map(canonicalSerialKey).sort();
+          const existingSerials = [...(existing.serials || [])].map(canonicalSerialKey).sort();
+          const sameRequest = existing.productId === id && existing.qty === input.delta && existing.reason === input.reason &&
             JSON.stringify(existingSerials) === JSON.stringify(requestedSerials);
           if (!sameRequest) {
             throw new AppError(409, 'This idempotency key was already used for a different stock adjustment.');
@@ -1076,7 +1105,11 @@ export async function adjustProductStock(identity: Identity, id: string, input: 
         throw new AppError(400, 'Cannot adjust stock for an archived product.');
       }
 
+      if (!product.isSerialTracked && input.serials.length)
+        throw new AppError(400, 'This product does not accept serial numbers.');
       const businessDate = todayInKolkata();
+      if (!setup.cutoffDate || businessDate <= setup.cutoffDate)
+        throw new AppError(409, 'Stock adjustments must be dated after the finalized opening cutoff.');
       const moveId = uid('MOV');
 
       if (input.delta > 0) {
@@ -1105,6 +1138,7 @@ export async function adjustProductStock(identity: Identity, id: string, input: 
             quantityDefective: 0,
             quantitySold: 0,
             quantityReturned: 0,
+            quantityRemoved: 0,
             costPaise: product.costPaise,
             sourceReference: input.reason,
             createdAt: new Date(),
@@ -1113,40 +1147,25 @@ export async function adjustProductStock(identity: Identity, id: string, input: 
         );
 
         if (product.isSerialTracked && input.serials) {
-          for (const s of input.serials) {
-            const norm = normalizeSerial(s);
-            const existingUnit = await col(db, 'serialUnits').findOne({
-              tenantId: identity.tenantId,
-              serialNormalized: norm,
-            }, {session});
-
-            if (existingUnit) {
-              if (existingUnit.productId === id && (existingUnit.status === 'Removed' || existingUnit.status === 'Defective')) {
-                await col(db, 'serialUnits').updateOne(
-                  {_id: existingUnit._id},
-                  {$set: {status: 'InStock', lotId, updatedAt: new Date()}},
-                  {session}
-                );
-              } else {
-                throw new AppError(400, `Serial "${s}" is already registered in stock.`);
-              }
-            } else {
-              await col(db, 'serialUnits').insertOne(
-                {
-                  _id: uid('SER'),
-                  tenantId: identity.tenantId,
-                  productId: id,
-                  lotId,
-                  serialOriginal: s.trim(),
-                  serialNormalized: norm,
-                  status: 'InStock',
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-                },
-                {session}
-              );
-            }
-          }
+          const canonicalMap = await assertSerialsAvailableForCreation(
+            db,
+            session,
+            identity.tenantId,
+            input.serials
+          );
+          const serialDocs = input.serials.map((s: string) => ({
+            _id: uid('SER'),
+            tenantId: identity.tenantId,
+            productId: id,
+            lotId,
+            serialOriginal: s.trim(),
+            serialNormalized: canonicalMap.get(s) || canonicalSerialKey(s),
+            status: 'InStock',
+            version: 1,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          }));
+          await col(db, 'serialUnits').insertMany(serialDocs, {session});
         }
 
         await col(db, 'stockMovements').insertOne(
@@ -1157,6 +1176,9 @@ export async function adjustProductStock(identity: Identity, id: string, input: 
             productId: id,
             lotId,
             qty: input.delta,
+            onHandDelta: input.delta,
+            sellableDelta: input.delta,
+            defectiveDelta: 0,
             reason: input.reason,
             reference: 'Manual adjustment',
             idempotencyKey: input.idempotencyKey || undefined,
@@ -1167,65 +1189,10 @@ export async function adjustProductStock(identity: Identity, id: string, input: 
           {session}
         );
       } else {
-        const qtyToRemove = Math.abs(input.delta);
-
-        if (product.isSerialTracked) {
-          if (!input.serials || input.serials.length !== qtyToRemove) {
-            throw new AppError(400, `Provide exactly ${qtyToRemove} serial numbers to remove.`);
-          }
-          const normalized = input.serials.map(normalizeSerial);
-          const matchedSerials = await col(db, 'serialUnits')
-            .find({
-              tenantId: identity.tenantId,
-              productId: id,
-              serialNormalized: {$in: normalized},
-              status: 'InStock',
-            }, {session})
-            .toArray();
-
-          if (matchedSerials.length !== qtyToRemove) {
-            throw new AppError(400, 'Some specified serial numbers are not currently in stock.');
-          }
-
-          const disposition = input.reason.toLowerCase().includes('defect') ? 'Defective' : 'Removed';
-
-          await col(db, 'serialUnits').updateMany(
-            {tenantId: identity.tenantId, _id: {$in: matchedSerials.map((s) => s._id)}},
-            {$set: {status: disposition, updatedAt: new Date()}},
-            {session}
-          );
-
-          for (const s of matchedSerials) {
-            if (s.lotId) {
-              await col(db, 'stockLots').updateOne(
-                {_id: s.lotId, tenantId: identity.tenantId, quantityRemaining: {$gt: 0}},
-                {$inc: {quantityRemaining: -1, quantitySellable: -1}},
-                {session}
-              );
-            }
-          }
-        } else {
-          const lots = await col(db, 'stockLots')
-            .find({tenantId: identity.tenantId, productId: id, quantityRemaining: {$gt: 0}}, {session})
-            .sort({receivedDate: 1})
-            .toArray();
-
-          let remainingToDeduct = qtyToRemove;
-          for (const l of lots) {
-            if (remainingToDeduct <= 0) break;
-            const take = Math.min(l.quantityRemaining, remainingToDeduct);
-            await col(db, 'stockLots').updateOne(
-              {_id: l._id, tenantId: identity.tenantId},
-              {$inc: {quantityRemaining: -take, quantitySellable: -take}},
-              {session}
-            );
-            remainingToDeduct -= take;
-          }
-
-          if (remainingToDeduct > 0) {
-            throw new AppError(400, `Insufficient stock on hand to deduct ${qtyToRemove} units.`);
-          }
-        }
+        const lotAllocations = await removeAvailableStock(db, session, {
+          tenantId: identity.tenantId, productId: id, quantity: Math.abs(input.delta),
+          isSerialTracked: !!product.isSerialTracked, serials: input.serials,
+        });
 
         await col(db, 'stockMovements').insertOne(
           {
@@ -1234,6 +1201,14 @@ export async function adjustProductStock(identity: Identity, id: string, input: 
             date: businessDate,
             productId: id,
             qty: input.delta,
+            onHandDelta: input.delta,
+            sellableDelta: input.delta,
+            defectiveDelta: 0,
+            removedDelta: -input.delta,
+            lotId: lotAllocations.length === 1 ? lotAllocations[0].lotId : undefined,
+            lotAllocations,
+            operation: 'PhysicalRemoval',
+
             reason: input.reason,
             reference: 'Manual adjustment',
             idempotencyKey: input.idempotencyKey || undefined,
@@ -1747,6 +1722,8 @@ export async function finalizeOpeningSetup(identity: Identity, options?: Finaliz
 
       // 3. Post Opening Stock Lots, Serial Units, and Stock Movements
       const stockLots = draft.draftStockLots || [];
+      await assertSerialsAvailableForCreation(db, session, identity.tenantId,
+        stockLots.flatMap((lot: any) => lot.serials || []));
       let totalSerialsCreated = 0;
       for (const lot of stockLots) {
         const prod = await col(db, 'products').findOne({_id: lot.productId, tenantId: identity.tenantId, status: 'Active'}, {session});
@@ -1762,6 +1739,8 @@ export async function finalizeOpeningSetup(identity: Identity, options?: Finaliz
           }
         }
 
+        if (!prod.isSerialTracked && lot.serials?.length)
+          throw new AppError(400, `Product "${prod.name}" does not accept serial numbers.`);
         const lotId = uid('LOT');
         const lotDoc = {
           _id: lotId,
@@ -1776,6 +1755,7 @@ export async function finalizeOpeningSetup(identity: Identity, options?: Finaliz
           quantityDefective: 0,
           quantitySold: 0,
           quantityReturned: 0,
+          quantityRemoved: 0,
           costPaise: lot.costPaise ?? prod.costPaise,
           sourceReference: 'OPENING-SETUP',
           createdAt: new Date(),
@@ -1790,6 +1770,9 @@ export async function finalizeOpeningSetup(identity: Identity, options?: Finaliz
             productId: lot.productId,
             lotId,
             qty: lot.qty,
+            onHandDelta: lot.qty,
+            sellableDelta: lot.qty,
+            defectiveDelta: 0,
             reason: 'Opening stock',
             reference: 'OPENING-SETUP',
             serials: lot.serials || [],
@@ -1806,8 +1789,9 @@ export async function finalizeOpeningSetup(identity: Identity, options?: Finaliz
             productId: lot.productId,
             lotId,
             serialOriginal: s.trim(),
-            serialNormalized: normalizeSerial(s),
+            serialNormalized: canonicalSerialKey(s),
             status: 'InStock',
+            version: 1,
             createdAt: new Date(),
             updatedAt: new Date(),
           }));
@@ -1874,6 +1858,8 @@ export async function finalizeOpeningSetup(identity: Identity, options?: Finaliz
         {$set: finalizedRecord},
         {session}
       );
+
+      await initializeAccountBalances(db, identity.tenantId, session);
 
       // 6. Record Transactional Audit
       await recordAudit(db, {

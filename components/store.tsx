@@ -56,6 +56,7 @@ type Store = {
   refreshMasterData: () => Promise<void>;
 
   saveSettingsApi: (f: Partial<State['settings']>, logoFile?: File) => Promise<boolean>;
+  updateLogoApi: (file: File | null) => Promise<boolean>;
   saveCustomerApi: (c: any, id?: string) => Promise<{success: boolean; warning?: string}>;
   archiveCustomerApi: (id: string) => Promise<boolean>;
   restoreCustomerApi: (id: string) => Promise<boolean>;
@@ -88,7 +89,7 @@ type Store = {
   savePurchaseApi: (p: any, postImmediately?: boolean, existingId?: string, version?: number) => Promise<{success: boolean; purchase?: any; error?: string}>;
   confirmPurchaseOrderApi: (id: string, expectedVersion?: number) => Promise<{success: boolean; purchase?: any; error?: string}>;
   postPurchaseBillApi: (id: string, invoiceNumber: string, invoiceDate: string, expectedVersion?: number) => Promise<{success: boolean; purchase?: any; error?: string}>;
-  receivePurchaseStockApi: (id: string, lines: any[]) => Promise<boolean>;
+  receivePurchaseStockApi: (id: string, lines: any[], options?: {idempotencyKey: string; receiptDate: string}) => Promise<boolean>;
   recordReceiveShortcutApi: (payload: any) => Promise<{success: boolean; purchase?: any; receipt?: any; error?: string}>;
   recordReceiveAndPayShortcutApi: (payload: any) => Promise<{success: boolean; purchase?: any; receipt?: any; payment?: any; error?: string}>;
   recordSupplierPaymentApi: (payload: any) => Promise<{success: boolean; payment?: any; error?: string}>;
@@ -396,6 +397,45 @@ export function StoreProvider({children}: {children: ReactNode}) {
     }
   }
 
+  async function updateLogoApi(file: File | null) {
+    if (!isLive) {
+      const logo = file ? URL.createObjectURL(file) : '';
+      setState((s) => ({...s, settings: {...s.settings, logo}}));
+      notify(file ? 'Logo preview updated.' : 'Logo removed.');
+      return true;
+    }
+    try {
+      let logoFileId: string | null = null;
+      if (file) {
+        if (file.size > 2 * 1024 * 1024) {
+          throw new Error('Choose a logo image under 2 MB.');
+        }
+        const form = new FormData();
+        form.set('file', file);
+        const upRes = await fetch('/api/files', {method: 'POST', body: form});
+        const upData = await upRes.json();
+        if (!upRes.ok) throw new Error(upData.error || 'Failed to upload logo.');
+        if (!upData.id) throw new Error('File upload succeeded but no file ID was returned.');
+        logoFileId = upData.id;
+      }
+
+      const res = await fetch('/api/company/settings', {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({logoFileId}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update company logo.');
+
+      await refreshMasterData();
+      notify(logoFileId ? 'Company logo saved.' : 'Company logo removed.');
+      return true;
+    } catch (e) {
+      notify(e instanceof Error ? e.message : 'Error updating company logo.');
+      return false;
+    }
+  }
+
   async function saveCustomerApi(c: any, id?: string) {
     if (!isLive) {
       const value = {...c, id: id || `CUS-${Date.now()}`};
@@ -684,7 +724,24 @@ export function StoreProvider({children}: {children: ReactNode}) {
       const method = id ? 'PUT' : 'POST';
       const current = id ? state.templates.find((tpl: any) => tpl.id === id) : null;
       const expectedRevision = t.expectedRevision ?? (current as any)?.currentRevision ?? (current as any)?.revision;
-      const payload = id ? {...t, expectedRevision} : t;
+      if (id && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1))
+        throw new Error('Reload this template before editing: its saved revision is missing.');
+      const payload = {
+        name: t.name,
+        title: t.title ?? '',
+        paper: t.paper ?? 'A4',
+        orientation: t.orientation ?? 'portrait',
+        fontSize: t.fontSize ?? 11,
+        accent: t.accent ?? '#373737',
+        borders: !!t.borders,
+        striped: !!t.striped,
+        logoPosition: t.logoPosition ?? 'left',
+        fields: t.fields ?? {},
+        columns: t.columns ?? [],
+        footer: t.footer ?? 'This is a computer generated invoice.',
+        isDefault: !!t.isDefault,
+        ...(id ? {expectedRevision} : {}),
+      };
       const res = await fetch(url, {
         method,
         headers: {'Content-Type': 'application/json'},
@@ -1059,16 +1116,16 @@ export function StoreProvider({children}: {children: ReactNode}) {
     }
   }
 
-  async function receivePurchaseStockApi(id: string, lines: any[]) {
+  async function receivePurchaseStockApi(id: string, lines: any[], options?: {idempotencyKey: string; receiptDate: string}) {
     if (!isLive) return true;
     try {
       const res = await fetch(`/api/purchases/${id}/receive`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
-          receiptDate: new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Kolkata'}).format(new Date()),
+          receiptDate: options?.receiptDate ?? new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Kolkata'}).format(new Date()),
           lines,
-          idempotencyKey: `receipt-${id}-${crypto.randomUUID()}`,
+          idempotencyKey: options?.idempotencyKey ?? `receipt-${id}-${crypto.randomUUID()}`,
         }),
       });
       const data = await res.json();
@@ -2235,6 +2292,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
         resetDemoData,
         loginAsLiveCompany,
         saveSettingsApi,
+        updateLogoApi,
         saveCustomerApi,
         archiveCustomerApi,
         restoreCustomerApi,

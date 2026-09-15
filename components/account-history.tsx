@@ -1,6 +1,6 @@
 'use client';
 
-import {useState, useEffect} from 'react';
+import {useState, useEffect, useRef} from 'react';
 import Link from 'next/link';
 import {Download, Printer, Plus, AlertCircle, ArrowUpRight} from 'lucide-react';
 import {useStore} from './store';
@@ -94,6 +94,13 @@ export default function AccountHistory({id, supplier = false}: {id: string; supp
   const [acceptCnDate, setAcceptCnDate] = useState(TODAY);
   const [acceptCnAllocate, setAcceptCnAllocate] = useState(true);
   const [acceptCnBusy, setAcceptCnBusy] = useState(false);
+  const acceptAttempt = useRef<{fingerprint: string; key: string} | null>(null);
+  const acceptSubmitting = useRef(false);
+  const returnCreditPaise = (r: any) => r?.totalReturnCreditPaise ?? r?.estimatedCreditPaise ??
+    (r?.totalReturnCredit != null ? Math.round(r.totalReturnCredit * 100) : null);
+  const currentBusinessDate = () => new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
 
   // Reversal Modal State
   const [reversalModal, setReversalModal] = useState<{open: boolean; type: 'payment' | 'return'; id: string; title: string}>({open: false, type: 'payment', id: '', title: ''});
@@ -387,7 +394,10 @@ export default function AccountHistory({id, supplier = false}: {id: string; supp
   async function handleCreateCreditNote(e: React.FormEvent) {
     e.preventDefault();
     const amt = parseFloat(cnAmount);
-    if (!amt || amt <= 0) return notify('Please enter a valid credit amount.');
+    const maximum = returnCreditPaise(acceptCnModal.returnDoc);
+    if (!Number.isFinite(amt) || amt <= 0 || maximum == null || Math.round(amt * 100) > maximum)
+      return notify('Confirm a positive supplier-agreed reduction no greater than the return value. This is not a payment.');
+    acceptSubmitting.current = true;
     const gstRate = parseFloat(cnGstRate) || 0;
     const basisPoints = Math.round(gstRate * 100);
     const taxableBasePaise = Math.round(amt * 100);
@@ -425,30 +435,39 @@ export default function AccountHistory({id, supplier = false}: {id: string; supp
 
   async function handleAcceptReturnCreditNote(e: React.FormEvent) {
     e.preventDefault();
-    if (!acceptCnModal.returnDoc) return;
+    if (!acceptCnModal.returnDoc || acceptSubmitting.current) return;
     const amt = parseFloat(acceptCnAmount);
-    if (!amt || amt <= 0) return notify('Please enter a valid credit amount.');
+    const maximum = returnCreditPaise(acceptCnModal.returnDoc);
+    if (!Number.isFinite(amt) || amt <= 0 || maximum == null || Math.round(amt * 100) > maximum)
+      return notify('Confirm a positive supplier-agreed reduction no greater than the return value. This is not a payment.');
+    acceptSubmitting.current = true;
     setAcceptCnBusy(true);
     try {
       const returnId = acceptCnModal.returnDoc._id || acceptCnModal.returnDoc.id;
-      const res = await acceptReturnCreditNoteApi(returnId, {
+      const payload = {
         supplierCreditNoteNumber: acceptCnNumber.trim() || undefined,
         date: acceptCnDate || TODAY,
         acceptedCreditPaise: Math.round(amt * 100),
         allocateToBillDue: acceptCnAllocate,
-        idempotencyKey: `arcn-${returnId}-${Date.now()}`,
-      });
+      };
+      const fingerprint = JSON.stringify({returnId, ...payload});
+      if (acceptAttempt.current?.fingerprint !== fingerprint)
+        acceptAttempt.current = {fingerprint, key: crypto.randomUUID()};
+      const res = await acceptReturnCreditNoteApi(returnId, {...payload, idempotencyKey: acceptAttempt.current.key});
       if (res.success) {
-        notify('Return credit note accepted.');
+        notify('Supplier credit confirmed. No cash or bank payment was made.');
         setAcceptCnModal({open: false, returnDoc: null});
         setAcceptCnNumber('');
         setAcceptCnAmount('');
         loadReturns();
         loadCredits();
+        void loadPurchases();
+        loadAdvances();
       } else {
         notify(res.error || 'Failed to accept return credit note.');
       }
     } finally {
+      acceptSubmitting.current = false;
       setAcceptCnBusy(false);
     }
   }
@@ -710,11 +729,14 @@ export default function AccountHistory({id, supplier = false}: {id: string; supp
                             style={{padding: '0.2rem 0.5rem', fontSize: '0.78rem'}}
                             onClick={() => {
                               setAcceptCnModal({open: true, returnDoc: r});
-                              setAcceptCnAmount(((r.estimatedCreditPaise || 0) / 100).toFixed(2));
+                              setAcceptCnAmount(returnCreditPaise(r) == null ? '' : (returnCreditPaise(r) / 100).toFixed(2));
+                              setAcceptCnAllocate(true);
+                              setAcceptCnDate(currentBusinessDate());
+                              acceptAttempt.current = null;
                               setAcceptCnNumber('');
                             }}
                           >
-                            Accept credit note
+                            Confirm supplier credit
                           </Btn>
                         )}
                         {r.canReverse && !r.isReversed && (
@@ -1221,7 +1243,7 @@ export default function AccountHistory({id, supplier = false}: {id: string; supp
                   <option value="Other">Other reason</option>
                 </select>
               </Field>
-              <Field label="Supplier credit note #">
+              <Field label="Supplier credit note number (optional)">
                 <input
                   placeholder="e.g. SCN-2026-001"
                   value={cnNumber}
@@ -1290,27 +1312,29 @@ export default function AccountHistory({id, supplier = false}: {id: string; supp
       {/* Accept Return Credit Note Modal */}
       {acceptCnModal.open && acceptCnModal.returnDoc && (
         <Modal
-          title={`Accept Credit Note for Return ${acceptCnModal.returnDoc.returnNumber || acceptCnModal.returnDoc._id}`}
-          onClose={() => setAcceptCnModal({open: false, returnDoc: null})}
+          title={`Confirm supplier credit · ${acceptCnModal.returnDoc.returnNumber || acceptCnModal.returnDoc._id}`}
+          onClose={() => { if (!acceptCnBusy) setAcceptCnModal({open: false, returnDoc: null}); }}
         >
           <form onSubmit={handleAcceptReturnCreditNote}>
             <div className="form-body stack">
               <p className="notice">
-                Accept supplier credit note for returned items and adjust supplier payable ledger.
+                No payment is made here. Confirm how much the supplier agrees to deduct for the returned goods. The suggested amount comes from the original purchase, including its discount and tax. If credit exceeds the amount still owed on this line, the excess becomes supplier credit; it is not a cash refund.
               </p>
-              <Field label="Supplier credit note #">
+              <Field label="Supplier credit note number (optional)">
                 <input
                   placeholder="e.g. SCN-RETURN-042"
                   value={acceptCnNumber}
                   onChange={(e) => setAcceptCnNumber(e.target.value)}
                 />
               </Field>
-              <Field label="Accepted credit amount (₹) *">
+              <Field label="Supplier-agreed bill reduction (₹) *" hint="Keep the suggested return value unless the supplier agrees a smaller amount. Do not enter money paid.">
                 <input
                   required
                   type="number"
                   min="0.01"
                   step="0.01"
+                  max={returnCreditPaise(acceptCnModal.returnDoc) == null ? undefined : returnCreditPaise(acceptCnModal.returnDoc) / 100}
+                  disabled={acceptCnBusy}
                   value={acceptCnAmount}
                   onChange={(e) => setAcceptCnAmount(e.target.value)}
                 />
@@ -1329,7 +1353,7 @@ export default function AccountHistory({id, supplier = false}: {id: string; supp
                   checked={acceptCnAllocate}
                   onChange={(e) => setAcceptCnAllocate(e.target.checked)}
                 />
-                <span>Allocate credit toward original purchase bill balance</span>
+                <span>Reduce the original purchase-line due (recommended). Uncheck only to keep all of this amount as supplier credit for later use.</span>
               </label>
             </div>
             <div className="form-actions">
@@ -1337,7 +1361,7 @@ export default function AccountHistory({id, supplier = false}: {id: string; supp
                 Cancel
               </Btn>
               <Btn type="submit" disabled={acceptCnBusy}>
-                {acceptCnBusy ? 'Accepting…' : 'Accept credit note'}
+                {acceptCnBusy ? 'Confirming…' : 'Confirm credit — no payment'}
               </Btn>
             </div>
           </form>

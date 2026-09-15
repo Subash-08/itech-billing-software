@@ -1,6 +1,7 @@
 import {endpoint, requireIdentity} from '@/server/auth';
 import {database} from '@/server/db';
 import {col} from '@/server/purchase-service';
+import {normalizeSerial} from '@/server/master-schema';
 import {InventoryQuerySchema} from '@/server/purchase-schema';
 
 export const runtime = 'nodejs';
@@ -19,7 +20,7 @@ export async function GET(request: Request) {
     if (lotId) filter.lotId = lotId;
     if (status) filter.status = status;
     if (search) {
-      const normalized = search.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const normalized = normalizeSerial(search);
       if (normalized) filter.serialNormalized = {$regex: normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')};
     }
 

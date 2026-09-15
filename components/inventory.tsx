@@ -667,7 +667,7 @@ export default function Inventory({id}: {id?: string}) {
                           <th>Sellable</th>
                           <th>Defective</th>
                           <th>Reserved</th>
-                          <th>On Hand</th>
+                          <th>On Hand</th><th>Removed / written off</th>
                           <th>Unit Cost</th>
                           <th>Actions</th>
                         </tr>
@@ -684,7 +684,7 @@ export default function Inventory({id}: {id?: string}) {
                               {lot.quantityDefective || 0}
                             </td>
                             <td>{lot.quantityReserved || 0}</td>
-                            <td>{(lot.quantitySellable ?? lot.quantityRemaining ?? 0) + (lot.quantityReserved || 0) + (lot.quantityDefective || 0)}</td>
+                            <td>{(lot.quantitySellable ?? lot.quantityRemaining ?? 0) + (lot.quantityReserved || 0) + (lot.quantityDefective || 0)}</td><td>{lot.quantityRemoved ?? 0}</td>
                             <td>{money((lot.costPaise || 0) / 100)}</td>
                             <td>
                               <div style={{display: 'flex', gap: '0.5rem'}}>
@@ -1167,7 +1167,7 @@ export default function Inventory({id}: {id?: string}) {
             }}
           >
             <div className="form-body stack">
-              <Field label="Quantity change" hint="Positive to add, negative to remove.">
+              <Field label="Quantity change" hint="Positive adds genuinely new stock. Negative records physical removal / write-off of available stock; it does not reduce supplier dues. Use supplier return for goods sent back, or Quarantine for items still in the shop but defective.">
                 <input required type="number" value={delta} onChange={(e) => setDelta(+e.target.value)} />
               </Field>
               <Field label="Affected serial numbers">

@@ -58,10 +58,12 @@ export const CustomerDetailsSchema = z.object({
 
 export const CustomerInputSchema = z.object({
   name: z.string().trim().min(1, 'Name is required').max(120),
-  phone: z.string().trim().max(20).optional().default(''),
+  phone: z.string().trim().min(1, 'Customer phone number is required').max(30)
+    .regex(/^[+()0-9 .-]+$/, 'Enter a valid phone number')
+    .refine(value => { const digits = value.replace(/\D/g, ''); return digits.length >= 10 && digits.length <= 15; }, 'Enter 10 to 15 phone digits, including country code when applicable'),
   email: z.string().trim().email().or(z.literal('')).optional().default(''),
   address: z.string().trim().max(500).optional().default(''),
-  gst: z.string().trim().regex(gstinRegex, 'Invalid GSTIN format').or(z.literal('')).optional().default(''),
+  gst: z.string().trim().toUpperCase().regex(gstinRegex, 'Invalid GSTIN format').or(z.literal('')).optional().default(''),
   type: z.enum(['Individual', 'Business']).default('Individual'),
   creditLimitPaise: z.number().int().min(0).optional().default(0),
   paymentTermsDays: z.number().int().min(0).max(365).optional().default(30),
@@ -127,7 +129,7 @@ export const ProductInputSchema = z.object({
 export type ProductInput = z.infer<typeof ProductInputSchema>;
 
 export const StockAdjustmentInputSchema = z.object({
-  delta: z.number().int().refine((n) => n !== 0, 'Quantity delta cannot be zero'),
+  delta: z.number().int().min(-10000).max(10000).refine((n) => n !== 0, 'Quantity delta cannot be zero'),
   serials: z.array(z.string().trim().min(1)).optional().default([]),
   reason: z.string().trim().min(1, 'Reason is required').max(200),
   idempotencyKey: z.string().trim().min(1).max(100).optional(),

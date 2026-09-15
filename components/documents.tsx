@@ -1,6 +1,6 @@
 'use client';
 
-import {useState, useEffect} from 'react';
+import {useState, useEffect, useRef} from 'react';
 import Link from 'next/link';
 import {useRouter, useSearchParams} from 'next/navigation';
 import {
@@ -98,12 +98,17 @@ export function DocumentComposer({
     saveInvoiceDraftApi,
     fetchInvoiceDetailApi,
     issueInvoiceApi,
+    refreshMasterData,
   } = useStore();
   const router = useRouter();
   const params = useSearchParams();
 
   const editId = params.get('edit') || (existingId && existingId !== 'new' ? existingId : undefined);
+  const [activeDraftId, setActiveDraftId] = useState<string | undefined>(editId);
   const isEditMode = !!editId;
+  const isReceiptMode = purchase && !!existingId && existingId !== 'new';
+  const [receiptLoaded, setReceiptLoaded] = useState(false);
+  const receiptAttempt = useRef<{key: string; fingerprint: string; date: string} | null>(null);
   const source = state.bills.find((b) => b.id === (params.get('from') || params.get('edit')));
   const existing = state.purchases.find((p) => p.id === (existingId || params.get('edit')));
   const job = state.jobs.find((j) => j.id === (params.get('job') || source?.jobId));
@@ -122,7 +127,7 @@ export function DocumentComposer({
       return existing.lines.map((line: any) => ({
         ...line,
         clientLineKey: line.clientLineKey || uid('CLK'),
-        qty: Math.max(0, (line.quantityOrdered ?? line.qty) - (line.quantityReceived ?? 0) - (line.quantityCancelled ?? 0)),
+        qty: isReceiptMode ? Math.max(0, (line.quantityOrdered ?? line.qty) - (line.quantityReceived ?? 0) - (line.quantityCancelled ?? 0)) : (line.quantityOrdered ?? line.qty),
         serials: [],
       }));
     }
@@ -181,6 +186,14 @@ export function DocumentComposer({
   const [serviceId, setServiceId] = useState('');
   const [payRows, setPayRows] = useState<{account: string; amount: string; method: string}[]>([]);
   const [templateId, setTemplateId] = useState(source?.templateId || state.defaultTemplateId);
+  const templateChosenByUser = useRef(false);
+  useEffect(() => {
+    // Initial demo state may render before live bootstrap completes. Only an
+    // implicit selection follows the live default; explicit choices never switch.
+    if (!templateChosenByUser.current && !source?.templateId && !params.get('edit') && !params.get('from')) {
+      setTemplateId(state.defaultTemplateId || '');
+    }
+  }, [isLive, state.defaultTemplateId, source?.templateId, params]);
   const [shipSeparate, setShipSeparate] = useState(!!source?.shipTo);
   const [shipTo, setShipTo] = useState(
     source?.shipTo || {name: '', address: '', phone: '', state: 'Tamil Nadu', postalCode: ''}
@@ -293,6 +306,7 @@ export function DocumentComposer({
     if (!loadId) return;
     try {
       if (purchase) {
+        setReceiptLoaded(false);
         const res = await fetch(`/api/purchases/${encodeURIComponent(loadId)}`);
         if (!res.ok) throw new Error('Failed to load purchase draft.');
         const data = await res.json();
@@ -300,7 +314,7 @@ export function DocumentComposer({
         setLoadedVersion(p.version);
         setLoadedBillStatus(p.billStatus);
         if (p.supplierId) setCustomerId(p.supplierId);
-        if (p.orderDate || p.date) setDate(p.orderDate || p.date);
+        if (!isReceiptMode && (p.orderDate || p.date)) setDate(p.orderDate || p.date);
         if (p.dueDate || p.due) setDue(p.dueDate || p.due);
         if (p.taxMode) setTaxMode(p.taxMode);
         if (p.placeOfSupply) setPlaceOfSupply(p.placeOfSupply);
@@ -308,16 +322,12 @@ export function DocumentComposer({
         if (p.notes !== undefined) setNotes(p.notes);
         if (p.supplierInvoiceNumber || p.reference) setRef(p.supplierInvoiceNumber || p.reference);
         if (p.attachmentFileId) setAttachmentFileId(p.attachmentFileId);
-        if (p.lines?.length) {
-          setLines(p.lines.map((l: any) => ({
-            ...l,
-            clientLineKey: l.clientLineKey || uid('CLK'),
-            qty: l.quantityOrdered ?? l.qty,
-            rate: l.unitCostPaise ? l.unitCostPaise / 100 : (l.rate || 0),
-            tax: l.taxBasisPoints ? l.taxBasisPoints / 100 : (l.tax || 0),
-            discount: l.discountValue ? l.discountValue / 100 : (l.discount || 0),
-          })));
-        }
+        const mapped = mapPurchaseFromApi(p);
+        setLines(mapped.lines.map((line: any) => ({...line,
+          qty: isReceiptMode ? Math.max(0, line.quantityOrdered - line.quantityReceived - line.quantityCancelled) : line.quantityOrdered,
+          serials: [],
+        })));
+        setReceiptLoaded(true);
         notify('Reloaded latest purchase draft.');
       } else if (quotation) {
         const data = await fetchQuotationDetailApi(loadId);
@@ -435,6 +445,7 @@ export function DocumentComposer({
   }, [isLive, isEditMode, editId]);
 
   function update(i: number, k: keyof Line, v: unknown) {
+    if (isReceiptMode && k !== 'qty' && k !== 'serials') return;
     setLines((ls) => ls.map((l, n) => (n === i ? {...l, [k]: v, ...(k === 'qty' ? {serials: []} : {})} : l)));
   }
 
@@ -459,6 +470,10 @@ export function DocumentComposer({
   }
 
   function addProduct() {
+    if (isReceiptMode) {
+      notify('Receive products already on this purchase. Create a separate purchase for additional items.');
+      return;
+    }
     const p = productChoices.find((p) => p.id === product) || state.products.find((p) => p.id === product);
     if (!p) return;
     if (lines.some((l) => l.productId === p.id && l.lineType !== 'Charge')) {
@@ -482,6 +497,7 @@ export function DocumentComposer({
         discount: 0,
         tax: p.tax,
         serials: [],
+        isSerialTracked: p.isSerialTracked,
         hsn: p.hsn,
         warranty: p.warranty,
         clientLineKey: uid('CLK'),
@@ -507,7 +523,8 @@ export function DocumentComposer({
       !lines.length ||
       lines.some(
         (l) =>
-          !l.name.trim() ||
+          typeof l.name !== 'string' || !l.name.trim() ||
+          ![l.qty, l.rate, l.discount, l.tax].every(Number.isFinite) ||
           l.qty <= 0 ||
           !Number.isInteger(l.qty) ||
           l.rate < 0 ||
@@ -525,27 +542,43 @@ export function DocumentComposer({
   }
 
   async function handlePurchaseAction(action: 'draft' | 'confirm' | 'post' | 'receive' | 'receive_pay') {
-    if (!validateBasic()) return;
-
-    // Existing purchase receipt mode
-    if (existing) {
-      const receiptLines = lines
-        .filter((line: any) => line.lineType !== 'Charge' && line.qty > 0)
-        .map((line: any) => ({
-          lineId: line.lineId,
-          quantityReceived: line.qty,
-          serials: line.serials || [],
-        }));
-      if (!receiptLines.length) {
-        notify('Enter a quantity to receive for at least one product.');
-        return;
+    if (busy) return;
+    // Receiving is independent of bill editing and payment. No due-date or rate
+    // validation is needed; the server owns the original purchase snapshot.
+    if (isReceiptMode) {
+      if (!editId || !receiptLoaded) { notify('Wait for the purchase to load, or reload it before receiving.'); return; }
+      const productLines = lines.filter(line => line.lineType !== 'Charge');
+      for (const line of productLines as any[]) {
+        const remaining = line.quantityOrdered - line.quantityReceived - line.quantityCancelled;
+        if (!line.lineId || !Number.isInteger(line.qty) || line.qty < 0 || line.qty > remaining) {
+          notify('Enter a whole quantity between zero and the remaining quantity for each product.'); return;
+        }
+        if (line.qty > 0 && (line.isSerialTracked ? line.serials.length !== line.qty : line.serials.length !== 0)) {
+          notify(line.isSerialTracked ? `Enter ${line.qty} serial numbers for ${line.name}.` : `${line.name} does not track serial numbers.`); return;
+        }
       }
+      const receiptLines = productLines.filter(line => line.qty > 0).map((line: any) => ({
+        lineId: line.lineId, quantityReceived: line.qty, serials: line.serials || [],
+      }));
+      if (!receiptLines.length) { notify('Enter a quantity to receive for at least one product.'); return; }
+      const fingerprint = JSON.stringify(receiptLines);
+      if (receiptAttempt.current && receiptAttempt.current.fingerprint !== fingerprint) {
+        notify('The previous receipt attempt has different quantities. Reopen the purchase and check its receipt history before submitting a changed receipt.'); return;
+      }
+      receiptAttempt.current ??= {key: `receipt-${crypto.randomUUID()}`, fingerprint,
+        date: new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Kolkata'}).format(new Date())};
       setBusy(true);
-      const ok = await receivePurchaseStockApi(existing.id, receiptLines);
-      setBusy(false);
-      if (ok) router.push('/purchases/' + existing.id);
+      try {
+        const ok = await receivePurchaseStockApi(editId, receiptLines, {
+          idempotencyKey: receiptAttempt.current.key, receiptDate: receiptAttempt.current.date,
+        });
+        if (ok) { notify('Stock received. No supplier payment was recorded; any unpaid amount remains due.'); router.push('/purchases/' + editId); }
+      } catch (error: unknown) {
+        notify(error instanceof Error ? error.message : 'Unable to receive stock.');
+      } finally { setBusy(false); }
       return;
     }
+    if (!validateBasic()) return;
 
     if (!isLive) {
       // Fallback in-memory
@@ -627,6 +660,8 @@ export function DocumentComposer({
         if (!postInvoiceNumber && ref) setPostInvoiceNumber(ref);
         setPayModalOpen(true);
       }
+    } catch (error: unknown) {
+      notify(error instanceof Error ? error.message : 'Unable to save purchase.');
     } finally {
       setBusy(false);
     }
@@ -710,6 +745,15 @@ export function DocumentComposer({
       return saveSales();
     }
 
+    if (!quotation) {
+      const missing = lines.findIndex(l => l.lineType !== 'Service' && l.lineType !== 'Charge' && l.productId &&
+        (l.stockAllocations ?? []).reduce((n, a) => n + a.quantity, 0) !== l.qty);
+      if (missing >= 0) {
+        notify(`Select ${lines[missing].qty} unit(s) of ${lines[missing].name} from received stock, then save or issue again.`);
+        setAllocatingLineIndex(missing);
+        return;
+      }
+    }
     setBusy(true);
     try {
       let templateRecord: InvoiceTemplate | undefined;
@@ -861,16 +905,20 @@ export function DocumentComposer({
         lines: linesPayload,
       };
 
-      const res = await saveInvoiceDraftApi(invoicePayload, editId, loadedVersion);
+      const targetDraftId = activeDraftId || editId;
+      const res = await saveInvoiceDraftApi(invoicePayload, targetDraftId, loadedVersion);
       if (!res.success) {
         notify(res.error || 'Failed to save invoice draft.');
         return;
       }
 
       const draftObj = res.draft || {};
-      const draftId = draftObj._id || draftObj.id || id;
-      const draftVer = draftObj.version || loadedVersion || 1;
+      const draftId = draftObj._id || draftObj.id || targetDraftId || id;
+      const draftVer = draftObj.version || (loadedVersion ? loadedVersion + 1 : 1);
       const draftTotalPaise = draftObj.totalPaise || Math.round(sum.total * 100);
+
+      setActiveDraftId(draftId);
+      setLoadedVersion(draftVer);
 
       if (action === 'save_draft') {
         notify('Invoice draft saved.');
@@ -930,8 +978,8 @@ export function DocumentComposer({
 
       <PageHead
         title={
-          existing
-            ? 'Receive purchase'
+          isReceiptMode
+            ? 'Receive stock — payment optional'
             : purchase
             ? 'New purchase'
             : quotation
@@ -942,7 +990,7 @@ export function DocumentComposer({
         }
         description={
           purchase
-            ? 'Draft purchase orders, post supplier bills, or record receiving and settlement in one step.'
+            ? (isReceiptMode ? 'Receive delivered goods into inventory. No money leaves Cash or Bank. Pay the supplier later from this purchase or the supplier profile.' : 'Record a supplier bill and receive goods without payment, or choose Record + Receive + Pay to pay now.')
             : quotation
             ? 'Prepare an estimate. Stock and money stay unchanged until a sale is confirmed.'
             : 'Add items, check the totals and issue the customer’s invoice.'
@@ -954,8 +1002,8 @@ export function DocumentComposer({
               Preview
             </Btn>
             {purchase ? (
-              existing ? (
-                <Btn disabled={busy} onClick={() => handlePurchaseAction('receive')}>
+              isReceiptMode ? (
+                <Btn disabled={busy || !receiptLoaded} onClick={() => handlePurchaseAction('receive')}>
                   <Check size={16} />
                   Receive stock
                 </Btn>
@@ -1039,16 +1087,56 @@ export function DocumentComposer({
 
             {!purchase && (
               <Field label="Invoice layout / template">
-                <select value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
-                  {state.templates.map((t) => (
+                <select
+                  value={templateId}
+                  onChange={(e) => {
+                    templateChosenByUser.current = true;
+                    setTemplateId(e.target.value);
+                  }}
+                >
+                  <option value="">Select a saved template</option>
+                  {state.templates.filter(t => !isLive || t.status === 'Active').map((t) => (
                     <option key={t.id} value={t.id}>
                       {t.name}
                     </option>
                   ))}
                 </select>
-                <Link className="text-link" href="/templates">
-                  Edit layouts and logo
-                </Link>
+                {isLive && state.templates.filter(t => t.status === 'Active').length === 0 ? (
+                  <div style={{marginTop: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap'}}>
+                    <span style={{color: '#d97706', fontSize: '0.85rem'}}>No saved templates found.</span>
+                    <Link className="text-link" href="/templates" target="_blank" rel="noopener noreferrer">
+                      Create template (opens new tab)
+                    </Link>
+                    <button
+                      type="button"
+                      className="link-button"
+                      style={{fontSize: '0.85rem', color: 'var(--primary)'}}
+                      onClick={async () => {
+                        await refreshMasterData();
+                        notify('Templates refreshed.');
+                      }}
+                    >
+                      Refresh templates
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.75rem'}}>
+                    <Link className="text-link" href="/templates" target="_blank" rel="noopener noreferrer">
+                      Edit layouts and logo (new tab)
+                    </Link>
+                    <button
+                      type="button"
+                      className="link-button"
+                      style={{fontSize: '0.85rem', color: 'var(--muted, #666)'}}
+                      onClick={async () => {
+                        await refreshMasterData();
+                        notify('Templates refreshed.');
+                      }}
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                )}
               </Field>
             )}
 
@@ -1313,7 +1401,7 @@ export function DocumentComposer({
                               ? 'Serials at sale'
                               : (l as any).stockAllocations?.length
                               ? `${(l as any).stockAllocations.reduce((s: number, a: any) => s + (a.quantity || 0), 0)} allocated`
-                              : `${l.serials.length} serial(s) / Lots`}
+                              : 'Select stock / serial numbers'}
                           </button>
                         )}
                         {l.lineType === 'Charge' && <Badge>Charge</Badge>}
@@ -1324,8 +1412,9 @@ export function DocumentComposer({
                         aria-label={`Item ${i + 1} quantity`}
                         className="table-input"
                         type="number"
-                        min="1"
-                        disabled={isPosted || l.lineType === 'Charge'}
+                        min={isReceiptMode ? 0 : 1}
+                        max={isReceiptMode ? Math.max(0, (l as any).quantityOrdered - (l as any).quantityReceived - (l as any).quantityCancelled) : undefined}
+                        disabled={(isPosted && !isReceiptMode) || l.lineType === 'Charge'}
                         value={l.qty}
                         onChange={(e) => update(i, 'qty', +e.target.value)}
                       />
@@ -1681,7 +1770,7 @@ export function DocumentComposer({
             Cancel
           </Link>
           {purchase ? (
-            existing ? (
+            isReceiptMode ? (
               <Btn disabled={busy} onClick={() => handlePurchaseAction('receive')}>
                 Confirm stock receipt
               </Btn>
@@ -1923,6 +2012,7 @@ export function DocumentComposer({
 
       {allocatingLineIndex !== null && lines[allocatingLineIndex] && (
         <StockAllocationModal
+          key={`${allocatingLineIndex}-${lines[allocatingLineIndex].productId}`}
           isOpen={allocatingLineIndex !== null}
           onClose={() => setAllocatingLineIndex(null)}
           line={lines[allocatingLineIndex]}
@@ -2962,10 +3052,10 @@ export default function Documents({
                           <th>Item</th>
                           <th>Type</th>
                           <th>Ordered</th>
-                          <th>Received</th>
+                          <th>Received</th><th>Returned to supplier</th>
                           <th>Rate</th>
                           <th>Serials</th>
-                          <th>Total</th>
+                          <th>Total</th><th>Paid / advance applied</th><th>Credit applied</th><th>Due</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -2975,9 +3065,9 @@ export default function Documents({
                             <td><Badge>{l.lineType || 'Product'}</Badge></td>
                             <td>{l.quantityOrdered ?? l.qty}</td>
                             <td>{l.quantityReceived ?? (record.status === 'Received' ? l.qty : 0)}</td>
-                            <td>{money(l.rate)}</td>
-                            <td>{l.serials?.join(', ') || 'Quantity tracked / not received'}</td>
-                            <td>{money(lineTotal(l, record.inclusive).total)}</td>
+                            <td>{l.quantityReturned ?? 0}</td><td>{money(l.rate)}</td>
+                            <td>{l.serials?.join(', ') || (l.isSerialTracked ? 'See receipt lots for serial numbers' : 'Quantity tracked — no serial selection')}</td>
+                            <td>{money(l.total ?? lineTotal(l, record.inclusive).total)}</td><td>{money(l.paid ?? 0)}</td><td>{money(l.credited ?? 0)}</td><td>{money(l.due ?? 0)}</td>
                           </tr>
                         ))}
                       </tbody>

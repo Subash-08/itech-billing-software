@@ -79,8 +79,7 @@ const previewPaths = new Set([
   '/register', '/profit', '/communication',
 ]);
 const mixedPaths = new Set([
-  '/', '/customers', '/templates', '/returns', '/sales',
-  '/quotations', '/reservations', '/warranty', '/dues', '/reports',
+  '/', '/customers', '/dues', '/reports',
 ]);
 
 function moduleMode(url: string): ModuleMode {

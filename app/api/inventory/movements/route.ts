@@ -16,7 +16,7 @@ export async function GET(request: Request) {
 
     const filter: Record<string, any> = {tenantId: identity.tenantId};
     if (productId) filter.productId = productId;
-    if (lotId) filter.lotId = lotId;
+    if (lotId) filter.$or = [{lotId}, {'lotAllocations.lotId': lotId}];
     if (dateFrom || dateTo) {
       filter.date = {};
       if (dateFrom) filter.date.$gte = dateFrom;
@@ -33,12 +33,15 @@ export async function GET(request: Request) {
       col(db, 'stockMovements').countDocuments(filter),
     ]);
 
-    const mapped = movements.map(m => ({
-      ...m,
-      onHandDelta: m.onHandDelta !== undefined ? m.onHandDelta : m.qty,
-      sellableDelta: m.sellableDelta !== undefined ? m.sellableDelta : m.qty,
-      defectiveDelta: m.defectiveDelta !== undefined ? m.defectiveDelta : 0,
-    }));
+    const mapped = movements.map(m => {
+      const allocation = lotId ? m.lotAllocations?.find((a: {lotId: string; quantity: number; serials: string[]}) => a.lotId === lotId) : undefined;
+      if (allocation) return {...m, documentQty: m.qty, lotId,
+        qty: -allocation.quantity, onHandDelta: -allocation.quantity,
+        sellableDelta: -allocation.quantity, defectiveDelta: 0,
+        removedDelta: allocation.quantity, serials: allocation.serials};
+      return {...m, onHandDelta: m.onHandDelta ?? m.qty,
+        sellableDelta: m.sellableDelta ?? m.qty, defectiveDelta: m.defectiveDelta ?? 0};
+    });
 
     return {
       records: mapped,

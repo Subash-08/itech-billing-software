@@ -71,6 +71,11 @@ export function PersonForm({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!supplier && (!/^[+()0-9 .-]+$/.test(form.phone.trim()) ||
+        form.phone.replace(/\D/g, '').length < 10 || form.phone.replace(/\D/g, '').length > 15)) {
+      setError('Enter the customer phone number (10 to 15 digits).');
+      return;
+    }
     setBusy(true);
     setError('');
 
@@ -124,9 +129,12 @@ export function PersonForm({
             <Field label="Phone number">
               <input
                 type="tel"
+                required={!supplier}
+                maxLength={30}
+                autoComplete="tel"
                 value={form.phone}
                 onChange={(e) => set('phone', e.target.value)}
-                placeholder="Optional or contact number"
+                placeholder={supplier ? 'Optional contact number' : 'Customer phone number (required)'}
               />
             </Field>
             <Field label="Email (optional)">

@@ -1,6 +1,7 @@
 'use client';
 
 import {useState, useEffect} from 'react';
+import SupplierReturnForm from './supplier-return-form';
 import Link from 'next/link';
 import {useSearchParams} from 'next/navigation';
 import {Plus, RotateCcw} from 'lucide-react';
@@ -447,7 +448,10 @@ export default function Returns() {
       </Card>
 
       {/* Return Creation Modal */}
-      {form && (
+      {form && isLive && form.type === 'Supplier' && (
+        <SupplierReturnForm initialPurchaseId={form.reference} onClose={() => setForm(null)} />
+      )}
+      {form && !(isLive && form.type === 'Supplier') && (
         <Modal
           title={
             form.type === 'Customer'

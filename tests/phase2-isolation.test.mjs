@@ -371,6 +371,7 @@ try {
     ],
     footer: 'Thank you for choosing Alpha Systems',
     isDefault: true,
+    expectedRevision: 1,
   }, compA.cookie);
   assert.equal(tplUpdateRes.status, 200);
   assert.equal(tplUpdateRes.body.currentRevision, 2);
@@ -395,6 +396,7 @@ try {
     ],
     footer: 'Footer',
     isDefault: false, // Trying to leave company with no default
+    expectedRevision: 2,
   }, compA.cookie);
   assert.equal(unsetDefaultRes.status, 400, 'Company must maintain at least one default template');
   console.log('✓ Template revisions tracked immutably & single default guaranteed');
