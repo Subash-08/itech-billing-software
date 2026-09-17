@@ -22,7 +22,281 @@ import {
   CloseBusinessDaySchema,
   ScheduleHolidayInput,
   ScheduleHolidaySchema,
+  BulkHolidayCloseInput,
+  BulkHolidayCloseSchema,
 } from './closing-schema';
+
+export function nextCalendarDay(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + 1));
+  return dt.toISOString().slice(0, 10);
+}
+
+export function prevCalendarDay(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d - 1));
+  return dt.toISOString().slice(0, 10);
+}
+
+export function kolkataDayBounds(dateStr: string): { start: Date; end: Date } {
+  const start = new Date(`${dateStr}T00:00:00.000+05:30`);
+  const end = new Date(start.getTime() + 86400000);
+  return { start, end };
+}
+
+export async function checkDayActivity(
+  db: Db,
+  tenantId: string,
+  date: string,
+  session?: ClientSession
+): Promise<{ hasActivity: boolean; reasons: string[] }> {
+  const { start, end } = kolkataDayBounds(date);
+  const reasons: string[] = [];
+
+  if (session) {
+    // Sequential execution to avoid driver session multiplexing contention inside transactions
+    const invoicesCount = await col(db, 'invoices').countDocuments(
+      {tenantId, invoiceDate: date, status: {$in: ['Issued', 'PartlyPaid', 'Paid']}},
+      {session}
+    );
+    if (invoicesCount > 0) reasons.push(`${invoicesCount} issued/paid invoice(s)`);
+
+    const movementsCount = await col(db, 'accountMovements').countDocuments(
+      {tenantId, date},
+      {session}
+    );
+    if (movementsCount > 0) reasons.push(`${movementsCount} account movement(s)`);
+
+    const purchasesCount = await col(db, 'purchases').countDocuments(
+      {tenantId, postingDate: date, billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']}},
+      {session}
+    );
+    if (purchasesCount > 0) reasons.push(`${purchasesCount} posted purchase bill(s)`);
+
+    const receiptsCount = await col(db, 'purchaseReceipts').countDocuments(
+      {tenantId, receiptDate: date},
+      {session}
+    );
+    if (receiptsCount > 0) reasons.push(`${receiptsCount} goods receipt(s)`);
+
+    const supplierReturnsCount = await col(db, 'supplierReturns').countDocuments(
+      {tenantId, $or: [{date}, {returnDate: date}]},
+      {session}
+    );
+    if (supplierReturnsCount > 0) reasons.push(`${supplierReturnsCount} supplier return(s)`);
+
+    const customerReturnsCount = await col(db, 'customerReturns').countDocuments(
+      {tenantId, $or: [{date}, {returnDate: date}]},
+      {session}
+    );
+    if (customerReturnsCount > 0) reasons.push(`${customerReturnsCount} customer return(s)`);
+
+    const stockMovementsCount = await col(db, 'stockMovements').countDocuments(
+      {
+        tenantId,
+        $or: [
+          {date},
+          {movementDate: date},
+          {createdAt: {$gte: start, $lt: end}},
+        ],
+      },
+      {session}
+    );
+    if (stockMovementsCount > 0) reasons.push(`${stockMovementsCount} inventory movement(s)`);
+
+    const serviceAuditCount = await col(db, 'auditHistory').countDocuments(
+      {
+        tenantId,
+        entityType: 'serviceJob',
+        timestamp: {$gte: start, $lt: end},
+      },
+      {session}
+    );
+    const serviceJobsCount = await col(db, 'serviceJobs').countDocuments(
+      {
+        tenantId,
+        $or: [
+          {createdAt: {$gte: start, $lt: end}},
+          {deliveredAt: {$gte: start, $lt: end}},
+          {'estimate.revisionHistory.createdAt': {$gte: start, $lt: end}},
+          {'parts.consumedAt': {$gte: start, $lt: end}},
+        ],
+      },
+      {session}
+    );
+    if (serviceAuditCount > 0 || serviceJobsCount > 0) {
+      const totalService = Math.max(serviceAuditCount, serviceJobsCount);
+      reasons.push(`${totalService} service job activity/event(s)`);
+    }
+
+    const adjustmentsCount = await col(db, 'manualProfitAdjustments').countDocuments(
+      {tenantId, date},
+      {session}
+    );
+    if (adjustmentsCount > 0) reasons.push(`${adjustmentsCount} profit adjustment(s)`);
+  } else {
+    // Parallel execution for fast read-only preview outside transaction
+    const [
+      invoicesCount,
+      movementsCount,
+      purchasesCount,
+      receiptsCount,
+      supplierReturnsCount,
+      customerReturnsCount,
+      stockMovementsCount,
+      serviceAuditCount,
+      serviceJobsCount,
+      adjustmentsCount,
+    ] = await Promise.all([
+      col(db, 'invoices').countDocuments(
+        {tenantId, invoiceDate: date, status: {$in: ['Issued', 'PartlyPaid', 'Paid']}}
+      ),
+      col(db, 'accountMovements').countDocuments(
+        {tenantId, date}
+      ),
+      col(db, 'purchases').countDocuments(
+        {tenantId, postingDate: date, billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']}}
+      ),
+      col(db, 'purchaseReceipts').countDocuments(
+        {tenantId, receiptDate: date}
+      ),
+      col(db, 'supplierReturns').countDocuments(
+        {tenantId, $or: [{date}, {returnDate: date}]}
+      ),
+      col(db, 'customerReturns').countDocuments(
+        {tenantId, $or: [{date}, {returnDate: date}]}
+      ),
+      col(db, 'stockMovements').countDocuments(
+        {
+          tenantId,
+          $or: [
+            {date},
+            {movementDate: date},
+            {createdAt: {$gte: start, $lt: end}},
+          ],
+        }
+      ),
+      col(db, 'auditHistory').countDocuments(
+        {
+          tenantId,
+          entityType: 'serviceJob',
+          timestamp: {$gte: start, $lt: end},
+        }
+      ),
+      col(db, 'serviceJobs').countDocuments(
+        {
+          tenantId,
+          $or: [
+            {createdAt: {$gte: start, $lt: end}},
+            {deliveredAt: {$gte: start, $lt: end}},
+            {'estimate.revisionHistory.createdAt': {$gte: start, $lt: end}},
+            {'parts.consumedAt': {$gte: start, $lt: end}},
+          ],
+        }
+      ),
+      col(db, 'manualProfitAdjustments').countDocuments(
+        {tenantId, date}
+      ),
+    ]);
+
+    if (invoicesCount > 0) reasons.push(`${invoicesCount} issued/paid invoice(s)`);
+    if (movementsCount > 0) reasons.push(`${movementsCount} account movement(s)`);
+    if (purchasesCount > 0) reasons.push(`${purchasesCount} posted purchase bill(s)`);
+    if (receiptsCount > 0) reasons.push(`${receiptsCount} goods receipt(s)`);
+    if (supplierReturnsCount > 0) reasons.push(`${supplierReturnsCount} supplier return(s)`);
+    if (customerReturnsCount > 0) reasons.push(`${customerReturnsCount} customer return(s)`);
+    if (stockMovementsCount > 0) reasons.push(`${stockMovementsCount} inventory movement(s)`);
+    if (serviceAuditCount > 0 || serviceJobsCount > 0) {
+      const totalService = Math.max(serviceAuditCount, serviceJobsCount);
+      reasons.push(`${totalService} service job activity/event(s)`);
+    }
+    if (adjustmentsCount > 0) reasons.push(`${adjustmentsCount} profit adjustment(s)`);
+  }
+
+  return {
+    hasActivity: reasons.length > 0,
+    reasons,
+  };
+}
+
+export async function assertClosingHistoryContinuity(
+  db: Db,
+  tenantId: string,
+  cutoffDate: string,
+  closedThrough: string | null,
+  session?: ClientSession
+): Promise<void> {
+  const latestClosings = await col<DailyClosingDocument>(db, 'dailyClosings')
+    .find({tenantId}, session ? {session} : {})
+    .sort({date: -1})
+    .limit(1)
+    .toArray();
+
+  if (!closedThrough) {
+    if (latestClosings.length > 0) {
+      throw new AppError(
+        409,
+        `Inconsistent closing state: daily closings exist (latest: ${latestClosings[0].date}) but closedThrough is null.`
+      );
+    }
+    return;
+  }
+
+  if (closedThrough < cutoffDate) {
+    throw new AppError(
+      409,
+      `Inconsistent closing state: closedThrough (${closedThrough}) is before opening cutoff date (${cutoffDate}).`
+    );
+  }
+
+  if (latestClosings.length === 0) {
+    throw new AppError(
+      409,
+      `Inconsistent closing state: closedThrough is ${closedThrough} but no daily closing record exists.`
+    );
+  }
+
+  if (latestClosings[0].date !== closedThrough) {
+    throw new AppError(
+      409,
+      `Inconsistent closing state: latest daily closing (${latestClosings[0].date}) does not match closedThrough (${closedThrough}).`
+    );
+  }
+
+  // Detect any missing dates or internal gaps within previously closed history
+  const firstClosedDate = nextCalendarDay(cutoffDate);
+  const expectedDates: string[] = [];
+  let d = firstClosedDate;
+  while (d <= closedThrough) {
+    expectedDates.push(d);
+    d = nextCalendarDay(d);
+  }
+
+  const closedDocs = await col<DailyClosingDocument>(db, 'dailyClosings')
+    .find(
+      {tenantId, date: {$gte: firstClosedDate, $lte: closedThrough}},
+      session ? {session} : {}
+    )
+    .project({date: 1})
+    .toArray();
+
+  const closedSet = new Set(closedDocs.map(c => c.date));
+  for (const expectedDate of expectedDates) {
+    if (!closedSet.has(expectedDate)) {
+      throw new AppError(
+        409,
+        `Inconsistent closing history: internal gap detected in closed history. Business day ${expectedDate} has no daily closing record between ${firstClosedDate} and ${closedThrough}.`
+      );
+    }
+  }
+
+  if (closedDocs.length !== expectedDates.length) {
+    throw new AppError(
+      409,
+      `Inconsistent closing history: duplicate closing records detected in closed history between ${firstClosedDate} and ${closedThrough}.`
+    );
+  }
+}
 
 export interface DailyClosingDocument {
   _id: string;
@@ -253,8 +527,7 @@ export async function getClosingDashboard(db: Db, identity: Identity, date: stri
     }
   }
 
-  operatingExpensesPaise = Math.max(0, operatingExpensesPaise);
-
+  // Preserve negative operating expenses (when reversals exceed expenses) consistently across preview & finalization
   const expectedClosingCashPaise = startingBalances.cashPaise + (cashInPaise - cashOutPaise);
   const expectedClosingBankPaise = startingBalances.bankPaise + (bankInPaise - bankOutPaise);
 
@@ -468,21 +741,17 @@ export async function closeBusinessDay(
         );
       }
 
-      // Check holiday condition
+      // Check holiday condition using shared activity checker across all operational domains
       if (input.holiday) {
-        const [invoicesCount, movementsCount, purchasesCount] = await Promise.all([
-          col(db, 'invoices').countDocuments({tenantId, invoiceDate: date}, {session}),
-          col(db, 'accountMovements').countDocuments({tenantId, date}, {session}),
-          col(db, 'purchases').countDocuments({tenantId, postingDate: date}, {session}),
-        ]);
-
-        if (invoicesCount > 0 || movementsCount > 0 || purchasesCount > 0) {
+        const activity = await checkDayActivity(db, tenantId, date, session);
+        if (activity.hasActivity) {
           throw new AppError(
             400,
-            `Cannot close as a holiday: ${date} contains active business transactions.`
+            `Cannot close as a holiday: ${date} contains active business transactions (${activity.reasons.join(', ')}).`
           );
         }
 
+        const scheduled = await col(db, 'businessHolidays').findOne({tenantId, date}, {session});
         const startBal = await getStartingBalancesForDate(db, tenantId, date, session);
 
         const closingDoc: DailyClosingDocument = {
@@ -490,7 +759,7 @@ export async function closeBusinessDay(
           tenantId,
           date,
           status: 'Holiday',
-          note: input.note || 'Shop holiday',
+          note: input.note || scheduled?.reason || 'Shop holiday',
           snapshot: {
             cashClosingPaise: startBal.cashPaise,
             bankClosingPaise: startBal.bankPaise,
@@ -592,8 +861,7 @@ export async function closeBusinessDay(
         if (m.category === 'OtherReceipt' && val > 0) otherReceiptsPaise += val;
       }
 
-      operatingExpensesPaise = Math.max(0, operatingExpensesPaise);
-
+      // Preserve negative operating expenses (when reversals exceed expenses) consistently across preview & finalization
       const expectedCashPaise = startBal.cashPaise + (cashInPaise - cashOutPaise);
       const expectedBankPaise = startBal.bankPaise + (bankInPaise - bankOutPaise);
 
@@ -795,13 +1063,12 @@ export async function scheduleHoliday(
   const closed = await col(db, 'dailyClosings').findOne({tenantId, date: input.date});
   if (closed) throw new AppError(400, 'Cannot schedule holiday on an already closed date.');
 
-  const [invoicesCount, movementsCount] = await Promise.all([
-    col(db, 'invoices').countDocuments({tenantId, invoiceDate: input.date}),
-    col(db, 'accountMovements').countDocuments({tenantId, date: input.date}),
-  ]);
-
-  if (invoicesCount > 0 || movementsCount > 0) {
-    throw new AppError(400, 'Cannot schedule holiday on a date with existing business transactions.');
+  const activity = await checkDayActivity(db, tenantId, input.date);
+  if (activity.hasActivity) {
+    throw new AppError(
+      400,
+      `Cannot schedule holiday on a date with existing business transactions: ${activity.reasons.join(', ')}.`
+    );
   }
 
   await col(db, 'businessHolidays').updateOne(
@@ -824,4 +1091,312 @@ export async function removeHoliday(
 
   await col(db, 'businessHolidays').deleteOne({tenantId, date});
   return {success: true, date};
+}
+
+export async function getMissedDaysSummary(
+  db: Db,
+  identity: Identity,
+  fromCursor?: string
+) {
+  const tenantId = identity.tenantId;
+  await assertPhase3MigrationComplete(db, tenantId);
+
+  const opening = await col(db, 'openingSetups').findOne({tenantId});
+  if (!opening || !opening.finalizedAt || !opening.cutoffDate) {
+    throw new AppError(400, 'Opening balance setup must be finalized before reviewing unclosed days.');
+  }
+
+  const gate = await col(db, 'businessDayGates').findOne({_id: `DAY-${tenantId}`});
+  const closedThrough = gate?.closedThrough || null;
+
+  // Reconcile dailyClosings with closedThrough; detect missing dates or gaps within closed history
+  await assertClosingHistoryContinuity(db, tenantId, opening.cutoffDate, closedThrough);
+
+  const nextEligibleDate = closedThrough ? nextCalendarDay(closedThrough) : nextCalendarDay(opening.cutoffDate);
+  const today = todayInKolkata();
+  const yesterday = prevCalendarDay(today);
+
+  // If nextEligibleDate > yesterday, there are no unclosed days strictly prior to today
+  if (nextEligibleDate > yesterday) {
+    return {
+      unclosedCount: 0,
+      totalUnclosedCount: 0,
+      hasUnclosedDays: false,
+      closedThrough,
+      nextEligibleDate,
+      cutoffDate: opening.cutoffDate,
+      today,
+      batch: null,
+      pagination: {
+        currentBatchStart: nextEligibleDate,
+        currentBatchEnd: nextEligibleDate,
+        hasMore: false,
+        nextCursor: null,
+        totalDaysRemaining: 0,
+      },
+      reviewVersion: gate?.version || 0,
+      startingBalances: await getStartingBalancesForDate(db, tenantId, nextEligibleDate),
+    };
+  }
+
+  // Generate all unclosed dates strictly prior to today
+  const allUnclosedDates: string[] = [];
+  let curr = nextEligibleDate;
+  while (curr <= yesterday) {
+    allUnclosedDates.push(curr);
+    curr = nextCalendarDay(curr);
+  }
+
+  const unclosedCount = allUnclosedDates.length;
+
+  let startIndex = 0;
+  if (fromCursor) {
+    const cursorIdx = allUnclosedDates.indexOf(fromCursor);
+    if (cursorIdx >= 0) {
+      startIndex = cursorIdx;
+    }
+  }
+
+  // Max 31-day batch window
+  const batchDates = allUnclosedDates.slice(startIndex, startIndex + 31);
+  const hasMore = startIndex + 31 < allUnclosedDates.length;
+  const nextCursor = hasMore ? allUnclosedDates[startIndex + 31] : null;
+  const totalDaysRemaining = Math.max(0, allUnclosedDates.length - (startIndex + 31));
+
+  const daysDetail = await Promise.all(
+    batchDates.map(async d => {
+      const [activity, scheduledHoliday] = await Promise.all([
+        checkDayActivity(db, tenantId, d),
+        col(db, 'businessHolidays').findOne({tenantId, date: d}),
+      ]);
+
+      return {
+        date: d,
+        hasActivity: activity.hasActivity,
+        activityReasons: activity.reasons,
+        activitySummary: activity.reasons.join(', ') || undefined,
+        status: scheduledHoliday ? ('ScheduledHoliday' as const) : ('Open' as const),
+        scheduledReason: scheduledHoliday?.reason || undefined,
+      };
+    })
+  );
+
+  const fromDate = batchDates[0];
+  const toDate = batchDates[batchDates.length - 1];
+
+  // Inactive prefix selection: allow contiguous inactive days to close up to the first active day
+  const firstActiveIdx = daysDetail.findIndex(d => d.hasActivity);
+  let eligibleToDate: string | null = null;
+  let eligibleDaysCount = 0;
+  let blockReason: string | undefined;
+
+  if (startIndex > 0) {
+    blockReason = `Bulk closure must begin from the earliest unclosed date (${nextEligibleDate}). Return to the earliest range to close inactive dates.`;
+  } else if (firstActiveIdx === 0) {
+    blockReason = `The earliest unclosed day (${batchDates[0]}) contains active business transactions (${daysDetail[0].activitySummary}). Reconcile this day using Path 2 before closing subsequent days.`;
+  } else if (firstActiveIdx > 0) {
+    eligibleToDate = batchDates[firstActiveIdx - 1];
+    eligibleDaysCount = firstActiveIdx;
+    blockReason = `Days ${fromDate} to ${eligibleToDate} (${eligibleDaysCount} days) are inactive and can be closed as holidays. Day ${batchDates[firstActiveIdx]} contains active business transactions (${daysDetail[firstActiveIdx].activitySummary}).`;
+  } else {
+    // All days in this batch are inactive
+    eligibleToDate = toDate;
+    eligibleDaysCount = batchDates.length;
+  }
+
+  const canBulkCloseHoliday = eligibleToDate !== null && startIndex === 0;
+  const startingBalances = await getStartingBalancesForDate(db, tenantId, fromDate);
+
+  return {
+    unclosedCount,
+    totalUnclosedCount: unclosedCount,
+    hasUnclosedDays: true,
+    closedThrough,
+    nextEligibleDate,
+    cutoffDate: opening.cutoffDate,
+    today,
+    batch: {
+      fromDate,
+      toDate,
+      daysCount: batchDates.length,
+      canBulkCloseHoliday,
+      canBulkCloseEligiblePrefix: firstActiveIdx > 0 && startIndex === 0,
+      eligibleFromDate: fromDate,
+      eligibleToDate,
+      eligibleDaysCount,
+      hasActiveDaysInBatch: firstActiveIdx !== -1,
+      firstActiveDay: firstActiveIdx !== -1 ? daysDetail[firstActiveIdx] : null,
+      blockReason,
+      days: daysDetail,
+    },
+    pagination: {
+      currentBatchStart: fromDate,
+      currentBatchEnd: toDate,
+      hasMore,
+      nextCursor,
+      totalDaysRemaining,
+    },
+    reviewVersion: gate?.version || 0,
+    startingBalances,
+  };
+}
+
+export async function bulkCloseHolidays(
+  db: Db,
+  identity: Identity,
+  raw: unknown
+) {
+  const input = BulkHolidayCloseSchema.parse(raw);
+  const tenantId = identity.tenantId;
+
+  await assertPhase3MigrationComplete(db, tenantId);
+
+  const today = todayInKolkata();
+  if (input.toDate >= today) {
+    throw new AppError(400, 'Bulk holiday closing is only permitted for past unclosed days prior to today.');
+  }
+  if (input.fromDate > input.toDate) {
+    throw new AppError(400, 'fromDate must be on or before toDate.');
+  }
+
+  // Pre-validate bounded calendar range before constructing date arrays
+  const [fy, fm, fd] = input.fromDate.split('-').map(Number);
+  const [ty, tm, td] = input.toDate.split('-').map(Number);
+  const diffDays = Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / 86400000) + 1;
+  if (diffDays < 1) {
+    throw new AppError(400, 'fromDate must be on or before toDate.');
+  }
+  if (diffDays > 31) {
+    throw new AppError(400, `Bulk closure batch size cannot exceed 31 days. Requested: ${diffDays} days.`);
+  }
+
+  return executeIdempotentTransaction(
+    db,
+    identity,
+    input.idempotencyKey,
+    'bulkCloseHolidays',
+    `${input.fromDate}_${input.toDate}`,
+    input,
+    async (session: ClientSession) => {
+      // 1. Lock the business day gate row inside the transaction
+      const gate = await lockBusinessDay(db, session, tenantId, {
+        date: input.toDate,
+        allowClosed: true,
+      });
+
+      // 2. Explicit review version check: gate.version was incremented by 1 during lockBusinessDay
+      if (gate.version !== input.reviewVersion + 1) {
+        throw new AppError(
+          409,
+          'Business transactions or status changes occurred while review was in progress. Refresh and review before closing.'
+        );
+      }
+
+      // 3. Reconcile opening balance setup and closing history continuity
+      const opening = await col(db, 'openingSetups').findOne({tenantId}, {session});
+      if (!opening || !opening.finalizedAt || !opening.cutoffDate) {
+        throw new AppError(400, 'Opening balance setup must be finalized before closing days.');
+      }
+
+      await assertClosingHistoryContinuity(db, tenantId, opening.cutoffDate, gate.closedThrough, session);
+
+      const expectedFromDate = gate.closedThrough ? nextCalendarDay(gate.closedThrough) : nextCalendarDay(opening.cutoffDate);
+      if (input.fromDate !== expectedFromDate) {
+        throw new AppError(
+          400,
+          `Contiguity error: next unclosed day is ${expectedFromDate}, but requested fromDate is ${input.fromDate}. Days must be closed sequentially without gaps.`
+        );
+      }
+
+      // 4. Generate all dates in batch (already bounded to <= 31 days)
+      const batchDates: string[] = [];
+      let curr = input.fromDate;
+      while (curr <= input.toDate) {
+        batchDates.push(curr);
+        curr = nextCalendarDay(curr);
+      }
+
+      // 5. Check each day sequentially inside the transaction session for already-closed or real-world activity
+      for (const d of batchDates) {
+        const existing = await col<DailyClosingDocument>(db, 'dailyClosings').findOne(
+          {tenantId, date: d},
+          {session}
+        );
+        if (existing) {
+          throw new AppError(400, `Business day ${d} is already closed.`);
+        }
+
+        const activity = await checkDayActivity(db, tenantId, d, session);
+        if (activity.hasActivity) {
+          throw new AppError(
+            400,
+            `Cannot bulk-close as holiday: Day ${d} contains active business transactions (${activity.reasons.join(', ')}).`
+          );
+        }
+      }
+
+      // 6. Starting balances for the inactive stretch
+      const startBal = await getStartingBalancesForDate(db, tenantId, input.fromDate, session);
+
+      // 7. Clear superseded drafts
+      for (const d of batchDates) {
+        await col(db, 'dailyClosingDrafts').deleteOne({tenantId, date: d}, {session});
+      }
+
+      // 8. Create dailyClosing documents for all dates in batch
+      const now = new Date();
+      const closingDocs: DailyClosingDocument[] = batchDates.map(d => ({
+        _id: uid('CLS'),
+        tenantId,
+        date: d,
+        status: 'Holiday',
+        note: input.reason,
+        snapshot: {
+          cashClosingPaise: startBal.cashPaise,
+          bankClosingPaise: startBal.bankPaise,
+          combinedClosingPaise: startBal.cashPaise + startBal.bankPaise,
+          salesTotalPaise: 0,
+          invoiceCount: 0,
+          cashReceiptsPaise: 0,
+          bankReceiptsPaise: 0,
+          operatingExpensesPaise: 0,
+          otherReceiptsPaise: 0,
+          tradingProfitPaise: 0,
+          netShopProfitPaise: 0,
+        },
+        closedAt: now,
+        closedBy: identity.userId,
+      }));
+
+      await col(db, 'dailyClosings').insertMany(closingDocs, {session});
+
+      // 9. Advance gate closedThrough
+      await col(db, 'businessDayGates').updateOne(
+        {_id: `DAY-${tenantId}`, tenantId},
+        {$set: {closedThrough: input.toDate, updatedAt: now}},
+        {session}
+      );
+
+      // 10. Audit log
+      await recordAudit(
+        db,
+        {
+          identity,
+          action: 'BulkCloseHolidays',
+          entityType: 'dailyClosing',
+          entityId: `${input.fromDate}_${input.toDate}`,
+          detail: `Bulk closed ${batchDates.length} inactive day(s) from ${input.fromDate} to ${input.toDate} as holiday. Reason: ${input.reason}. Balances carried forward: Cash ₹${(startBal.cashPaise / 100).toFixed(2)}, Bank ₹${(startBal.bankPaise / 100).toFixed(2)}.`,
+        },
+        session
+      );
+
+      return {
+        success: true,
+        closedThrough: input.toDate,
+        closedDaysCount: batchDates.length,
+        fromDate: input.fromDate,
+        toDate: input.toDate,
+      };
+    }
+  );
 }

@@ -31,13 +31,14 @@ export default function Reports() {
   const [template, setTemplate] = useState(state.defaultTemplateId);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState('Sales');
-  const [from, setFrom] = useState('2026-09-01');
+  const [from, setFrom] = useState(TODAY.slice(0, 8) + '01');
   const [to, setTo] = useState(TODAY);
   const [category, setCategory] = useState('All categories');
   const [batch, setBatch] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [serverReport, setServerReport] = useState<{headers: string[]; rows: (string | number)[][]} | null>(null);
   const [loading, setLoading] = useState(false);
+  const [reportError, setReportError] = useState('');
 
   useEffect(() => {
     if (!isLive) return;
@@ -46,6 +47,8 @@ export default function Reports() {
 
     let active = true;
     setLoading(true);
+    setServerReport(null);
+    setReportError('');
     const p = new URLSearchParams({
       report,
       from,
@@ -70,6 +73,7 @@ export default function Reports() {
       .catch((err) => {
         if (active) {
           notify(err.message);
+          setReportError(err.message);
           setServerReport(null);
         }
       })
@@ -227,8 +231,19 @@ export default function Reports() {
       ? ['Invoice', 'Date', 'Category', 'Entered profit']
       : ['Invoice', 'Date', 'Customer', 'Category', 'Billed total', 'Returns', 'Net billed'];
 
-  const headers = isLive && serverReport ? serverReport.headers : demoHeaders;
-  const rows = isLive && serverReport ? serverReport.rows : demoRows;
+  const headers = isLive ? (serverReport?.headers || []) : demoHeaders;
+  const rows = isLive ? (serverReport?.rows || []) : demoRows;
+  // Summaries use the very same filtered rows as the table and exports.
+  const summaryColumns: Record<string, number[]> = {
+    Sales: [4,5,6], Purchases: [4,5,6], 'Tax summary': [3,4,5,6,7],
+    Inventory: [3,4], Expenses: [4], 'Customer dues': [3], 'Supplier dues': [3],
+    Services: [4,5], Profit: [3], Returns: [4],
+  };
+  const summaryCards = (summaryColumns[report] || []).map(index => ({
+    label: headers[index], count: report === 'Inventory' || report === 'Returns',
+    value: rows.reduce((n, row) => n + (typeof row[index] === 'number' ? Math.round((row[index] as number) * 100) : 0), 0) / 100,
+  }));
+
 
   function preset(days: number) {
     setTo(TODAY);
@@ -314,6 +329,12 @@ export default function Reports() {
         </aside>
 
         <div className="stack">
+          {loading && <div className="notice" role="status">Loading live report…</div>}
+          {reportError && <div className="notice" role="alert">{reportError} Change a filter to retry. No demo data is shown.</div>}
+          {report !== 'Invoice exports' && !loading && !reportError && (report !== 'Profit' || role === 'Owner') && <div className="stats-grid">
+            <Card title="Matching records"><div className="body-pad"><h2>{rows.length}</h2><small>Current filters</small></div></Card>
+            {summaryCards.map(card => <Card key={card.label} title={card.label}><div className="body-pad"><h2>{card.count ? card.value : money(card.value)}</h2><small>Current filters · same records as export</small></div></Card>)}
+          </div>}
           <Card
             title={report + ' report'}
             sub={

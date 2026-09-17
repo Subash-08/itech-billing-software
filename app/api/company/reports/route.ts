@@ -2,6 +2,8 @@ import {endpoint, requireIdentity, requireProfit} from '@/server/auth';
 import {database, AppError} from '@/server/db';
 import {col} from '@/server/purchase-service';
 import {todayInKolkata} from '@/server/purchase-schema';
+import {isValidCalendarDate} from '@/server/master-schema';
+import {signedAccountMovementPaise} from '@/server/account-initialization';
 
 export const runtime = 'nodejs';
 
@@ -9,8 +11,9 @@ export async function GET(request: Request) {
   return endpoint(async () => {
     const url = new URL(request.url);
     const reportType = url.searchParams.get('report') || 'Sales';
-    const from = url.searchParams.get('from') || '2026-09-01';
+    const from = url.searchParams.get('from') || todayInKolkata().slice(0, 8) + '01';
     const to = url.searchParams.get('to') || todayInKolkata();
+    if (!isValidCalendarDate(from) || !isValidCalendarDate(to) || from > to) throw new AppError(400, 'Choose a valid date range.');
     const customerId = url.searchParams.get('customerId') || undefined;
     const supplierId = url.searchParams.get('supplierId') || undefined;
     const paymentStatus = url.searchParams.get('paymentStatus') || 'All payments';
@@ -39,7 +42,7 @@ export async function GET(request: Request) {
         if (paymentStatus === 'Unpaid / partial') query.duePaise = {$gt: 0};
         if (category && category !== 'All categories') {
           if (category === 'Tax invoices') query['lines.taxBasisPoints'] = {$gt: 0};
-          else if (category === 'Non-GST invoices') query['lines.taxBasisPoints'] = 0;
+          else if (category === 'Non-GST invoices') query.lines = {$not: {$elemMatch: {taxTreatment: {$ne: 'NonGST'}}}};
           else if (category === 'New goods') query.businessCategory = 'NewGoods';
           else if (category === 'Used goods') query.businessCategory = 'UsedGoods';
           else if (category === 'Service') query.businessCategory = 'Service';
@@ -78,7 +81,7 @@ export async function GET(request: Request) {
 
         const rows = invoices.map((b) => {
           const total = (b.totalPaise || 0) / 100;
-          const paid = ((b.totalPaise || 0) - (b.duePaise || 0)) / 100;
+          const paid = (b.allocatedPaidPaise ?? ((b.allocatedReceiptPaise || 0) + (b.allocatedAdvancePaise || 0))) / 100;
           const due = (b.duePaise || 0) / 100;
           return [
             b.invoiceNumber || b._id,
@@ -99,7 +102,7 @@ export async function GET(request: Request) {
       case 'Purchases': {
         const query: Record<string, any> = {
           tenantId,
-          billStatus: 'Posted',
+          billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']},
           orderDate: {$gte: from, $lte: to},
         };
         if (supplierId && supplierId !== 'All suppliers') query.supplierId = supplierId;
@@ -129,14 +132,16 @@ export async function GET(request: Request) {
 
       case 'Inventory': {
         const products = await col(db, 'products').find({tenantId, status: 'Active'}).sort({name: 1}).toArray();
-        const rows = products.map((p) => [
-          p._id,
-          p.name,
-          p.category,
-          p.stock ?? 0,
-          p.stock ?? 0,
-          (p.sellingPricePaise || 0) / 100,
-        ]);
+        const buckets = await col(db, 'stockLots').aggregate([
+          {$match: {tenantId}}, {$group: {_id: '$productId',
+            sellable: {$sum: '$quantitySellable'}, reserved: {$sum: '$quantityReserved'}, defective: {$sum: '$quantityDefective'}}}
+        ]).toArray();
+        const stock = new Map(buckets.map(l => [l._id, l]));
+        const rows = products.map((p) => {
+          const l = stock.get(p._id);
+          return [p._id, p.name, p.category, (l?.sellable || 0) + (l?.reserved || 0) + (l?.defective || 0),
+            l?.sellable || 0, (p.sellingPricePaise || 0) / 100];
+        });
         return {
           headers: ['Product ID', 'Product', 'Category', 'On hand', 'Available', 'Price'],
           rows,
@@ -148,18 +153,17 @@ export async function GET(request: Request) {
           .find({
             tenantId,
             date: {$gte: from, $lte: to},
-            direction: 'Out',
-            sourceType: {$in: ['OperatingExpense', 'ManualMoneyEntry']},
+            category: {$in: ['Expense', 'ExpenseReversal']},
           })
           .sort({date: -1})
           .toArray();
 
         const rows = movements.map((m) => [
           m.date,
-          m.payee || m.sourceReference || 'Shop',
-          m.notes || m.purpose || 'Operating expense',
-          m.accountType,
-          (m.amountPaise || Math.abs(m.signedAmountPaise || 0)) / 100,
+          m.partyName || m.payee || 'Shop',
+          m.reason || m.notes || 'Operating expense',
+          m.account,
+          -signedAccountMovementPaise(m) / 100,
         ]);
         return {
           headers: ['Date', 'Payee', 'Reason', 'Account', 'Amount'],
@@ -188,6 +192,11 @@ export async function GET(request: Request) {
           b.promisedPaymentDate || b.dueDate,
           (b.duePaise || 0) / 100,
         ]);
+        const opening = await col(db, 'openingReceivables').find({
+          tenantId, remainingAmountPaise: {$gt: 0}, date: {$lte: to},
+          ...(customerId && !customerId.startsWith('All ') ? {customerId} : {}),
+        }).toArray();
+        rows.push(...opening.map(o => [o.reference || o._id, custMap.get(o.customerId) || 'Opening balance', o.date, o.remainingAmountPaise / 100]));
         return {
           headers: ['Bill', 'Party', 'Due date', 'Current balance'],
           rows,
@@ -197,7 +206,7 @@ export async function GET(request: Request) {
       case 'Supplier dues': {
         const query: Record<string, any> = {
           tenantId,
-          billStatus: 'Posted',
+          billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']},
           duePaise: {$gt: 0},
           orderDate: {$lte: to},
         };
@@ -215,6 +224,11 @@ export async function GET(request: Request) {
           p.promisedPaymentDate || p.dueDate,
           (p.duePaise || 0) / 100,
         ]);
+        const opening = await col(db, 'openingPayables').find({
+          tenantId, remainingAmountPaise: {$gt: 0}, date: {$lte: to},
+          ...(supplierId && !supplierId.startsWith('All ') ? {supplierId} : {}),
+        }).toArray();
+        rows.push(...opening.map(o => [o.reference || o._id, suppMap.get(o.supplierId) || 'Opening balance', o.date, o.remainingAmountPaise / 100]));
         return {
           headers: ['Bill', 'Party', 'Due date', 'Current balance'],
           rows,
@@ -225,8 +239,8 @@ export async function GET(request: Request) {
         const query: Record<string, any> = {
           tenantId,
           createdAt: {
-            $gte: new Date(from + 'T00:00:00.000Z'),
-            $lte: new Date(to + 'T23:59:59.999Z'),
+            $gte: new Date(from + 'T00:00:00.000+05:30'),
+            $lte: new Date(to + 'T23:59:59.999+05:30'),
           },
         };
         if (customerId && customerId !== 'All customers') query.customerId = customerId;
@@ -238,7 +252,7 @@ export async function GET(request: Request) {
           `${j.device?.brand || ''} ${j.device?.model || ''}`.trim(),
           j.status,
           (j.estimate?.estimatedCostPaise || 0) / 100,
-          (j.finalAmountPaise || j.estimate?.estimatedCostPaise || 0) / 100,
+          j.finalAmountPaise == null ? 'Not invoiced' : j.finalAmountPaise / 100,
         ]);
         return {
           headers: ['Job', 'Customer', 'Device', 'Status', 'Estimate', 'Final service amount'],
@@ -264,7 +278,7 @@ export async function GET(request: Request) {
             'Customer',
             r.invoiceId || '',
             r.date,
-            r.lines?.reduce((q: number, l: any) => q + (l.quantity || 0), 0) || 1,
+            r.quantity ?? r.lines?.reduce((q: number, l: any) => q + (l.quantity || 0), 0) ?? 0,
             (r.refundPaise || 0) / 100,
           ]),
           ...suppReturns.map((r) => [
@@ -277,7 +291,7 @@ export async function GET(request: Request) {
           ]),
         ];
         return {
-          headers: ['Adjustment', 'Type', 'Original bill', 'Date', 'Quantity', 'Amount'],
+          headers: ['Adjustment', 'Type', 'Original bill', 'Date', 'Quantity', 'Refund / supplier credit'],
           rows,
         };
       }

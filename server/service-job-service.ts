@@ -1,6 +1,6 @@
 import 'server-only';
 import {Db, ClientSession} from 'mongodb';
-import {AppError} from './db';
+import {AppError, mongo} from './db';
 import {Identity} from './security';
 import {uid} from '../lib/domain';
 import {recordAudit} from './audit';
@@ -95,6 +95,14 @@ export interface ServiceJobDocument {
   updatedBy: string;
 }
 
+async function assertJobPhotos(db: Db, tenantId: string, ids: string[], session?: ClientSession) {
+  if (new Set(ids).size !== ids.length) throw new AppError(400, 'Duplicate photos are not allowed.');
+  for (const id of ids) {
+    const file = await col(db, 'files').findOne({_id: id, tenantId, status: 'Active'}, {session});
+    if (!file || !['image/png','image/jpeg','image/webp'].includes(file.type)) throw new AppError(404, 'Service photo not found or unavailable.');
+  }
+}
+
 export async function createServiceJob(db: Db, identity: Identity, raw: unknown) {
   const input = CreateServiceJobSchema.parse(raw);
   const tenantId = identity.tenantId;
@@ -112,11 +120,15 @@ export async function createServiceJob(db: Db, identity: Identity, raw: unknown)
     input.customerId,
     input,
     async (session: ClientSession) => {
+      await assertOperationalPostingAllowed(db, tenantId, todayInKolkata());
+      await lockBusinessDay(db, session, tenantId);
+
       const yearStr = new Date().getFullYear().toString();
       const jobNumber = await nextTenantSequence(db, tenantId, 'ServiceJob', yearStr, 'JOB', session);
       const jobId = uid('JOB');
       const now = new Date();
 
+      await assertJobPhotos(db, tenantId, input.device.photos, session);
       const initialEstimatePaise = input.initialEstimatePaise || 0;
 
       const job: ServiceJobDocument = {
@@ -193,58 +205,83 @@ export async function updateServiceJobStatus(
   const input = UpdateServiceJobStatusSchema.parse(raw);
   const tenantId = identity.tenantId;
 
-  const job = await col<ServiceJobDocument>(db, 'serviceJobs').findOne({
-    tenantId,
-    $or: [{_id: jobId}, {jobNumber: jobId}],
-  });
-  if (!job) throw new AppError(404, 'Service job not found.');
+  await assertPhase3MigrationComplete(db, tenantId);
 
-  if (job.version !== input.expectedVersion) {
-    throw new AppError(409, 'Service job was modified by another session. Refresh and try again.');
-  }
+  const client = await mongo();
+  const session = client.startSession();
+  try {
+    return await session.withTransaction(async () => {
+      await assertOperationalPostingAllowed(db, tenantId, todayInKolkata());
+      await lockBusinessDay(db, session, tenantId);
 
-  // Check cancellation rules: cannot cancel if unreversed or unbilled parts exist
-  if (input.status === 'Cancelled') {
-    const activeParts = (job.parts || []).filter((p: any) => !p.reversed);
-    if (activeParts.length > 0) {
-      throw new AppError(
-        400,
-        `Cannot cancel job: ${activeParts.length} consumed part(s) must be reversed or removed first.`
+      const job = await col<ServiceJobDocument>(db, 'serviceJobs').findOne(
+        {tenantId, $or: [{_id: jobId}, {jobNumber: jobId}]},
+        {session}
       );
-    }
+      if (!job) throw new AppError(404, 'Service job not found.');
+
+      if (job.version !== input.expectedVersion) {
+        throw new AppError(409, 'Service job was modified by another session. Refresh and try again.');
+      }
+
+      // Check cancellation rules: cannot cancel if unreversed or unbilled parts exist
+      if (input.status === 'Cancelled') {
+        const activeParts = (job.parts || []).filter((p: any) => !p.reversed);
+        if (activeParts.length > 0) {
+          throw new AppError(
+            400,
+            `Cannot cancel job: ${activeParts.length} consumed part(s) must be reversed or removed first.`
+          );
+        }
+      }
+
+      const now = new Date();
+      const updateFields: any = {
+        status: input.status,
+        updatedAt: now,
+        updatedBy: identity.userId,
+      };
+
+      if (input.diagnosticNotes !== undefined) updateFields.diagnosticNotes = input.diagnosticNotes;
+      if (input.photos !== undefined) {
+        await assertJobPhotos(db, tenantId, input.photos, session);
+        if ((job.device.photos || []).some((id: string) => !input.photos!.includes(id))) {
+          throw new AppError(400, 'Existing service evidence cannot be removed through a status update.');
+        }
+        updateFields['device.photos'] = input.photos;
+      }
+      if (input.status === 'Delivered') {
+        updateFields.deliveredAt = now;
+        updateFields.deliveredTo = job.customerSnapshot.name;
+      }
+
+      const res = await col(db, 'serviceJobs').updateOne(
+        {_id: job._id, tenantId, version: input.expectedVersion},
+        {$set: updateFields, $inc: {version: 1}},
+        {session}
+      );
+
+      if (res.matchedCount === 0) {
+        throw new AppError(409, 'Concurrent update conflict. Please retry.');
+      }
+
+      await recordAudit(
+        db,
+        {
+          identity,
+          action: 'Update',
+          entityType: 'serviceJob',
+          entityId: jobId,
+          detail: `Updated service job ${job.jobNumber} status from ${job.status} to ${input.status}`,
+        },
+        session
+      );
+
+      return {success: true, jobId, status: input.status, version: job.version + 1};
+    });
+  } finally {
+    await session.endSession();
   }
-
-  const now = new Date();
-  const updateFields: any = {
-    status: input.status,
-    updatedAt: now,
-    updatedBy: identity.userId,
-  };
-
-  if (input.diagnosticNotes) updateFields.diagnosticNotes = input.diagnosticNotes;
-  if (input.status === 'Delivered') {
-    updateFields.deliveredAt = now;
-    updateFields.deliveredTo = job.customerSnapshot.name;
-  }
-
-  const res = await col(db, 'serviceJobs').updateOne(
-    {_id: job._id, tenantId, version: input.expectedVersion},
-    {$set: updateFields, $inc: {version: 1}}
-  );
-
-  if (res.matchedCount === 0) {
-    throw new AppError(409, 'Concurrent update conflict. Please retry.');
-  }
-
-  await recordAudit(db, {
-    identity,
-    action: 'Update',
-    entityType: 'serviceJob',
-    entityId: jobId,
-    detail: `Updated service job ${job.jobNumber} status from ${job.status} to ${input.status}`,
-  });
-
-  return {success: true, jobId, status: input.status, version: job.version + 1};
 }
 
 export async function updateEstimate(
@@ -256,59 +293,77 @@ export async function updateEstimate(
   const input = UpdateEstimateSchema.parse(raw);
   const tenantId = identity.tenantId;
 
-  const job = await col<ServiceJobDocument>(db, 'serviceJobs').findOne({
-    tenantId,
-    $or: [{_id: jobId}, {jobNumber: jobId}],
-  });
-  if (!job) throw new AppError(404, 'Service job not found.');
+  await assertPhase3MigrationComplete(db, tenantId);
 
-  if (job.version !== input.expectedVersion) {
-    throw new AppError(409, 'Service job version mismatch. Please reload.');
+  const client = await mongo();
+  const session = client.startSession();
+  try {
+    return await session.withTransaction(async () => {
+      await assertOperationalPostingAllowed(db, tenantId, todayInKolkata());
+      await lockBusinessDay(db, session, tenantId);
+
+      const job = await col<ServiceJobDocument>(db, 'serviceJobs').findOne(
+        {tenantId, $or: [{_id: jobId}, {jobNumber: jobId}]},
+        {session}
+      );
+      if (!job) throw new AppError(404, 'Service job not found.');
+
+      if (job.version !== input.expectedVersion) {
+        throw new AppError(409, 'Service job version mismatch. Please reload.');
+      }
+
+      const now = new Date();
+      const nextRev = (job.estimate?.revisionHistory?.length || 0) + 1;
+
+      const revisionItem = {
+        revision: nextRev,
+        estimatedCostPaise: input.estimatedCostPaise,
+        notes: input.notes || '',
+        status: input.status,
+        createdAt: now,
+        createdBy: identity.userId,
+      };
+
+      const nextJobStatus =
+        input.status === 'Approved'
+          ? 'EstimateApproved'
+          : input.status === 'Rejected'
+          ? 'EstimateRejected'
+          : 'EstimatePending';
+
+      await col(db, 'serviceJobs').updateOne(
+        {_id: job._id, tenantId, version: input.expectedVersion},
+        {
+          $set: {
+            'estimate.estimatedCostPaise': input.estimatedCostPaise,
+            'estimate.status': input.status,
+            status: nextJobStatus,
+            updatedAt: now,
+            updatedBy: identity.userId,
+          },
+          $push: {'estimate.revisionHistory': revisionItem as any},
+          $inc: {version: 1},
+        },
+        {session}
+      );
+
+      await recordAudit(
+        db,
+        {
+          identity,
+          action: 'Update',
+          entityType: 'serviceJob',
+          entityId: jobId,
+          detail: `Updated estimate on job ${job.jobNumber} to ₹${(input.estimatedCostPaise / 100).toFixed(2)} (${input.status})`,
+        },
+        session
+      );
+
+      return {success: true, estimatedCostPaise: input.estimatedCostPaise, status: input.status};
+    });
+  } finally {
+    await session.endSession();
   }
-
-  const now = new Date();
-  const nextRev = (job.estimate?.revisionHistory?.length || 0) + 1;
-
-  const revisionItem = {
-    revision: nextRev,
-    estimatedCostPaise: input.estimatedCostPaise,
-    notes: input.notes || '',
-    status: input.status,
-    createdAt: now,
-    createdBy: identity.userId,
-  };
-
-  const nextJobStatus =
-    input.status === 'Approved'
-      ? 'EstimateApproved'
-      : input.status === 'Rejected'
-      ? 'EstimateRejected'
-      : 'EstimatePending';
-
-  await col(db, 'serviceJobs').updateOne(
-    {_id: job._id, tenantId, version: input.expectedVersion},
-    {
-      $set: {
-        'estimate.estimatedCostPaise': input.estimatedCostPaise,
-        'estimate.status': input.status,
-        status: nextJobStatus,
-        updatedAt: now,
-        updatedBy: identity.userId,
-      },
-      $push: {'estimate.revisionHistory': revisionItem as any},
-      $inc: {version: 1},
-    }
-  );
-
-  await recordAudit(db, {
-    identity,
-    action: 'Update',
-    entityType: 'serviceJob',
-    entityId: jobId,
-    detail: `Updated estimate on job ${job.jobNumber} to ₹${(input.estimatedCostPaise / 100).toFixed(2)} (${input.status})`,
-  });
-
-  return {success: true, estimatedCostPaise: input.estimatedCostPaise, status: input.status};
 }
 
 export async function issueServicePart(

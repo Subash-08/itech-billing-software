@@ -332,6 +332,7 @@ export function DocumentComposer({
       } else if (quotation) {
         const data = await fetchQuotationDetailApi(loadId);
         const q = data.quotation || data;
+        setCategory(q.invoiceKind === 'Service' || q.businessCategory === 'Service' ? 'Service' : q.businessCategory === 'UsedGoods' ? 'Used goods' : 'New goods');
         setLoadedVersion(q.version);
         if (q.customerId) setCustomerId(q.customerId);
         if (q.quotationDate || q.date) setDate(q.quotationDate || q.date);
@@ -367,6 +368,7 @@ export function DocumentComposer({
         if (fromId) {
           const data = await fetchQuotationDetailApi(fromId);
           const q = data.quotation || data;
+        setCategory(q.invoiceKind === 'Service' || q.businessCategory === 'Service' ? 'Service' : q.businessCategory === 'UsedGoods' ? 'Used goods' : 'New goods');
           if (q.customerId) setCustomerId(q.customerId);
           if (q.taxMode) setTaxMode(q.taxMode);
           if (q.placeOfSupply) setPlaceOfSupply(q.placeOfSupply);
@@ -913,7 +915,7 @@ export function DocumentComposer({
         const payload = {
           idempotencyKey: `quote-save-${uid('IDEM')}`,
           customerId,
-          invoiceKind: (service ? 'Service' : 'Sale') as 'Sale' | 'Service',
+          invoiceKind: (category === 'Service' ? 'Service' : 'Sale') as 'Sale' | 'Service',
           businessCategory: (category === 'Used goods' ? 'UsedGoods' : category === 'Service' ? 'Service' : 'NewGoods') as any,
           quotationDate: date,
           validUntil: due >= date ? due : date,
@@ -944,7 +946,7 @@ export function DocumentComposer({
       const invoicePayload = {
         idempotencyKey: `inv-save-${uid('IDEM')}`,
         customerId,
-        invoiceKind: (service ? 'Service' : 'Sale') as 'Sale' | 'Service',
+        invoiceKind: (category === 'Service' ? 'Service' : 'Sale') as 'Sale' | 'Service',
         businessCategory: (category === 'Used goods' ? 'UsedGoods' : category === 'Service' ? 'Service' : 'NewGoods') as any,
         invoiceDate: date,
         dueDate: due >= date ? due : date,

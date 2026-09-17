@@ -171,9 +171,9 @@ export async function GET(request: Request) {
       const fileName = `${safeNum}_${safeId}.pdf`;
 
       // Resolve template
-      let tmpl = defaultTemplate;
+      let tmpl = snap.template || defaultTemplate;
       const tKey = `${inv.templateId || ''}:${inv.templateRevision || ''}`;
-      if (tKey !== ':') {
+      if (!snap.template && tKey !== ':') {
         if (templateCache.has(tKey)) {
           tmpl = templateCache.get(tKey);
         } else {
@@ -212,7 +212,7 @@ export async function GET(request: Request) {
       y += 8;
 
       // Logo
-      const logoFileId = snap.sellerSnapshot?.logoFileId || company?.logoFileId;
+      const logoFileId = snap.seller?.logoFileId || snap.sellerSnapshot?.logoFileId || company?.logoFileId;
       if (fields.logo !== false && logoFileId) {
         const logoBytes = await getLogo(logoFileId);
         if (logoBytes) {
@@ -228,7 +228,7 @@ export async function GET(request: Request) {
       }
 
       // Company info & Document metadata in side-by-side block
-      const seller = snap.sellerSnapshot || company || {};
+      const seller = snap.seller || snap.sellerSnapshot || company || {};
       const companyLines: string[] = [];
       if (fields.shopName !== false && seller.name) companyLines.push(seller.name);
       if (fields.shopAddress !== false && seller.address) companyLines.push(seller.address);
@@ -246,8 +246,8 @@ export async function GET(request: Request) {
       autoTable(doc, {
         startY: y,
         body: [[companyLines.join('\n'), metaLines.join('\n')]],
-        theme: 'plain',
-        styles: {fontSize: 9, cellPadding: 1},
+        theme: tmpl.borders ? 'grid' : 'plain',
+        styles: {fontSize: 9, cellPadding: 2, lineColor: [90,90,90], lineWidth: 0.15},
         columnStyles: {
           0: {cellWidth: (width - 28) / 2},
           1: {cellWidth: (width - 28) / 2, halign: 'right'},
@@ -256,7 +256,7 @@ export async function GET(request: Request) {
       y = (doc as any).lastAutoTable.finalY + 4;
 
       // Buyer (Bill To) & Ship To (if enabled)
-      const cust = snap.customerSnapshot || inv.customerSnapshot || {};
+      const cust = {...(snap.customer || snap.customerSnapshot || inv.customerSnapshot || {}), ...(snap.billTo || {})};
       const buyerLines: string[] = ['Bill To:'];
       if (fields.customerName !== false && cust.name) buyerLines.push(cust.name);
       if (fields.customerAddress !== false && (snap.billingAddress || cust.address)) {
@@ -282,8 +282,8 @@ export async function GET(request: Request) {
       autoTable(doc, {
         startY: y,
         body: [[buyerLines.join('\n'), shipLines.join('\n')]],
-        theme: 'plain',
-        styles: {fontSize: 9, cellPadding: 1},
+        theme: tmpl.borders ? 'grid' : 'plain',
+        styles: {fontSize: 9, cellPadding: 2, lineColor: [90,90,90], lineWidth: 0.15},
         columnStyles: {
           0: {cellWidth: (width - 28) / 2},
           1: {cellWidth: (width - 28) / 2},
@@ -302,9 +302,8 @@ export async function GET(request: Request) {
               return String(idx + 1);
             case 'description': {
               const parts = [l.description || l.productSnapshot?.name || l.serviceSnapshot?.name || 'Item'];
-              if (fields.serials !== false && l.serials?.length) {
-                parts.push('SN: ' + l.serials.join(', '));
-              }
+              const serials = l.serials?.length ? l.serials : (l.stockAllocations || []).flatMap((a: any) => a.serials || []);
+              if (fields.serials !== false && serials.length) parts.push('SN: ' + serials.join(', '));
               if (fields.warranty !== false && l.warrantyMonths) {
                 parts.push(`Warranty: ${l.warrantyMonths} months`);
               }
@@ -318,12 +317,12 @@ export async function GET(request: Request) {
               return fmtPaise(l.unitRatePaise);
             case 'rateIncl':
               return fmtPaise(
-                l.unitRatePaise ? Math.round(l.unitRatePaise * (1 + (l.taxBasisPoints || 0) / 10000)) : 0
+                (l.inclusive ?? snap.inclusive) ? (l.unitRatePaise ?? 0) : Math.round((l.unitRatePaise ?? 0) * (1 + (l.taxTreatment && l.taxTreatment !== 'Taxable' ? 0 : (l.taxBasisPoints || 0)) / 10000))
               );
             case 'rateExcl':
-              return fmtPaise(l.unitRatePaise);
+              return fmtPaise((l.inclusive ?? snap.inclusive) ? Math.round((l.unitRatePaise ?? 0) / (1 + (l.taxTreatment && l.taxTreatment !== 'Taxable' ? 0 : (l.taxBasisPoints || 0)) / 10000)) : (l.unitRatePaise ?? 0));
             case 'tax':
-              return `${((l.taxBasisPoints || 0) / 100).toFixed(0)}%`;
+              return l.taxTreatment && l.taxTreatment !== 'Taxable' ? l.taxTreatment : `${(l.taxBasisPoints || 0) / 100}%`;
             case 'discount':
               return l.discountPaise ? fmtPaise(l.discountPaise) : '—';
             case 'warranty':
@@ -346,7 +345,7 @@ export async function GET(request: Request) {
         head: [tableHead],
         body: tableBody,
         theme: tmpl.borders ? 'grid' : tmpl.striped ? 'striped' : 'plain',
-        styles: {fontSize: Math.min(tmpl.fontSize || 10, 10), cellPadding: 2},
+        styles: {fontSize: Math.max(6, Math.min(tmpl.fontSize || 10, 18)), cellPadding: 2},
         headStyles: {fillColor: accentRgb, textColor: [255, 255, 255]},
         columnStyles: colStyles,
       });

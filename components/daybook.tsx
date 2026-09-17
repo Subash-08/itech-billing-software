@@ -24,10 +24,17 @@ export default function Daybook() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const closeIdemKeyRef = useRef<Record<string, string>>({});
 
-  // Live closing data
   const [liveDashboard, setLiveDashboard] = useState<any | null>(null);
   const [liveList, setLiveList] = useState<any | null>(null);
   const [liveHolidays, setLiveHolidays] = useState<any[]>([]);
+  const [missedSummary, setMissedSummary] = useState<any | null>(null);
+  const [missedDaysLoading, setMissedDaysLoading] = useState(false);
+  const [missedDaysError, setMissedDaysError] = useState<string | null>(null);
+  const [bulkCursor, setBulkCursor] = useState<string | null>(null);
+  const [showMissedModal, setShowMissedModal] = useState(false);
+  const [bulkReason, setBulkReason] = useState('Shop holiday / inactive period');
+  const [bulkConfirmed, setBulkConfirmed] = useState(false);
+  const bulkIdemKeyRef = useRef<{key: string; batchFingerprint: string} | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
 
@@ -93,6 +100,25 @@ export default function Daybook() {
     }
   }, [isLive]);
 
+  const fetchMissedDays = useCallback(async (cursor?: string) => {
+    if (!isLive) return;
+    setMissedDaysLoading(true);
+    setMissedDaysError(null);
+    try {
+      const url = cursor ? `/api/closings/missed-days?fromCursor=${cursor}` : '/api/closings/missed-days';
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to check unclosed business days.');
+      }
+      setMissedSummary(data);
+    } catch (err: any) {
+      setMissedDaysError(err.message || 'Error checking missed business days.');
+    } finally {
+      setMissedDaysLoading(false);
+    }
+  }, [isLive]);
+
   useEffect(() => {
     if (date) {
       fetchDashboard();
@@ -100,7 +126,8 @@ export default function Daybook() {
       fetchList();
       fetchHolidays();
     }
-  }, [date, fetchDashboard, fetchList, fetchHolidays]);
+    fetchMissedDays();
+  }, [date, fetchDashboard, fetchList, fetchHolidays, fetchMissedDays]);
 
   // Fallback calculations for demo/offline
   const days: string[] = [];
@@ -267,8 +294,78 @@ export default function Daybook() {
           : `Day ${date} closed successfully. Reconciled snapshot saved.`
       );
       fetchDashboard();
+      fetchMissedDays();
     } catch (err: any) {
       notify(err.message || 'Failed to close day.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleBulkClose = async () => {
+    if (!isLive || !missedSummary?.batch) return;
+    const targetFromDate = missedSummary.batch.eligibleFromDate || missedSummary.batch.fromDate;
+    const targetToDate = missedSummary.batch.eligibleToDate || missedSummary.batch.toDate;
+
+    if (!targetToDate) {
+      notify(missedSummary.batch.blockReason || 'No inactive days are eligible for holiday closure in this range.');
+      return;
+    }
+
+    if (!bulkConfirmed) {
+      notify(`You must confirm that no real-world business transactions occurred between ${targetFromDate} and ${targetToDate}.`);
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      // Preserve stable idempotency key across retries; only generate new operation when payload/review changes
+      const batchFingerprint = `${targetFromDate}_${targetToDate}_${bulkReason}_${missedSummary.reviewVersion}`;
+      if (!bulkIdemKeyRef.current || bulkIdemKeyRef.current.batchFingerprint !== batchFingerprint) {
+        bulkIdemKeyRef.current = {
+          key: `bulk-holiday-${targetFromDate}-${targetToDate}-${Date.now()}-${uid('IDEM')}`,
+          batchFingerprint,
+        };
+      }
+      const idemKey = bulkIdemKeyRef.current.key;
+
+      const payload = {
+        fromDate: targetFromDate,
+        toDate: targetToDate,
+        reason: bulkReason,
+        confirmedNoRealWorldActivity: true,
+        reviewVersion: missedSummary.reviewVersion,
+        idempotencyKey: idemKey,
+      };
+
+      const res = await fetch('/api/closings/bulk-holiday', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        if (res.status === 409) {
+          // Stale review or concurrent update conflict: refresh review and prompt user to confirm afresh
+          setBulkConfirmed(false);
+          await fetchMissedDays(bulkCursor || undefined);
+          throw new Error(`Review version conflict (409): ${data.error || 'Transactions occurred during review'}. Refreshed review data; please verify and confirm again.`);
+        }
+        throw new Error(data.error || 'Bulk holiday closure failed.');
+      }
+
+      // Successful closure: clear idempotency ref so next operation starts clean
+      bulkIdemKeyRef.current = null;
+      notify(`Successfully closed ${data.closedDaysCount} day(s) (${data.fromDate} to ${data.toDate}) as holiday.`);
+      setShowMissedModal(false);
+      setBulkConfirmed(false);
+      setBulkCursor(null);
+      await fetchMissedDays();
+      if (date) fetchDashboard();
+      else fetchList();
+    } catch (err: any) {
+      notify(err.message || 'Failed to bulk-close holidays.');
     } finally {
       setIsSubmitting(false);
     }
@@ -332,6 +429,89 @@ export default function Daybook() {
       {loadError && (
         <div className="notice" style={{background: '#fef2f2', borderColor: '#fca5a5', color: '#b91c1c'}}>
           {loadError}
+        </div>
+      )}
+
+      {missedDaysError && (
+        <div
+          className="notice"
+          style={{
+            background: '#fef2f2',
+            borderColor: '#fca5a5',
+            color: '#b91c1c',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '1rem',
+          }}
+        >
+          <span>{missedDaysError}</span>
+          <Btn
+            secondary
+            onClick={() => fetchMissedDays(bulkCursor || undefined)}
+            disabled={missedDaysLoading}
+            style={{fontSize: '0.8rem', padding: '0.2rem 0.5rem'}}
+          >
+            {missedDaysLoading ? 'Retrying…' : 'Retry'}
+          </Btn>
+        </div>
+      )}
+
+      {missedSummary && missedSummary.unclosedCount > 0 && !missedDaysError && (
+        <div
+          className="notice"
+          style={{
+            background: missedSummary.batch?.canBulkCloseHoliday ? '#f0fdf4' : '#fffbeb',
+            borderColor: missedSummary.batch?.canBulkCloseHoliday ? '#86efac' : '#fde68a',
+            color: missedSummary.batch?.canBulkCloseHoliday ? '#166534' : '#92400e',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.75rem',
+            padding: '1rem 1.25rem',
+            borderRadius: '6px',
+            marginBottom: '1rem',
+          }}
+        >
+          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem'}}>
+            <div>
+              <strong style={{fontSize: '1rem'}}>
+                Action Required: {missedSummary.unclosedCount} Unclosed Past Day(s) Detected
+              </strong>
+              <div style={{fontSize: '0.875rem', marginTop: '0.25rem'}}>
+                Earliest unclosed date: <strong>{missedSummary.nextEligibleDate}</strong>
+                {missedSummary.closedThrough ? ` · Closed through: ${missedSummary.closedThrough}` : ` · Opening setup cutoff: ${missedSummary.cutoffDate}`}
+                {` · Current open day: ${missedSummary.today}`}
+              </div>
+              <div style={{fontSize: '0.85rem', marginTop: '0.25rem'}}>
+                {missedSummary.batch?.canBulkCloseHoliday
+                  ? missedSummary.batch.hasActiveDaysInBatch
+                    ? `Inactive stretch detected: Days ${missedSummary.batch.eligibleFromDate} to ${missedSummary.batch.eligibleToDate} (${missedSummary.batch.eligibleDaysCount} days) can be bulk-closed as holidays before reviewing active day ${missedSummary.batch.firstActiveDay?.date}.`
+                    : 'All dates in the current batch have no recorded transactions and can be closed together as holidays.'
+                  : `Active business transactions detected (${missedSummary.batch?.blockReason || 'reconciliation needed'}).`}
+              </div>
+            </div>
+            <div style={{display: 'flex', gap: '0.5rem', flexWrap: 'wrap'}}>
+              <Btn
+                onClick={() => setShowMissedModal(true)}
+                disabled={missedDaysLoading}
+                style={{
+                  fontSize: '0.875rem',
+                  padding: '0.4rem 0.8rem',
+                  background: missedSummary.batch?.canBulkCloseHoliday ? '#16a34a' : '#d97706',
+                  color: '#fff',
+                }}
+              >
+                Resolve Missed Closings
+              </Btn>
+              <Link
+                className="btn secondary"
+                href={`/profit?date=${missedSummary.nextEligibleDate}`}
+                style={{fontSize: '0.875rem', padding: '0.4rem 0.8rem'}}
+              >
+                Go to Oldest Day ({missedSummary.nextEligibleDate})
+              </Link>
+            </div>
+          </div>
         </div>
       )}
 
@@ -933,6 +1113,165 @@ export default function Daybook() {
               />
             </Field>
             <Btn onClick={handleScheduleHoliday}>Add Scheduled Holiday</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {showMissedModal && missedSummary && (
+        <Modal title="Missed-Day Recovery & Historical Closure" onClose={() => setShowMissedModal(false)}>
+          <div className="form-body stack" style={{gap: '1.25rem'}}>
+            <div style={{background: '#f8fafc', padding: '0.75rem 1rem', borderRadius: '6px', border: '1px solid #e2e8f0', fontSize: '0.875rem'}}>
+              <div><strong>Status:</strong> {missedSummary.unclosedCount} unclosed business day(s) between <strong>{missedSummary.nextEligibleDate}</strong> and yesterday.</div>
+              <div style={{marginTop: '0.25rem', color: '#64748b'}}>
+                Business days must be closed in strict chronological order. Choose an appropriate resolution path below.
+              </div>
+            </div>
+
+            {/* Pagination Range Navigation Controls */}
+            {missedSummary.unclosedCount > 31 && (
+              <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f1f5f9', padding: '0.5rem 0.75rem', borderRadius: '4px', fontSize: '0.85rem'}}>
+                <span>
+                  Viewing: <strong>{missedSummary.batch.fromDate}</strong> to <strong>{missedSummary.batch.toDate}</strong> ({missedSummary.batch.daysCount} of {missedSummary.unclosedCount} unclosed days)
+                </span>
+                <div style={{display: 'flex', gap: '0.5rem'}}>
+                  <Btn
+                    secondary
+                    disabled={!bulkCursor || missedDaysLoading}
+                    onClick={() => {
+                      setBulkCursor(null);
+                      fetchMissedDays();
+                    }}
+                    style={{fontSize: '0.75rem', padding: '0.2rem 0.5rem'}}
+                  >
+                    Earliest Range
+                  </Btn>
+                  <Btn
+                    secondary
+                    disabled={!missedSummary.pagination?.hasMore || missedDaysLoading}
+                    onClick={() => {
+                      const next = missedSummary.pagination.nextCursor;
+                      setBulkCursor(next);
+                      fetchMissedDays(next);
+                    }}
+                    style={{fontSize: '0.75rem', padding: '0.2rem 0.5rem'}}
+                  >
+                    Next 31 Days →
+                  </Btn>
+                </div>
+              </div>
+            )}
+
+            {bulkCursor && (
+              <div style={{background: '#eff6ff', border: '1px solid #bfdbfe', padding: '0.5rem 0.75rem', borderRadius: '4px', fontSize: '0.85rem', color: '#1e40af'}}>
+                Browsing future unclosed days ({missedSummary.batch.fromDate} to {missedSummary.batch.toDate}). Closures must start from the earliest boundary (<strong>{missedSummary.nextEligibleDate}</strong>). Click "Earliest Range" above to close inactive days.
+              </div>
+            )}
+
+            {/* Path 1: Bulk Holiday Closure (Supports Inactive Prefix) */}
+            <div style={{border: '1px solid #cbd5e1', borderRadius: '8px', padding: '1rem', background: missedSummary.batch?.canBulkCloseHoliday ? '#f8fafc' : '#f1f5f9'}}>
+              <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between'}}>
+                <h3 style={{margin: 0, fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
+                  <span>Path 1: Inactive Period / Bulk Holiday Closure</span>
+                  {missedSummary.batch?.canBulkCloseHoliday ? (
+                    <span className="badge green">
+                      Eligible ({missedSummary.batch.eligibleDaysCount} day{missedSummary.batch.eligibleDaysCount === 1 ? '' : 's'})
+                    </span>
+                  ) : (
+                    <span className="badge amber">Blocked by Activity</span>
+                  )}
+                </h3>
+              </div>
+
+              <p style={{fontSize: '0.875rem', color: '#475569', marginTop: '0.5rem'}}>
+                If the shop was fully closed with zero business transactions, close this period (up to 31 days per batch) as holidays. Starting balances (Cash ₹{(missedSummary.startingBalances?.cashPaise / 100).toFixed(2)}, Bank ₹{(missedSummary.startingBalances?.bankPaise / 100).toFixed(2)}) carry forward unchanged without recording artificial sales or ledger entries.
+              </p>
+
+              {missedSummary.batch?.canBulkCloseHoliday ? (
+                <div className="stack" style={{gap: '0.75rem', marginTop: '0.75rem'}}>
+                  {missedSummary.batch.hasActiveDaysInBatch && (
+                    <div style={{background: '#ecfdf5', border: '1px solid #a7f3d0', padding: '0.5rem 0.75rem', borderRadius: '4px', fontSize: '0.85rem', color: '#065f46'}}>
+                      <strong>Contiguous inactive stretch detected:</strong> Days <strong>{missedSummary.batch.eligibleFromDate}</strong> to <strong>{missedSummary.batch.eligibleToDate}</strong> ({missedSummary.batch.eligibleDaysCount} days) have zero recorded transactions and can be closed as holidays. Day <strong>{missedSummary.batch.firstActiveDay?.date}</strong> contains active transactions ({missedSummary.batch.firstActiveDay?.activitySummary}) and will be ready for sequential reconciliation after closing the inactive stretch.
+                    </div>
+                  )}
+
+                  <Field label="Holiday Reason / Inactive Note">
+                    <input
+                      value={bulkReason}
+                      onChange={e => setBulkReason(e.target.value)}
+                      placeholder="e.g. Shop holiday / inactive period"
+                    />
+                  </Field>
+
+                  <label className="checkbox-row" style={{alignItems: 'flex-start', background: '#eff6ff', padding: '0.75rem', borderRadius: '6px', border: '1px solid #bfdbfe'}}>
+                    <input
+                      type="checkbox"
+                      checked={bulkConfirmed}
+                      onChange={e => setBulkConfirmed(e.target.checked)}
+                      style={{marginTop: '0.2rem'}}
+                    />
+                    <span style={{fontSize: '0.85rem', color: '#1e3a8a'}}>
+                      I confirm that the shop was completely inactive from <strong>{missedSummary.batch.eligibleFromDate}</strong> to <strong>{missedSummary.batch.eligibleToDate}</strong>. No real-world business transactions occurred on these dates—including sales, customer UPI/bank collections, cash movements, supplier bills/payments, stock receipts/returns, or service intake/repair/delivery.
+                    </span>
+                  </label>
+
+                  {missedSummary.pagination?.hasMore && (
+                    <div style={{fontSize: '0.8rem', color: '#64748b'}}>
+                      Batch 1 of {Math.ceil(missedSummary.unclosedCount / 31)}. After closing this batch, resume to close the remaining {missedSummary.pagination.totalDaysRemaining} day(s).
+                    </div>
+                  )}
+
+                  <Btn
+                    onClick={handleBulkClose}
+                    disabled={isSubmitting || !bulkConfirmed || Boolean(bulkCursor)}
+                    style={{alignSelf: 'flex-start'}}
+                  >
+                    {isSubmitting
+                      ? 'Closing Batch…'
+                      : `Bulk Close ${missedSummary.batch.eligibleDaysCount} Inactive Day(s) as Holiday`}
+                  </Btn>
+                </div>
+              ) : (
+                <div style={{background: '#fef2f2', border: '1px solid #fca5a5', padding: '0.75rem', borderRadius: '6px', marginTop: '0.5rem', fontSize: '0.85rem', color: '#991b1b'}}>
+                  <strong>Cannot bulk close as holiday:</strong> {missedSummary.batch?.blockReason}
+                  <div style={{marginTop: '0.25rem'}}>
+                    Please use Path 2 below to reconcile and close active business days individually.
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Path 2: Sequential Day-by-Day Reconciliation */}
+            <div style={{border: '1px solid #cbd5e1', borderRadius: '8px', padding: '1rem', background: '#fff'}}>
+              <h3 style={{margin: 0, fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
+                <span>Path 2: Sequential Day-by-Day Reconciliation</span>
+                <span className="badge green">Standard</span>
+              </h3>
+              <p style={{fontSize: '0.875rem', color: '#475569', marginTop: '0.5rem'}}>
+                If real-world business transactions occurred (such as sales, customer receipts, or service jobs), reconcile each day sequentially starting from the oldest unclosed day.
+              </p>
+              <div style={{marginTop: '0.75rem'}}>
+                <Link
+                  className="btn primary"
+                  href={`/profit?date=${missedSummary.nextEligibleDate}`}
+                  onClick={() => setShowMissedModal(false)}
+                >
+                  Open {missedSummary.nextEligibleDate} for Reconciliation & Closing
+                </Link>
+              </div>
+            </div>
+
+            {/* Path 3: Historical Activity Catch-Up */}
+            <div style={{border: '1px solid #e2e8f0', borderRadius: '8px', padding: '1rem', background: '#f8fafc'}}>
+              <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between'}}>
+                <h3 style={{margin: 0, fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#64748b'}}>
+                  <span>Path 3: Historical Unrecorded Transaction Catch-Up</span>
+                </h3>
+                <span className="badge red">Planned / Unavailable</span>
+              </div>
+              <p style={{fontSize: '0.85rem', color: '#64748b', marginTop: '0.5rem'}}>
+                Controlled historical catch-up and cash discrepancy adjustment workflows remain unavailable in this version. All operational postings (sales invoices, customer collections, purchases, stock movements, service updates) strictly require the current open business day in Asia/Kolkata ({missedSummary.today}). Current-day entries cannot automatically reconstruct past unrecorded activity.
+              </p>
+            </div>
           </div>
         </Modal>
       )}

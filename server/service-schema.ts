@@ -48,6 +48,7 @@ export const UpdateServiceJobStatusSchema = z.object({
   status: ServiceJobStatusSchema,
   notes: z.string().max(1000).optional(),
   diagnosticNotes: z.string().max(1000).optional(),
+  photos: z.array(z.string().min(1).max(128)).max(5).optional(),
   expectedVersion: z.number().int().nonnegative(),
 });
 export type UpdateServiceJobStatusInput = z.infer<typeof UpdateServiceJobStatusSchema>;

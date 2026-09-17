@@ -199,9 +199,10 @@ export async function cleanupOrphanFiles(identity: Identity) {
     db.collection('invoices').find(
       {tenantId: identity.tenantId, $or: [
         {'sellerSnapshot.logoFileId': {$exists: true, $ne: ''}},
+        {'issuedSnapshot.seller.logoFileId': {$exists: true, $ne: ''}},
         {attachmentFileId: {$exists: true, $ne: ''}},
       ]},
-      {projection: {'sellerSnapshot.logoFileId': 1, attachmentFileId: 1}}
+      {projection: {'sellerSnapshot.logoFileId': 1, 'issuedSnapshot.seller.logoFileId': 1, attachmentFileId: 1}}
     ).toArray(),
     db.collection('invoiceTemplates').find(
       {tenantId: identity.tenantId, logoFileId: {$exists: true, $ne: ''}},
@@ -235,6 +236,7 @@ export async function cleanupOrphanFiles(identity: Identity) {
   });
   usedInvoices.forEach((inv: any) => {
     addId(inv.sellerSnapshot?.logoFileId);
+    addId(inv.issuedSnapshot?.seller?.logoFileId);
     addId(inv.attachmentFileId);
   });
   usedTemplates.forEach((t: any) => addId(t.logoFileId));

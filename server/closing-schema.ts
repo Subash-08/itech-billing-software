@@ -49,3 +49,17 @@ export const ManualProfitAdjustmentSchema = z.object({
   idempotencyKey: z.string().min(8).max(128),
 });
 export type ManualProfitAdjustmentInput = z.infer<typeof ManualProfitAdjustmentSchema>;
+
+export const BulkHolidayCloseSchema = z.object({
+  fromDate: z.string().refine(isValidCalendarDate, 'Invalid fromDate format'),
+  toDate: z.string().refine(isValidCalendarDate, 'Invalid toDate format'),
+  reason: z.string().trim().min(2, 'Reason is required').max(200),
+  confirmedNoRealWorldActivity: z.literal(true, {
+    message:
+      'You must explicitly confirm that no real-world business transactions occurred on these dates (including sales, customer UPI/bank collections, cash movements, supplier bills/payments, stock receipts/returns, or service intake/repair/delivery).',
+  }),
+  reviewVersion: z.number().int({ message: 'reviewVersion is required' }),
+  idempotencyKey: z.string().min(8).max(128),
+});
+export type BulkHolidayCloseInput = z.infer<typeof BulkHolidayCloseSchema>;
+

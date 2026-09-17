@@ -1,6 +1,7 @@
 'use client';
 import {useState, useEffect} from 'react';
 import Analytics from './analytics';
+import LiveSalesChart from './live-sales-chart';
 import Link from 'next/link';
 import {
   ArrowUpRight,
@@ -20,20 +21,25 @@ import {TODAY, roundedTotal, money, shortMoney, accountBalance, balance} from '@
 export default function Dashboard() {
   const {state, isLive, companySession} = useStore();
   const [liveData, setLiveData] = useState<any>(null);
+  const [loadError, setLoadError] = useState('');
+  const [revision, setRevision] = useState(0);
 
   useEffect(() => {
     if (!isLive) return;
     let active = true;
+    setLiveData(null); setLoadError('');
     fetch('/api/company/dashboard')
-      .then((res) => res.json())
+      .then(async res => { const data = await res.json(); if (!res.ok || data.error) throw new Error(data.error || 'Dashboard unavailable.'); return data; })
       .then((data) => {
         if (active && data && !data.error) setLiveData(data);
       })
-      .catch(() => {});
+      .catch(error => { if (active) setLoadError(error.message || 'Dashboard unavailable.'); });
     return () => {
       active = false;
     };
-  }, [isLive]);
+  }, [isLive, revision, companySession?.company?.name]);
+
+  useEffect(() => { const refresh = () => setRevision(v => v + 1); window.addEventListener('focus', refresh); return () => window.removeEventListener('focus', refresh); }, []);
 
   // Demo fallbacks
   const demoSales = state.bills.filter((b) => b.kind !== 'Quotation' && b.status === 'Issued');
@@ -92,6 +98,8 @@ export default function Dashboard() {
   const companyName = companySession?.company?.name || state.settings.name || 'iTech Computers';
   const userName = companySession?.user?.name || 'Store Manager';
 
+  if (isLive && !liveData) return <><PageHead title="Dashboard" description={loadError || 'Loading live company figures…'}/>{loadError && <button className="btn" onClick={() => setRevision(v => v + 1)}>Retry</button>}</>;
+
   return (
     <>
       <PageHead
@@ -101,7 +109,7 @@ export default function Dashboard() {
           <>
             <span className="date-chip">
               <CalendarDays size={16} />
-              {isLive ? TODAY : '10 September 2026'}
+              {isLive ? liveData?.todayDate : '10 September 2026'}
             </span>
             <Link className="btn" href="/sales/new">
               <Plus size={17} />
@@ -157,7 +165,7 @@ export default function Dashboard() {
         />
       </div>
 
-      <Analytics />
+      {isLive ? <LiveSalesChart rows={liveData?.salesTrend || []} today={liveData?.todayDate || TODAY}/> : <Analytics />}
 
       <div className="dashboard-bottom">
         <Card

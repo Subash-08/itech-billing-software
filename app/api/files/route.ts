@@ -41,7 +41,7 @@ export async function GET() {
     return {
       provider: isVercel ? 'Vercel Ephemeral (External Adapter Required)' : 'Private Filesystem',
       configured: isConfigured,
-      status: isConfigured ? 'Ready' : isVercel ? 'Adapter Required' : 'Not Configured',
+      status: isConfigured ? 'Configured — upload verifies access' : isVercel ? 'Adapter Required' : 'Not Configured',
       uploadsAvailable: isConfigured,
       maxFileSizeMb: 5,
       allowedTypes: ['image/png', 'image/jpeg', 'image/webp', 'application/pdf'],

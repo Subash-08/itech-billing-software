@@ -74,9 +74,13 @@ export function JobForm({
   const [status, setStatus] = useState(existing?.status || 'Received');
   const [notes, setNotes] = useState(existing?.diagnosticNotes || existing?.work || '');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [photoIds, setPhotoIds] = useState<string[]>(existing?.device?.photos || []);
+  const [uploading, setUploading] = useState(false);
+  const [intakeKey] = useState(() => uid('INTAKE'));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (uploading) { notify('Wait for photo uploads to finish.'); return; }
     if (!customerId) {
       notify('Select a customer.');
       return;
@@ -125,7 +129,7 @@ export function JobForm({
           work: '',
           delivery: '',
           parts: [],
-          photos: [],
+          photos: photoIds,
         };
         state.jobs = [newJob, ...state.jobs];
         notify('Service job intake saved.');
@@ -147,6 +151,7 @@ export function JobForm({
             diagnosticNotes: notes,
             notes,
             expectedVersion: existing.version ?? 1,
+            photos: photoIds,
           }),
         });
         const data = await res.json();
@@ -154,7 +159,7 @@ export function JobForm({
         notify('Service job updated successfully.');
       } else {
         // Create new job
-        const idempotencyKey = `job-${Date.now()}-${uid('IDEM')}`;
+        const idempotencyKey = intakeKey;
         const res = await fetch('/api/services', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
@@ -167,7 +172,7 @@ export function JobForm({
               serialNumber: serial.trim(),
               accessories: accessories.trim(),
               conditionNotes: condition.trim(),
-              photos: [],
+              photos: photoIds,
             },
             reportedProblem: problem.trim(),
             initialEstimatePaise: Math.round(parseFloat(estimate || '0') * 100),
@@ -296,6 +301,28 @@ export function JobForm({
               </Field>
             </div>
 
+            <div className="full">
+              <Field label="Device / work photos (optional, up to 5)">
+                <input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={!isLive || uploading || isSubmitting}
+                  onChange={async e => {
+                    const files = Array.from(e.target.files || []); e.target.value = '';
+                    if (photoIds.length + files.length > 5) { notify('Attach at most five photos.'); return; }
+                    if (files.some(f => f.size > 5 * 1024 * 1024 || !['image/png','image/jpeg','image/webp'].includes(f.type))) { notify('Use PNG, JPEG or WebP images up to 5 MB each.'); return; }
+                    setUploading(true);
+                    try { for (const file of files) {
+                      const body = new FormData(); body.append('file', file);
+                      const res = await fetch('/api/files', {method: 'POST', body}); const data = await res.json();
+                      if (!res.ok) throw new Error(data.error || 'Photo upload failed.');
+                      setPhotoIds(ids => [...ids, data.id || data._id]);
+                    }} catch (error) { notify(error instanceof Error ? error.message : 'Upload failed.'); }
+                    finally { setUploading(false); }
+                  }}/>
+              </Field>
+              <p className="muted">Add intake, damage, repair or handover evidence. Save the job to attach uploaded photos.</p>
+              {uploading && <p role="status">Uploading photos…</p>}
+              <div className="actions">{photoIds.map(id => <a key={id} href={'/api/files/' + encodeURIComponent(id)} target="_blank" rel="noreferrer"><img src={'/api/files/' + encodeURIComponent(id)} alt="Service evidence" width={90} height={70} style={{objectFit:'cover', borderRadius:6}}/></a>)}</div>
+            </div>
+
             {existing && (
               <>
                 <Field label="Work Status">
@@ -353,6 +380,7 @@ export function IssuePartModal({
   const [rate, setRate] = useState('');
   const [serials, setSerials] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
 
   useEffect(() => {
     if (isLive) {
@@ -539,6 +567,7 @@ export function ReversePartModal({
   const [condition, setCondition] = useState<'Sellable' | 'Defective'>('Sellable');
   const [reason, setReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
 
   const handleReverse = async (e: React.FormEvent) => {
     e.preventDefault();
