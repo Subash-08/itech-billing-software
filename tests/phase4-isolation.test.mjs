@@ -280,7 +280,7 @@ try {
     const sId = `SER-${compA.tenantId}-${sn}`;
     await db.collection('serialUnits').insertOne({
       _id: sId, tenantId: compA.tenantId, productId: prodSerialId, lotId: lot2Id,
-      serial: sn, serialNormalized: sn.toLowerCase().replace(/[^a-z0-9]/g, ''),
+      serial: sn, serialOriginal: sn, serialNormalized: sn.toLowerCase().replace(/[^a-z0-9]/g, ''),
       status: 'InStock', createdAt: new Date(), updatedAt: new Date(),
     });
     tracked.serialUnits.push(sId);

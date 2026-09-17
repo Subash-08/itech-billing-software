@@ -12,7 +12,8 @@ Update this after each phase. Use `Pass`, `Fail`, `Blocked` or `Not tested`. Lin
 | Phase 3 Isolation Suite | Pass | 50/50 isolation checks on 2026-09-12 |
 | Phase 3.5 Isolation Suite | Pass | 32/32 isolation checks (`node tests/phase35-isolation.test.mjs`), 2026-09-14 |
 | Phase 4 Isolation Suite | Pass | 25/25 isolation checks (`node tests/phase4-isolation.test.mjs`), 2026-09-14 |
-| Phase 4 Acceptance Suite | Pass | 10/10 acceptance chains + 8b (`node tests/phase4-corrections.test.mjs`), 2026-09-14 |
+| Phase 4 Acceptance Suite | Pass | 10/10 acceptance chains + 8b (`node tests/phase4-corrections.test.mjs`), 2026-09-17 |
+| 14-Step Manual Business Flow & Correctness Suite | Pass | 14/14 scenario steps + post-closing lifecycle checks (`node tests/manual-acceptance-flow.test.mjs`), 2026-09-17 |
 | Production build | Pass | `next build` 51 static pages + all API routes compiled cleanly, 2026-09-14 |
 | Dependency audit | Pass | 0 known vulnerabilities (`npm audit`), 2026-09-14 |
 | Signup cannot self-approve or choose tenant | Pass | Temporary Atlas integration account, cleaned up |
@@ -244,8 +245,51 @@ All six defect categories and five adjustments from `PHASE4-COMPLETION-REVIEW-AN
 - `tests/focused-supplier-scenario.test.mjs`: `00445d4f3b7d7bc341d3fa54e58b1a8d0526715f4e42cbfe7b3a0e1b6fbb7257`
 
 ### Module Status:
-- Phase 1 & 2 (Master data, settings, auth, inventory): Live
-- Phase 3 & 3.5 (Purchases, payables, stock movements): Live
+- Phase 1 & 2 (Master data, settings, auth, inventory): **Live**
+- Phase 3 & 3.5 (Purchases, payables, stock movements): **Live**
 - Phase 4 (Sales, quotations, reservations, warranties, returns, templates): **Live** (100% verified across 10 prompt corrections, 10 acceptance chains, 25 isolation scenarios)
-- Phase 5 (Daily register closing, day-end locks, holiday policies): **Pending (Untouched)**
+- Phase 5 (Cash & account, daily closing, service jobs, enquiries, documents, reports): **Live**
+  - Pass 1 (Transaction Boundaries & Business-Day Fence): **Pass** (Verified via `node tests/pass1-pass2-verification.mjs`, 2026-09-16)
+  - Pass 2 (Live Cash & Account Register): **Pass** (Verified via `node tests/pass1-pass2-verification.mjs`, `/register` promoted to Live, 2026-09-16)
+  - Pass 3 (Daily Closing, Gated Profit & Holidays): **Pass** (Verified via `/api/company/day-closings`, `/profit` promoted to Live, 2026-09-16)
+  - Pass 4 (Service Jobs & Parts Consumption): **Pass** (Verified via `/api/services`, parts stock conservation, `/services` promoted to Live, 2026-09-16)
+  - Pass 5 (Customers, Dues & Communication): **Pass** (Verified via `/api/enquiries`, customer profile, wa.me integration, promoted to Live, 2026-09-16)
+  - Pass 6 (Document Library & Filtered ZIP): **Pass** (Verified via `/api/files`, streaming PDF ZIP export, promoted to Live, 2026-09-16)
+  - Pass 7 (Analytics, Reports & Milestone Polish): **Pass** (Verified via `/api/company/dashboard`, `/api/company/reports`, all sidebar routes Live, 2026-09-16)
+
+## Phase 5 — Pass 1 & Pass 2 Verification (2026-09-16)
+
+| Flow / Invariant | Status | Evidence |
+|---|---|---|
+| Database Connection Hardening & Opt-in Public DNS | Pass | Verified in `server/db.ts` with `MONGODB_FALLBACK_URI` support and opt-in DNS |
+| Strict Index Options Verification (Keys, Unique, PartialFilter, TTL) | Pass | Verified in `server/db.ts` `safeCreateIndex` |
+| Business-Day Write Fence & Attempt-Scoped Locking | Pass | Check 2 of `tests/pass1-pass2-verification.mjs`, 2026-09-16 |
+| Idempotency Exact Replay on Closed Day | Pass | Check 3 of `tests/pass1-pass2-verification.mjs`, 2026-09-16 |
+| Pass 1 Transaction Chain (Purchase -> Receipt -> Settlement) | Pass | Check 4 of `tests/pass1-pass2-verification.mjs`, 2026-09-16 |
+| Pass 2 Money-Desk: Linked Transfers (Cash <-> Bank) | Pass | Check 5 of `tests/pass1-pass2-verification.mjs`, 2026-09-16 |
+| Pass 2 Money-Desk: Operating Expense & Atomic Overdraft Guard | Pass | Check 5 of `tests/pass1-pass2-verification.mjs`, 2026-09-16 |
+| Pass 2 Money-Desk: Operating Expense Reversal & Balance Restoration | Pass | Check 5 of `tests/pass1-pass2-verification.mjs`, 2026-09-16 |
+| Pass 2 Money-Desk: Transfer Reversal & Original Balances Restored | Pass | Check 5 of `tests/pass1-pass2-verification.mjs`, 2026-09-16 |
+| Cash & Account UI Module Mode | Pass | Promoted to `live` in `components/shell.tsx`, 2026-09-16 |
+| Daily Closing UI Module Mode | Pass | Promoted to `live` in `components/shell.tsx`, 2026-09-16 |
+
+## Phase 5 — Passes 3 through 7 Verification (2026-09-16)
+
+| Flow / Invariant | Status | Evidence |
+|---|---|---|
+| Daily Closing & Holidays (`/api/company/day-closings`) | Pass | Chronological day closure, variance reconciliation, carry forward |
+| In-Transaction Profit Adjustment on Closed-Day Returns | Pass | Pending adjustment gate blocks day closing until reviewed |
+| Server-Session Profit Unlock Protection | Pass | Rate-limited unlock with 10-minute expiry, demo password removed |
+| Service Jobs Parts Stock Conservation | Pass | `quantityConsumed` bucket and `ConsumedInService` serial status verified |
+| Service Invoicing without Double Stock Decrement | Pass | `lineType: 'ConsumedPart'` verified |
+| Enquiries Monotonic Sequencing & Won State Gate | Pass | Monotonic `ENQ-YYYY-XXXX`, customer snapshots, invoice-linked Won status |
+| Customer Profile Category Contributions & Timeline | Pass | `/api/sales/customers/[id]/profile` returning NewGoods, UsedGoods, Services |
+| Persistent Promised Due Date with Audit Notes | Pass | `PATCH /api/sales/invoices/[id]/due-date`, `PATCH /api/purchases/[id]/due-date` |
+| WhatsApp Direct Preview & E.164 Launch | Pass | Single-customer preview, clean phone sanitization, direct `wa.me` launch |
+| Secure Tenant File Storage & RFC 5987 Downloads | Pass | 5 MB validation, MIME check, Content-Disposition RFC 5987 |
+| Spreadsheet Formula Prefix Sanitization | Pass | Sanitizes `=,+,-,@` without prefixing legitimate negative numbers (`/^-?\d+(\.\d+)?$/`) |
+| Filtered Invoice PDF Streaming ZIP Export | Pass | `/api/sales/invoices/export-zip` with 500-invoice guard and manifest |
+| Live Dashboard & Financial Reports Backend | Pass | `/api/company/dashboard`, `/api/company/reports` |
+| Shell Navigation Badges | Pass | All module paths set to `live` in `components/shell.tsx` |
+
 

@@ -1,4 +1,4 @@
-import { Customer, Supplier, Product } from './domain';
+import { Customer, Supplier, Product, Enquiry, TODAY } from './domain';
 import { ServiceItem, InvoiceTemplate } from './extensions';
 
 /**
@@ -111,6 +111,7 @@ export function mapPurchaseFromApi(doc: any) {
     postingDate: doc.postingDate || '',
     due: doc.dueDate || '',
     dueDate: doc.dueDate || '',
+    promisedPaymentDate: doc.promisedPaymentDate,
     reference: doc.supplierInvoiceNumber || doc.purchaseNumber || '',
     documentStatus: doc.documentStatus || 'Draft',
     billStatus: doc.billStatus || 'NotPosted',
@@ -177,6 +178,10 @@ export function mapPaymentFromApi(doc: any) {
     advanceAmount: (doc.advanceAmountPaise || 0) / 100,
     advanceId: doc.advanceId,
     notes: doc.notes || '',
+    note: doc.notes || '',
+    purpose: 'Supplier payment',
+    reference: doc.paymentNumber || '',
+    party: doc.supplierId || '',
     isReversed: !!doc.isReversed,
     reversalReason: doc.reversalReason,
     canReverse: doc.canReverse !== undefined ? !!doc.canReverse : !doc.isReversed,
@@ -348,6 +353,7 @@ export function mapInvoiceFromApi(doc: any) {
     customerId: doc.customerId || '',
     date: doc.invoiceDate || '',
     due: doc.dueDate || doc.invoiceDate || '',
+    promisedPaymentDate: doc.promisedPaymentDate,
     kind: (doc.invoiceKind || 'Sale') as any,
     category: (doc.businessCategory === 'NewGoods' ? 'New goods' : doc.businessCategory === 'UsedGoods' ? 'Used goods' : 'Service') as any,
     status: doc.status || 'Draft',
@@ -450,4 +456,19 @@ export function mapReservationFromApi(doc: any) {
     version: doc.version,
   };
 }
+
+export function mapEnquiryFromApi(doc: any): Enquiry {
+  return {
+    id: doc._id || doc.id,
+    customerId: doc.customerId || '',
+    date: doc.date || (doc.createdAt ? new Date(doc.createdAt).toISOString().slice(0, 10) : TODAY),
+    category: doc.category || 'New laptop',
+    requirement: doc.requirement || '',
+    budget: typeof doc.budgetPaise === 'number' ? doc.budgetPaise / 100 : (doc.budget || 0),
+    status: doc.status || 'Open',
+    followUp: doc.followUpDate || doc.followUp || TODAY,
+    notes: doc.notes || '',
+  };
+}
+
 

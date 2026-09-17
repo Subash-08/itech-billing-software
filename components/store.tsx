@@ -1,7 +1,7 @@
 'use client';
 import {createContext, useContext, useState, useEffect, useCallback, ReactNode} from 'react';
 import {seed} from '@/lib/seed';
-import {State, Customer, Supplier, Product, Bill, Reservation, TODAY} from '@/lib/domain';
+import {State, Customer, Supplier, Product, Bill, Reservation, Enquiry, TODAY} from '@/lib/domain';
 import {InvoiceTemplate, ServiceItem} from '@/lib/extensions';
 import {
   mapCustomerFromApi,
@@ -14,6 +14,7 @@ import {
   mapInvoiceFromApi,
   mapQuotationFromApi,
   mapReservationFromApi,
+  mapEnquiryFromApi,
 } from '@/lib/mappers';
 
 export type OpeningStatus = {
@@ -171,6 +172,11 @@ type Store = {
   claimWarrantyApi: (id: string, payload: any) => Promise<{success: boolean; status?: number; error?: string}>;
   createWarrantyCoverageApi: (payload: any) => Promise<{success: boolean; status?: number; warrantyId?: string; error?: string}>;
   fetchWarrantyDetailApi: (id: string) => Promise<{warranty: any}>;
+  fetchEnquiriesPage: (query?: {page?: number; limit?: number; customerId?: string; status?: string; category?: string; search?: string}) => Promise<PaginationResult<Enquiry>>;
+  saveEnquiryApi: (payload: any, existingId?: string, version?: number) => Promise<{success: boolean; enquiry?: any; error?: string}>;
+  updateInvoiceDueDateApi: (id: string, promisedPaymentDate: string, notes?: string, expectedVersion?: number) => Promise<{success: boolean; error?: string}>;
+  updatePurchaseDueDateApi: (id: string, promisedPaymentDate: string, notes?: string, expectedVersion?: number) => Promise<{success: boolean; error?: string}>;
+  fetchCustomerProfileApi: (customerId: string, query?: {page?: number; limit?: number}) => Promise<any>;
 };
 
 const Context = createContext<Store | null>(null);
@@ -225,6 +231,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
         setBusinessDataMode('demo-only');
         setCompanySession(null);
         setOpeningStatus(null);
+        setRole('Staff');
         setIsLoading(false);
         return;
       }
@@ -232,6 +239,9 @@ export function StoreProvider({children}: {children: ReactNode}) {
       setCompanySession(meData);
       setBusinessDataMode(meData.businessDataMode || 'live');
       setIsLive(true);
+      if (!meData.profitUnlocked) {
+        setRole('Staff');
+      }
 
       const bootRes = await fetch('/api/master/bootstrap');
       if (!bootRes.ok) {
@@ -2274,6 +2284,107 @@ export function StoreProvider({children}: {children: ReactNode}) {
     return data;
   }
 
+  async function fetchEnquiriesPage(query: {
+    page?: number;
+    limit?: number;
+    customerId?: string;
+    status?: string;
+    category?: string;
+    search?: string;
+  } = {}) {
+    const p = new URLSearchParams();
+    if (query.page) p.set('page', String(query.page));
+    if (query.limit) p.set('limit', String(query.limit));
+    if (query.customerId) p.set('customerId', query.customerId);
+    if (query.status && query.status !== 'All') p.set('status', query.status);
+    if (query.category && query.category !== 'All') p.set('category', query.category);
+    if (query.search) p.set('search', query.search);
+    const res = await fetch(`/api/enquiries?${p.toString()}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load enquiries.');
+    return {
+      records: (data.records || []).map(mapEnquiryFromApi),
+      total: data.total || 0,
+      page: data.page || 1,
+      totalPages: data.totalPages || 1,
+    };
+  }
+
+  async function saveEnquiryApi(payload: any, existingId?: string, version?: number) {
+    if (!isLive) return {success: true, enquiry: payload};
+    try {
+      const isEdit = !!existingId;
+      const url = isEdit ? `/api/enquiries/${existingId}` : '/api/enquiries';
+      const method = isEdit ? 'PATCH' : 'POST';
+      const body = isEdit
+        ? {expectedVersion: version ?? 1, ...payload}
+        : {
+            ...payload,
+            idempotencyKey: payload.idempotencyKey || `enq-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          };
+      const res = await fetch(url, {
+        method,
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save enquiry.');
+      return {success: true, enquiry: data};
+    } catch (err: any) {
+      return {success: false, error: err.message};
+    }
+  }
+
+  async function updateInvoiceDueDateApi(id: string, promisedPaymentDate: string, notes?: string, expectedVersion?: number) {
+    if (!isLive) return {success: true};
+    try {
+      const res = await fetch(`/api/sales/invoices/${id}/due-date`, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          promisedPaymentDate,
+          notes,
+          expectedVersion,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update promised payment date.');
+      return {success: true};
+    } catch (err: any) {
+      return {success: false, error: err.message};
+    }
+  }
+
+  async function updatePurchaseDueDateApi(id: string, promisedPaymentDate: string, notes?: string, expectedVersion?: number) {
+    if (!isLive) return {success: true};
+    try {
+      const res = await fetch(`/api/purchases/${id}/due-date`, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          promisedPaymentDate,
+          notes,
+          expectedVersion,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update supplier promised payment date.');
+      return {success: true};
+    } catch (err: any) {
+      return {success: false, error: err.message};
+    }
+  }
+
+  async function fetchCustomerProfileApi(customerId: string, query?: {page?: number; limit?: number}) {
+    const p = new URLSearchParams();
+    if (query?.page) p.set('page', String(query.page));
+    if (query?.limit) p.set('limit', String(query.limit));
+    const res = await fetch(`/api/sales/customers/${customerId}/profile?${p.toString()}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load customer profile.');
+    return data;
+  }
+
   return (
     <Context.Provider
       value={{
@@ -2381,6 +2492,11 @@ export function StoreProvider({children}: {children: ReactNode}) {
         claimWarrantyApi,
         createWarrantyCoverageApi,
         fetchWarrantyDetailApi,
+        fetchEnquiriesPage,
+        saveEnquiryApi,
+        updateInvoiceDueDateApi,
+        updatePurchaseDueDateApi,
+        fetchCustomerProfileApi,
       }}
     >
       {children}

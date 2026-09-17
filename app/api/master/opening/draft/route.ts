@@ -20,3 +20,6 @@ export async function PUT(request: Request) {
   });
 }
 
+export const POST = PUT;
+
+

@@ -7,6 +7,7 @@ import {col, nextTenantSequence, assertPhase3MigrationComplete} from './purchase
 import {todayInKolkata} from './purchase-schema';
 import {isValidCalendarDate} from './master-schema';
 import {sumSalePaise} from './sales-calculations';
+import {lockBusinessDay} from './business-day';
 import type {IssueInvoiceInput} from './sales-schema';
 
 /** Must run inside the same transaction as every stock and financial write. */
@@ -25,8 +26,7 @@ export async function assertSalePostingDay(db: Db, tenantId: string, date: strin
     throw new AppError(409, `Opening setup is finalized through ${cutoffFormatted}. Sales and purchases can be posted from ${nextFormatted}.`);
   }
   await assertPhase3MigrationComplete(db, tenantId, session);
-  // Phase 5 must extend this guard AND all purchase writers with the same
-  // transactional business-day fence; a read-only closed-day check is insufficient.
+  await lockBusinessDay(db, session, tenantId, {date});
 }
 
 export function addWarrantyMonths(date: string, months: number): string {

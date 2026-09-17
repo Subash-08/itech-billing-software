@@ -41,6 +41,16 @@ export const SaleLineInputSchema = z.discriminatedUnion('lineType', [
     warrantyMonths: z.number().int().min(0).max(240).default(0),
   }),
   CommonLine.extend({
+    lineType: z.literal('ConsumedPart'),
+    serviceJobId: Id,
+    partId: Id,
+    productId: Id,
+    lotId: Id.optional(),
+    hsn: z.string().trim().min(1).max(20).default('847330'),
+    warrantyMonths: z.number().int().min(0).max(240).default(0),
+    serials: z.array(z.string()).default([]),
+  }),
+  CommonLine.extend({
     lineType: z.literal('Charge'), sac: z.string().trim().min(1).max(20),
   }),
 ]);
@@ -64,7 +74,8 @@ function lineValidation(value: {lines: z.infer<typeof SaleLineInputSchema>[]; in
     keys.add(line.clientLineKey);
     if (line.taxTreatment !== 'Taxable' && line.taxBasisPoints !== 0) context.addIssue({code: z.ZodIssueCode.custom, path: ['lines', index, 'taxBasisPoints'], message: 'Exempt and non-GST lines must use 0% tax.'});
     if (line.discountType === 'Percentage' && line.discountValue > 10000) context.addIssue({code: z.ZodIssueCode.custom, path: ['lines', index, 'discountValue'], message: 'Percentage discount cannot exceed 100%.'});
-    if ((value.invoiceKind === 'Service' && line.lineType === 'Product') || (value.invoiceKind === 'Sale' && line.lineType === 'Service')) context.addIssue({code: 'custom', path: ['lines', index], message: 'Use a separate service invoice. Assembly can be a charge on a product invoice.'});
+    if (value.invoiceKind === 'Service' && line.lineType === 'Product') context.addIssue({code: 'custom', path: ['lines', index], message: 'Service invoices use ConsumedPart lines for parts, not Product lines.'});
+    if (value.invoiceKind === 'Sale' && (line.lineType === 'Service' || line.lineType === 'ConsumedPart')) context.addIssue({code: 'custom', path: ['lines', index], message: 'Use a separate service invoice for services and consumed parts.'});
     if (line.lineType === 'Product') {
       if (line.stockAllocations.length && line.stockAllocations.reduce((sum, item) => sum + item.quantity, 0) !== line.quantity) context.addIssue({code: 'custom', path: ['lines', index, 'stockAllocations'], message: 'Leave stock unallocated in a draft, or allocate the full line quantity.'});
       const lots = new Set<string>();

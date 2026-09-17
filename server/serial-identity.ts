@@ -11,7 +11,7 @@ export interface SerialUnitDocument {
   lotId: string;
   serialOriginal: string;
   serialNormalized: string;
-  status: 'InStock' | 'Reserved' | 'Sold' | 'Defective' | 'Returned' | 'Removed';
+  status: 'InStock' | 'Reserved' | 'Sold' | 'Defective' | 'Returned' | 'Removed' | 'ConsumedInService';
   version: number;
   reservationId?: string | null;
   fulfilledReservationId?: string | null;
@@ -25,6 +25,7 @@ export interface SerialUnitDocument {
   warrantyClaimId?: string | null;
   replacedBySerial?: string | null;
   replacesSerial?: string | null;
+  serviceJobId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -296,7 +297,14 @@ export async function resolveSerialUnit(
   }
 
   const unit = candidates[0];
-  for (const stored of [unit.serialNormalized, unit.serialOriginal]) {
+  const fieldsToCheck = [
+    unit.serialNormalized,
+    unit.serialOriginal || (unit as any).serial,
+  ].filter(Boolean);
+  if (fieldsToCheck.length === 0) {
+    throw new AppError(409, 'Serial identity fields disagree. Reconcile this unit before posting.');
+  }
+  for (const stored of fieldsToCheck) {
     if (typeof stored !== 'string' || canonicalSerialKey(stored) !== canonical)
       throw new AppError(409, 'Serial identity fields disagree. Reconcile this unit before posting.');
   }
@@ -351,7 +359,9 @@ export type AllowedSerialTransition =
   | 'SupplierReturnReversal'
   | 'WarrantyReplacementClaim'
   | 'WarrantyReplacementSupply'
-  | 'PhysicalRemoval';
+  | 'PhysicalRemoval'
+  | 'ServiceConsumption'
+  | 'ServiceReversal';
 
 export interface TransitionSerialUnitParams {
   transition: AllowedSerialTransition;
@@ -380,6 +390,7 @@ export interface TransitionSerialUnitParams {
     warrantyClaimId?: string | null;
     replacedBySerial?: string | null;
     replacesSerial?: string | null;
+    serviceJobId?: string | null;
   };
 }
 
@@ -399,12 +410,14 @@ export async function transitionSerialUnit(
   await assertTenantSerialReady(db, expected.tenantId, session);
   const allowed: Record<AllowedSerialTransition, string[]> = {
     Hold: ['InStock:Reserved'], Release: ['Reserved:InStock'], Expire: ['Reserved:InStock'],
-    Sale: ['InStock:Sold', 'Reserved:Sold'], CustomerReturn: ['Sold:InStock', 'Sold:Defective'],
+    Sale: ['InStock:Sold', 'Reserved:Sold'], CustomerReturn: ['Sold:InStock', 'Sold:Defective', 'ConsumedInService:InStock', 'ConsumedInService:Defective'],
     Quarantine: ['InStock:Defective'], Restore: ['Defective:InStock'],
     SupplierReturn: ['InStock:Returned', 'Defective:Returned'],
     SupplierReturnReversal: ['Returned:InStock', 'Returned:Defective'],
     WarrantyReplacementClaim: ['Sold:Defective'], WarrantyReplacementSupply: ['InStock:Sold'],
     PhysicalRemoval: ['InStock:Removed', 'Defective:Removed'],
+    ServiceConsumption: ['InStock:ConsumedInService'],
+    ServiceReversal: ['ConsumedInService:InStock', 'ConsumedInService:Defective'],
   };
   if (!allowed[transition]?.includes(`${expected.status}:${nextState.status}`))
     throw new AppError(409, 'This serial state change is not allowed for the requested operation.');

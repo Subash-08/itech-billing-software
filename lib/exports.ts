@@ -5,9 +5,10 @@ export const safeFilename=(name:string)=>name.replace(/[^a-zA-Z0-9._-]/g,'_').sl
 const text=(value:unknown)=>String(value??'').replace(/₹/g,'INR ').replace(/[–—]/g,'-').replace(/→/g,'to').replace(/·/g,' / ');
 const cash=(n:number)=>'INR '+n.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
 export function downloadBytes(name:string,bytes:Uint8Array,mime:string){const url=URL.createObjectURL(new Blob([new Uint8Array(bytes)],{type:mime}));const link=document.createElement('a');link.href=url;link.download=safeFilename(name);link.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}
+const excelSanitize = (v: string | number) => typeof v === 'number' ? v : (/^-?\d+(\.\d+)?$/.test(String(v ?? '').trim()) ? v : (/^[=+@-]/.test(String(v ?? '')) ? "'" + String(v) : v));
 export async function workbookBytes(title:string,headers:string[],rows:(string|number)[][],description=''){
  const {default:ExcelJS}=await import('exceljs');const workbook=new ExcelJS.Workbook();workbook.creator='iTech Computers';const sheet=workbook.addWorksheet('Report');
- sheet.addRow([title]);sheet.addRow([description]);sheet.addRow(headers);rows.forEach(r=>sheet.addRow(r));sheet.views=[{state:'frozen',ySplit:3}];sheet.autoFilter={from:{row:3,column:1},to:{row:3,column:headers.length}};
+ sheet.addRow([title]);sheet.addRow([description]);sheet.addRow(headers);rows.forEach(r=>sheet.addRow(r.map(excelSanitize)));sheet.views=[{state:'frozen',ySplit:3}];sheet.autoFilter={from:{row:3,column:1},to:{row:3,column:headers.length}};
  sheet.getRow(1).font={bold:true,size:18,color:{argb:'FF5035BE'}};sheet.getRow(3).font={bold:true,color:{argb:'FFFFFFFF'}};sheet.getRow(3).fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF6246E5'}};
  headers.forEach((h,i)=>{const col=sheet.getColumn(i+1);col.width=Math.min(48,Math.max(15,h.length+3,...rows.slice(0,100).map(r=>String(r[i]??'').length+2)));col.alignment={vertical:'top',wrapText:true};if(/amount|total|value|due|paid|profit|tax|gst|expense|receipt|price|balance/i.test(h))col.numFmt='#,##0.00';});
  sheet.pageSetup={paperSize:9,orientation:'landscape',fitToPage:true,fitToWidth:1,fitToHeight:0};return new Uint8Array(await workbook.xlsx.writeBuffer());

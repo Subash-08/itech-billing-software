@@ -333,6 +333,7 @@ export async function allocateCustomerAdvance(
     input.advanceId,
     input,
     async (session: ClientSession) => {
+      await assertSalePostingDay(db, tenantId, input.effectiveDate, session);
       const advance = await col<CustomerAdvanceDocument>(db, 'customerAdvances').findOne(
         {
           _id: input.advanceId,

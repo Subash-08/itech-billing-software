@@ -826,7 +826,7 @@ export interface TenantAccountBalanceDocument {
 export interface TenantCounterDocument {
   _id: string; // "CNT-{tenantId}-{sequenceType}-{year}"
   tenantId: string;
-  sequenceType: 'Purchase' | 'Receipt' | 'Payment' | 'CreditNote' | 'Return' | 'Refund' | 'Advance';
+  sequenceType: 'Purchase' | 'Receipt' | 'Payment' | 'CreditNote' | 'Return' | 'Refund' | 'Advance' | 'Quotation' | 'Invoice' | 'ServiceInvoice' | 'ServiceJob' | 'Enquiry';
   year: string;
   currentValue: number;
   updatedAt: Date;

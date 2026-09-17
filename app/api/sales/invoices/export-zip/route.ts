@@ -1,6 +1,7 @@
 import {requireIdentity} from '@/server/auth';
 import {database, AppError} from '@/server/db';
 import {col} from '@/server/purchase-service';
+import {getFile} from '@/server/storage';
 import JSZip from 'jszip';
 import {jsPDF} from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -9,6 +10,22 @@ import type {InvoiceDocument} from '@/server/sales-service';
 export const runtime = 'nodejs';
 
 const MAX_ZIP_LIMIT = 500;
+
+function hexToRgb(hex: string): [number, number, number] {
+  const clean = (hex || '').replace('#', '');
+  if (clean.length === 6) {
+    return [
+      parseInt(clean.slice(0, 2), 16) || 0,
+      parseInt(clean.slice(2, 4), 16) || 0,
+      parseInt(clean.slice(4, 6), 16) || 0,
+    ];
+  }
+  return [30, 41, 59];
+}
+
+function fmtPaise(paise?: number): string {
+  return ((paise || 0) / 100).toFixed(2);
+}
 
 export async function GET(request: Request) {
   try {
@@ -55,7 +72,73 @@ export async function GET(request: Request) {
       .toArray();
 
     const company = await col(db, 'companySettings').findOne({tenantId: identity.tenantId});
-    const companyName = company?.name || 'iTech Computers';
+
+    // Default template fallback
+    const defaultTemplate =
+      (await col(db, 'invoiceTemplates').findOne({tenantId: identity.tenantId, isDefault: true, status: 'Active'})) ||
+      (await col(db, 'invoiceTemplates').findOne({tenantId: identity.tenantId, status: 'Active'})) ||
+      {
+        title: 'Tax Invoice',
+        paper: 'A4',
+        orientation: 'portrait',
+        fontSize: 10,
+        accent: '#1e293b',
+        borders: true,
+        striped: false,
+        logoPosition: 'left',
+        fields: {
+          logo: true,
+          shopName: true,
+          shopAddress: true,
+          shopGst: true,
+          shopPhone: true,
+          shopEmail: true,
+          number: true,
+          date: true,
+          due: true,
+          reference: true,
+          customerName: true,
+          customerAddress: true,
+          customerPhone: true,
+          customerGst: true,
+          shipping: true,
+          serials: true,
+          warranty: true,
+          subtotal: true,
+          taxes: true,
+          grandTotal: true,
+          payments: true,
+          declaration: true,
+          bank: true,
+          signatures: true,
+        },
+        columns: [
+          {id: 'index', label: '#', show: true, align: 'left'},
+          {id: 'description', label: 'Item & Description', show: true, align: 'left'},
+          {id: 'hsn', label: 'HSN/SAC', show: true, align: 'left'},
+          {id: 'qty', label: 'Qty', show: true, align: 'right'},
+          {id: 'rate', label: 'Rate (INR)', show: true, align: 'right'},
+          {id: 'tax', label: 'Tax', show: true, align: 'right'},
+          {id: 'amount', label: 'Amount (INR)', show: true, align: 'right'},
+        ],
+        footer: 'This is a computer generated invoice.',
+      };
+
+    const templateCache = new Map<string, any>();
+    const logoCache = new Map<string, Uint8Array | null>();
+
+    const getLogo = async (fileId?: string): Promise<Uint8Array | null> => {
+      if (!fileId) return null;
+      if (logoCache.has(fileId)) return logoCache.get(fileId)!;
+      try {
+        const file = await getFile(identity, fileId);
+        logoCache.set(fileId, file.bytes);
+        return file.bytes;
+      } catch {
+        logoCache.set(fileId, null);
+        return null;
+      }
+    };
 
     const zip = new JSZip();
 
@@ -81,53 +164,260 @@ export async function GET(request: Request) {
     zip.file('manifest.json', JSON.stringify(manifest, null, 2));
 
     for (const inv of invoices) {
-      const doc = new jsPDF();
-      // Render from frozen issued snapshot if available
       const snap = inv.issuedSnapshot || inv;
       const num = snap.invoiceNumber || inv.invoiceNumber || inv._id;
       const safeNum = String(num).replace(/[^a-zA-Z0-9_-]/g, '_');
       const safeId = inv._id.slice(-6);
       const fileName = `${safeNum}_${safeId}.pdf`;
 
+      // Resolve template
+      let tmpl = defaultTemplate;
+      const tKey = `${inv.templateId || ''}:${inv.templateRevision || ''}`;
+      if (tKey !== ':') {
+        if (templateCache.has(tKey)) {
+          tmpl = templateCache.get(tKey);
+        } else {
+          if (inv.templateId && inv.templateRevision) {
+            const rev = await col(db, 'templateRevisions').findOne({
+              tenantId: identity.tenantId,
+              templateId: inv.templateId,
+              revision: inv.templateRevision,
+            });
+            if (rev?.snapshot) tmpl = rev.snapshot;
+          } else if (inv.templateId) {
+            const t = await col(db, 'invoiceTemplates').findOne({
+              tenantId: identity.tenantId,
+              _id: inv.templateId,
+            });
+            if (t) tmpl = t;
+          }
+          templateCache.set(tKey, tmpl);
+        }
+      }
+
+      const fields = tmpl.fields || {};
+      const accentRgb = hexToRgb(tmpl.accent || '#1e293b');
+      const doc = new jsPDF({
+        orientation: tmpl.orientation || 'portrait',
+        format: (tmpl.paper || 'A4').toLowerCase() as 'a4' | 'letter',
+      });
+      const width = doc.internal.pageSize.getWidth();
+      let y = 14;
+
+      // Title
+      const title = tmpl.title || (snap.taxMode === 'Inter-state' || snap.igstPaise ? 'Tax Invoice' : 'Tax Invoice');
       doc.setFontSize(16);
-      doc.text(companyName, 14, 15);
-      doc.setFontSize(12);
-      doc.text(`TAX INVOICE: ${num}`, 14, 23);
+      doc.setTextColor(accentRgb[0], accentRgb[1], accentRgb[2]);
+      doc.text(title, width / 2, y, {align: 'center'});
+      y += 8;
 
-      doc.setFontSize(10);
-      doc.text(`Date: ${snap.invoiceDate || inv.invoiceDate}`, 14, 30);
-      doc.text(`Customer: ${snap.customerSnapshot?.name || inv.customerSnapshot?.name || 'Customer'}`, 14, 36);
-      const phone = snap.customerSnapshot?.phone || inv.customerSnapshot?.phone;
-      if (phone) doc.text(`Phone: ${phone}`, 14, 42);
+      // Logo
+      const logoFileId = snap.sellerSnapshot?.logoFileId || company?.logoFileId;
+      if (fields.logo !== false && logoFileId) {
+        const logoBytes = await getLogo(logoFileId);
+        if (logoBytes) {
+          try {
+            const pos = tmpl.logoPosition || 'left';
+            const lx = pos === 'right' ? width - 38 : pos === 'center' ? width / 2 - 12 : 14;
+            doc.addImage(logoBytes, 'PNG', lx, y, 24, 16, undefined, 'FAST');
+            y += 18;
+          } catch {
+            // Ignore corrupted logo bytes, continue rendering text
+          }
+        }
+      }
 
-      const lines = snap.lines || inv.lines || [];
-      const tableRows = lines.map((l: any, i: number) => [
-        String(i + 1),
-        l.description || l.productSnapshot?.name || l.serviceSnapshot?.name || 'Item',
-        l.hsn || l.sac || '',
-        String(l.quantity),
-        ((l.unitRatePaise || 0) / 100).toFixed(2),
-        `${((l.taxBasisPoints || 0) / 100).toFixed(0)}%`,
-        ((l.totalPaise || 0) / 100).toFixed(2),
-      ]);
+      // Company info & Document metadata in side-by-side block
+      const seller = snap.sellerSnapshot || company || {};
+      const companyLines: string[] = [];
+      if (fields.shopName !== false && seller.name) companyLines.push(seller.name);
+      if (fields.shopAddress !== false && seller.address) companyLines.push(seller.address);
+      if (fields.shopGst !== false && seller.gst) companyLines.push(`GSTIN: ${seller.gst}`);
+      if (fields.shopPhone !== false && seller.phone) companyLines.push(`Phone: ${seller.phone}`);
+      if (fields.shopEmail !== false && seller.email) companyLines.push(`Email: ${seller.email}`);
+
+      const metaLines: string[] = [];
+      if (fields.number !== false) metaLines.push(`Invoice #: ${num}`);
+      if (fields.date !== false) metaLines.push(`Date: ${snap.invoiceDate || inv.invoiceDate}`);
+      if (fields.due !== false && (snap.dueDate || inv.dueDate)) metaLines.push(`Due Date: ${snap.dueDate || inv.dueDate}`);
+      if (fields.reference !== false && snap.sourceReference) metaLines.push(`Ref: ${snap.sourceReference}`);
+      if (snap.placeOfSupply) metaLines.push(`Place of Supply: ${snap.placeOfSupply}`);
 
       autoTable(doc, {
-        startY: 48,
-        head: [['#', 'Description', 'HSN/SAC', 'Qty', 'Rate', 'Tax', 'Total (INR)']],
-        body: tableRows,
-        foot: [[
-          '',
-          'Grand Total',
-          '',
-          '',
-          '',
-          '',
-          ((snap.totalPaise || inv.totalPaise || 0) / 100).toFixed(2),
-        ]],
-        styles: {fontSize: 9},
-        headStyles: {fillColor: [30, 41, 59]},
-        footStyles: {fillColor: [241, 245, 249], textColor: [0, 0, 0], fontStyle: 'bold'},
+        startY: y,
+        body: [[companyLines.join('\n'), metaLines.join('\n')]],
+        theme: 'plain',
+        styles: {fontSize: 9, cellPadding: 1},
+        columnStyles: {
+          0: {cellWidth: (width - 28) / 2},
+          1: {cellWidth: (width - 28) / 2, halign: 'right'},
+        },
       });
+      y = (doc as any).lastAutoTable.finalY + 4;
+
+      // Buyer (Bill To) & Ship To (if enabled)
+      const cust = snap.customerSnapshot || inv.customerSnapshot || {};
+      const buyerLines: string[] = ['Bill To:'];
+      if (fields.customerName !== false && cust.name) buyerLines.push(cust.name);
+      if (fields.customerAddress !== false && (snap.billingAddress || cust.address)) {
+        buyerLines.push(snap.billingAddress || cust.address);
+      }
+      if (fields.customerPhone !== false && cust.phone) buyerLines.push(`Phone: ${cust.phone}`);
+      if (fields.customerGst !== false && cust.gst) buyerLines.push(`GSTIN: ${cust.gst}`);
+
+      const ship = snap.shippingAddress || snap.shipTo;
+      const shipLines: string[] = [];
+      if (fields.shipping && (ship?.name || ship?.address || snap.shippingAddress)) {
+        shipLines.push('Ship To:');
+        if (typeof ship === 'string') {
+          shipLines.push(ship);
+        } else if (ship) {
+          if (ship.name) shipLines.push(ship.name);
+          if (ship.address) shipLines.push(ship.address);
+          if (ship.phone) shipLines.push(`Phone: ${ship.phone}`);
+          if (ship.state) shipLines.push(ship.state);
+        }
+      }
+
+      autoTable(doc, {
+        startY: y,
+        body: [[buyerLines.join('\n'), shipLines.join('\n')]],
+        theme: 'plain',
+        styles: {fontSize: 9, cellPadding: 1},
+        columnStyles: {
+          0: {cellWidth: (width - 28) / 2},
+          1: {cellWidth: (width - 28) / 2},
+        },
+      });
+      y = (doc as any).lastAutoTable.finalY + 4;
+
+      // Table columns & rows
+      const visibleCols = (tmpl.columns || []).filter((c: any) => c.show);
+      const lines = snap.lines || inv.lines || [];
+      const tableHead = visibleCols.map((c: any) => c.label);
+      const tableBody = lines.map((l: any, idx: number) => {
+        return visibleCols.map((colDef: any) => {
+          switch (colDef.id) {
+            case 'index':
+              return String(idx + 1);
+            case 'description': {
+              const parts = [l.description || l.productSnapshot?.name || l.serviceSnapshot?.name || 'Item'];
+              if (fields.serials !== false && l.serials?.length) {
+                parts.push('SN: ' + l.serials.join(', '));
+              }
+              if (fields.warranty !== false && l.warrantyMonths) {
+                parts.push(`Warranty: ${l.warrantyMonths} months`);
+              }
+              return parts.join('\n');
+            }
+            case 'hsn':
+              return l.hsn || l.sac || '';
+            case 'qty':
+              return String(l.quantity ?? 1);
+            case 'rate':
+              return fmtPaise(l.unitRatePaise);
+            case 'rateIncl':
+              return fmtPaise(
+                l.unitRatePaise ? Math.round(l.unitRatePaise * (1 + (l.taxBasisPoints || 0) / 10000)) : 0
+              );
+            case 'rateExcl':
+              return fmtPaise(l.unitRatePaise);
+            case 'tax':
+              return `${((l.taxBasisPoints || 0) / 100).toFixed(0)}%`;
+            case 'discount':
+              return l.discountPaise ? fmtPaise(l.discountPaise) : '—';
+            case 'warranty':
+              return l.warrantyMonths ? `${l.warrantyMonths}m` : '—';
+            case 'amount':
+              return fmtPaise(l.totalPaise ?? l.taxableBasePaise);
+            default:
+              return '';
+          }
+        });
+      });
+
+      const colStyles: Record<number, any> = {};
+      visibleCols.forEach((c: any, i: number) => {
+        colStyles[i] = {halign: c.align || 'left'};
+      });
+
+      autoTable(doc, {
+        startY: y,
+        head: [tableHead],
+        body: tableBody,
+        theme: tmpl.borders ? 'grid' : tmpl.striped ? 'striped' : 'plain',
+        styles: {fontSize: Math.min(tmpl.fontSize || 10, 10), cellPadding: 2},
+        headStyles: {fillColor: accentRgb, textColor: [255, 255, 255]},
+        columnStyles: colStyles,
+      });
+      y = (doc as any).lastAutoTable.finalY + 4;
+
+      // Summary totals table
+      const summaryRows: Array<[string, string]> = [];
+      if (fields.subtotal !== false) {
+        summaryRows.push(['Taxable Subtotal', fmtPaise(snap.taxableBasePaise)]);
+      }
+      if (fields.taxes !== false) {
+        if (snap.taxMode === 'Inter-state' || snap.igstPaise) {
+          summaryRows.push(['IGST', fmtPaise(snap.igstPaise)]);
+        } else {
+          summaryRows.push(['CGST', fmtPaise(snap.cgstPaise)]);
+          summaryRows.push(['SGST', fmtPaise(snap.sgstPaise)]);
+        }
+      }
+      if (fields.grandTotal !== false) {
+        summaryRows.push(['Total (INR)', fmtPaise(snap.totalPaise || inv.totalPaise)]);
+      }
+      if (fields.payments !== false) {
+        const grand = snap.totalPaise || inv.totalPaise || 0;
+        const due = inv.duePaise ?? 0;
+        const paid = Math.max(0, grand - due);
+        summaryRows.push(['Amount Received', fmtPaise(paid)]);
+        summaryRows.push(['Balance Due', fmtPaise(due)]);
+      }
+
+      if (summaryRows.length > 0) {
+        autoTable(doc, {
+          startY: y,
+          body: summaryRows,
+          theme: 'plain',
+          styles: {fontSize: 9, cellPadding: 1.5},
+          columnStyles: {
+            0: {cellWidth: width - 80, halign: 'right', fontStyle: 'bold'},
+            1: {cellWidth: 52, halign: 'right'},
+          },
+        });
+        y = (doc as any).lastAutoTable.finalY + 4;
+      }
+
+      // Bank details & Terms / Declaration
+      const notesBlock: string[] = [];
+      if (fields.declaration !== false && seller.declaration) {
+        notesBlock.push(`Declaration: ${seller.declaration}`);
+      }
+      if (fields.bank !== false && seller.bank) {
+        notesBlock.push(`Bank Details: ${seller.bank} | A/C: ${seller.account || ''} | IFSC: ${seller.ifsc || ''}`);
+      }
+      if (notesBlock.length > 0) {
+        autoTable(doc, {
+          startY: y,
+          body: [[notesBlock.join('\n')]],
+          theme: 'plain',
+          styles: {fontSize: 8, fontStyle: 'italic', cellPadding: 1},
+        });
+        y = (doc as any).lastAutoTable.finalY + 4;
+      }
+
+      // Footer
+      const footerText = tmpl.footer || 'This is a computer generated invoice.';
+      const pageCount = doc.getNumberOfPages();
+      for (let p = 1; p <= pageCount; p++) {
+        doc.setPage(p);
+        doc.setFontSize(8);
+        doc.setTextColor(100);
+        doc.text(footerText, 14, doc.internal.pageSize.getHeight() - 8);
+        doc.text(`Page ${p} of ${pageCount}`, width - 28, doc.internal.pageSize.getHeight() - 8);
+      }
 
       const pdfArrayBuffer = doc.output('arraybuffer');
       zip.file(fileName, pdfArrayBuffer);

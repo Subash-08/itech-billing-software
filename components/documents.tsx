@@ -441,6 +441,47 @@ export function DocumentComposer({
   useEffect(() => {
     if (isLive && (isEditMode || (!purchase && params.get('from')))) {
       reloadLatestDraft();
+    } else if (isLive && !purchase && params.get('job') && !isEditMode) {
+      const jobId = params.get('job')!;
+      fetch(`/api/services/${encodeURIComponent(jobId)}`)
+        .then((r) => r.json())
+        .then((data) => {
+          const j = data.job || data;
+          if (j.customerId) setCustomerId(j.customerId);
+          setCategory('Service');
+          const serviceLines: Line[] = [];
+          const labourPaise = j.estimate?.estimatedCostPaise || 0;
+          serviceLines.push({
+            ...blankLine(),
+            name: `${j.device?.brand || ''} ${j.device?.model || ''} - Repair Service: ${j.reportedProblem || 'Service Work'}`.trim(),
+            qty: 1,
+            rate: labourPaise ? labourPaise / 100 : 0,
+            lineType: 'Service',
+            sac: '998713',
+            serviceJobId: j._id,
+            clientLineKey: uid('CLK'),
+          });
+          for (const p of (j.parts || [])) {
+            if (p.reversed) continue;
+            serviceLines.push({
+              ...blankLine(),
+              productId: p.productId,
+              partId: p.partId,
+              name: p.productName,
+              qty: p.quantity,
+              rate: (p.billingRatePaise || p.unitCostPaise || 0) / 100,
+              tax: (p.taxBasisPoints || 1800) / 100,
+              hsn: p.hsn || '847330',
+              lineType: 'ConsumedPart',
+              serviceJobId: j._id,
+              serials: p.serials || [],
+              clientLineKey: uid('CLK'),
+            });
+          }
+          setLines(serviceLines);
+          notify('Loaded service job details and consumed parts.');
+        })
+        .catch(() => {});
     }
   }, [isLive, isEditMode, editId]);
 
@@ -746,7 +787,7 @@ export function DocumentComposer({
     }
 
     if (!quotation) {
-      const missing = lines.findIndex(l => l.lineType !== 'Service' && l.lineType !== 'Charge' && l.productId &&
+      const missing = lines.findIndex(l => l.lineType !== 'Service' && l.lineType !== 'Charge' && l.lineType !== 'ConsumedPart' && l.productId &&
         (l.stockAllocations ?? []).reduce((n, a) => n + a.quantity, 0) !== l.qty);
       if (missing >= 0) {
         notify(`Select ${lines[missing].qty} unit(s) of ${lines[missing].name} from received stock, then save or issue again.`);
@@ -804,9 +845,9 @@ export function DocumentComposer({
       const chosenTemplateId = templateRecord.id;
 
       const linesPayload = lines.map((l: Line) => {
-        const isProd = l.lineType !== 'Service' && l.lineType !== 'Charge';
         const isSvc = l.lineType === 'Service';
         const isChg = l.lineType === 'Charge';
+        const isConsumed = l.lineType === 'ConsumedPart';
         const treatment = (l.taxTreatment || 'Taxable') as 'Taxable' | 'Exempt' | 'NonGST';
         const isZeroTax = treatment === 'Exempt' || treatment === 'NonGST';
         const common = {
@@ -834,6 +875,19 @@ export function DocumentComposer({
             serviceId: l.serviceId || undefined,
             sac: l.sac || l.hsn || '998713',
             serviceJobId: l.serviceJobId || (service ? job?.id : undefined),
+            warrantyMonths: Number(l.warranty || 0),
+          };
+        }
+        if (isConsumed) {
+          return {
+            ...common,
+            lineType: 'ConsumedPart' as const,
+            serviceJobId: l.serviceJobId || params.get('job') || job?.id || '',
+            partId: (l as any).partId || '',
+            productId: l.productId,
+            lotId: (l as any).lotId || undefined,
+            hsn: l.hsn || '847330',
+            serials: l.serials || [],
             warrantyMonths: Number(l.warranty || 0),
           };
         }
@@ -870,6 +924,8 @@ export function DocumentComposer({
           templateRevision: chosenTemplateRev,
           orderReference: orderRef.trim(),
           notes: notes.trim(),
+          serviceJobId: params.get('job') || (job as any)?._id || (job as any)?.id || undefined,
+          sourceEnquiryId: params.get('enquiry') || (enquiry as any)?._id || (enquiry as any)?.id || undefined,
           lines: linesPayload,
         };
 
@@ -902,6 +958,8 @@ export function DocumentComposer({
         dispatchThrough: dispatch.trim(),
         notes: notes.trim(),
         sourceQuotationId: params.get('from') || undefined,
+        serviceJobId: params.get('job') || (job as any)?._id || (job as any)?.id || undefined,
+        enquiryId: params.get('enquiry') || (enquiry as any)?._id || (enquiry as any)?.id || undefined,
         lines: linesPayload,
       };
 

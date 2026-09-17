@@ -1,5 +1,21 @@
 import 'server-only';
 import {MongoClient} from 'mongodb';
+import dns from 'node:dns';
+
+// Public DNS override is strictly opt-in via environment configuration
+// (e.g. ENABLE_PUBLIC_DNS_OVERRIDE=true or MONGODB_DNS_SERVERS=8.8.8.8,1.1.1.1)
+if (process.env.ENABLE_PUBLIC_DNS_OVERRIDE === 'true' || process.env.MONGODB_DNS_SERVERS) {
+  try {
+    const servers = process.env.MONGODB_DNS_SERVERS
+      ? process.env.MONGODB_DNS_SERVERS.split(',').map(s => s.trim()).filter(Boolean)
+      : ['8.8.8.8', '1.1.1.1'];
+    if (servers.length > 0) {
+      dns.setServers(servers);
+    }
+  } catch (err: any) {
+    console.warn('[db] Failed to configure optional public DNS servers:', err?.message || err);
+  }
+}
 
 export class AppError extends Error {
   constructor(public status: number, message: string) {
@@ -10,16 +26,72 @@ export class AppError extends Error {
 const globalDb = globalThis as typeof globalThis & {
   itechMongo?: Promise<MongoClient>;
   itechIndexes?: Promise<void>;
+  indexIntegrityVerified?: boolean;
+  indexIntegrityErrors?: string[];
 };
+
+function isDnsDiscoveryError(err: any): boolean {
+  if (!err) return false;
+  const code = err.code || err.cause?.code;
+  const syscall = err.syscall || err.cause?.syscall;
+  const msg = `${err.message || ''} ${err.cause?.message || ''}`;
+  return (
+    code === 'ETIMEOUT' ||
+    code === 'ENOTFOUND' ||
+    code === 'EAI_AGAIN' ||
+    syscall === 'querySrv' ||
+    syscall === 'queryTxt' ||
+    msg.includes('querySrv') ||
+    msg.includes('queryTxt')
+  );
+}
+
+async function connectClient(primaryUri: string): Promise<MongoClient> {
+  const fallbackUri = process.env.MONGODB_FALLBACK_URI;
+  let primaryClient: MongoClient | undefined;
+
+  try {
+    primaryClient = new MongoClient(primaryUri, {
+      maxPoolSize: 10,
+      serverSelectionTimeoutMS: 5000,
+    });
+    return await primaryClient.connect();
+  } catch (err: any) {
+    if (primaryClient) {
+      await primaryClient.close().catch(() => {});
+    }
+
+    if (fallbackUri && isDnsDiscoveryError(err)) {
+      console.warn(
+        `[db] Primary DNS discovery timed out or failed (${err.code || err.syscall || 'discovery_error'}). Attempting optional MONGODB_FALLBACK_URI...`
+      );
+      let fallbackClient: MongoClient | undefined;
+      try {
+        fallbackClient = new MongoClient(fallbackUri, {
+          maxPoolSize: 10,
+          serverSelectionTimeoutMS: 5000,
+        });
+        return await fallbackClient.connect();
+      } catch (fallbackErr: any) {
+        if (fallbackClient) {
+          await fallbackClient.close().catch(() => {});
+        }
+        console.error(
+          `[db] Fallback connection failed (${fallbackErr.code || fallbackErr.message}).`
+        );
+        throw fallbackErr;
+      }
+    }
+
+    throw err;
+  }
+}
 
 export async function mongo() {
   const uri = process.env.MONGODB_URI;
   if (!uri) throw new AppError(503, 'MongoDB is not configured. The demo is still available.');
   if (!globalDb.itechMongo) {
-    globalDb.itechMongo = new MongoClient(uri, {
-      maxPoolSize: 10,
-      serverSelectionTimeoutMS: 5000,
-    }).connect().catch(e => {
+    globalDb.itechMongo = connectClient(uri).catch(e => {
       globalDb.itechMongo = undefined;
       throw e;
     });
@@ -31,27 +103,102 @@ export async function database() {
   return (await mongo()).db(process.env.MONGODB_DB || 'itech_dev');
 }
 
+export function assertWriteIntegrity() {
+  if (globalDb.indexIntegrityErrors && globalDb.indexIntegrityErrors.length > 0) {
+    throw new AppError(
+      500,
+      'Database write operation suspended due to index integrity requirements. Please contact the administrator.'
+    );
+  }
+}
+
+function canonicalStringify(val: any): string {
+  if (val === undefined || val === null) return '';
+  if (typeof val !== 'object') return JSON.stringify(val);
+  if (Array.isArray(val)) return '[' + val.map(canonicalStringify).join(',') + ']';
+  const keys = Object.keys(val).sort();
+  return '{' + keys.map(k => `${JSON.stringify(k)}:${canonicalStringify(val[k])}`).join(',') + '}';
+}
+
 async function safeCreateIndex(
   col: any,
   keys: Record<string, 1 | -1 | string>,
   options?: any
 ) {
+  const existing = await col.listIndexes().toArray().catch(() => []);
+  const keyJson = canonicalStringify(keys);
+  const matched = existing.find((idx: any) => canonicalStringify(idx.key) === keyJson);
+
+  if (matched) {
+    // 1. Verify uniqueness
+    const reqUnique = Boolean(options?.unique);
+    const actUnique = Boolean(matched.unique);
+    if (reqUnique !== actUnique) {
+      const msg = `Incompatible index on ${col.collectionName}: key ${keyJson} requires unique=${reqUnique}, but existing index '${matched.name}' has unique=${actUnique}. Conflict report: Uniqueness constraint mismatch. Migration proposal: Review collection for duplicate records and execute an administrative index migration to reconcile '${matched.name}'. Automatic index drop is prohibited.`;
+      console.error(`[db:index-integrity-error] ${msg}`);
+      globalDb.indexIntegrityErrors = [...(globalDb.indexIntegrityErrors || []), msg];
+      throw new AppError(500, 'Database index integrity check failed. Write access is suspended pending administrative migration.');
+    }
+
+    // 2. Verify partialFilterExpression (must not accept unexpected partial where full is required, and vice versa)
+    const hasReqPartial = Boolean(options?.partialFilterExpression);
+    const hasActPartial = Boolean(matched.partialFilterExpression);
+    if (hasReqPartial !== hasActPartial) {
+      const msg = `Incompatible index on ${col.collectionName}: key ${keyJson} requires ${hasReqPartial ? 'partialFilterExpression' : 'full index'}, but existing index '${matched.name}' has ${hasActPartial ? 'partialFilterExpression' : 'full index'}. Conflict report: Filter scope mismatch. Migration proposal: An administrator must verify query predicates and migrate index '${matched.name}'. Automatic drop is prohibited.`;
+      console.error(`[db:index-integrity-error] ${msg}`);
+      globalDb.indexIntegrityErrors = [...(globalDb.indexIntegrityErrors || []), msg];
+      throw new AppError(500, 'Database index integrity check failed. Write access is suspended pending administrative migration.');
+    }
+    if (hasReqPartial && hasActPartial) {
+      const reqPartial = canonicalStringify(options.partialFilterExpression);
+      const actPartial = canonicalStringify(matched.partialFilterExpression);
+      if (reqPartial !== actPartial) {
+        const msg = `Incompatible index on ${col.collectionName}: key ${keyJson} requires partialFilterExpression=${reqPartial}, but existing index '${matched.name}' has ${actPartial}. Conflict report: Filter expression mismatch. Migration proposal: Verify predicate coverage and migrate index '${matched.name}'.`;
+        console.error(`[db:index-integrity-error] ${msg}`);
+        globalDb.indexIntegrityErrors = [...(globalDb.indexIntegrityErrors || []), msg];
+        throw new AppError(500, 'Database index integrity check failed. Write access is suspended pending administrative migration.');
+      }
+    }
+
+    // 3. Verify expireAfterSeconds (TTL)
+    const reqTTL = options?.expireAfterSeconds !== undefined ? options.expireAfterSeconds : undefined;
+    const actTTL = matched.expireAfterSeconds !== undefined ? matched.expireAfterSeconds : undefined;
+    if (reqTTL !== actTTL) {
+      const msg = `Incompatible index on ${col.collectionName}: key ${keyJson} requires expireAfterSeconds=${reqTTL}, but existing index '${matched.name}' has expireAfterSeconds=${actTTL}. Conflict report: TTL mismatch. Migration proposal: Adjust TTL settings on '${matched.name}'.`;
+      console.error(`[db:index-integrity-error] ${msg}`);
+      globalDb.indexIntegrityErrors = [...(globalDb.indexIntegrityErrors || []), msg];
+      throw new AppError(500, 'Database index integrity check failed. Write access is suspended pending administrative migration.');
+    }
+
+    // 4. Verify collation if specified
+    if (options?.collation || matched.collation) {
+      const reqCollation = options?.collation ? canonicalStringify(options.collation) : '';
+      const actCollation = matched.collation ? canonicalStringify(matched.collation) : '';
+      if (reqCollation !== actCollation) {
+        const msg = `Incompatible index on ${col.collectionName}: key ${keyJson} requires collation=${reqCollation || 'none'}, but existing index '${matched.name}' has collation=${actCollation || 'none'}.`;
+        console.error(`[db:index-integrity-error] ${msg}`);
+        globalDb.indexIntegrityErrors = [...(globalDb.indexIntegrityErrors || []), msg];
+        throw new AppError(500, 'Database index integrity check failed. Write access is suspended pending administrative migration.');
+      }
+    }
+
+    return matched.name;
+  }
+
+  // If index does not exist, create it
   try {
-    const existing = await col.listIndexes().toArray().catch(() => []);
-    const keyJson = JSON.stringify(keys);
-    const exists = existing.some((idx: any) => JSON.stringify(idx.key) === keyJson);
-    if (!exists) {
-      await col.createIndex(keys, options);
-    }
+    return await col.createIndex(keys, options);
   } catch (err: any) {
-    if (err?.codeName !== 'IndexAlreadyExists' && err?.code !== 85 && err?.code !== 86) {
-      console.warn(`[db:safeCreateIndex] on ${col.collectionName}:`, err?.message || err);
-    }
+    const msg = `Failed to create required index on ${col.collectionName} ${keyJson}: ${err?.message || err}`;
+    console.error(`[db:index-create-error] ${msg}`);
+    globalDb.indexIntegrityErrors = [...(globalDb.indexIntegrityErrors || []), msg];
+    throw new AppError(500, 'Database index creation failed. Write access is suspended.');
   }
 }
 
 export async function ensureIndexes() {
-  if (!globalDb.itechIndexes) {
+  if (!globalDb.itechIndexes || !globalDb.indexIntegrityVerified) {
+    globalDb.indexIntegrityErrors = [];
     globalDb.itechIndexes = (async () => {
       const db = await database();
       await Promise.all([
@@ -225,8 +372,10 @@ export async function ensureIndexes() {
         safeCreateIndex(db.collection('serialUnits'), {tenantId: 1, reservationId: 1}),
         safeCreateIndex(db.collection('tenantSerialGates'), {tenantId: 1}, {unique: true}),
       ]);
+      globalDb.indexIntegrityVerified = true;
     })().catch(e => {
       globalDb.itechIndexes = undefined;
+      globalDb.indexIntegrityVerified = false;
       throw e;
     });
   }

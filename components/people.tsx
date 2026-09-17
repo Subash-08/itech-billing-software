@@ -254,7 +254,7 @@ export function PersonForm({
 }
 
 export default function People({supplier = false, id}: {supplier?: boolean; id?: string}) {
-  const {state, isLive, fetchCustomersPage, fetchSuppliersPage} = useStore();
+  const {state, isLive, fetchCustomersPage, fetchSuppliersPage, fetchCustomerProfileApi} = useStore();
   const [q, setQ] = useState('');
   const [edit, setEdit] = useState(false);
   const [type, setType] = useState('All');
@@ -265,6 +265,7 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
   const [refreshIndex, setRefreshIndex] = useState(0);
   const [detailRecord, setDetailRecord] = useState<Customer | Supplier | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [customerProfile, setCustomerProfile] = useState<any>(null);
 
   const isDetailRoute = Boolean(id && id !== 'new');
 
@@ -272,6 +273,7 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
   useEffect(() => {
     setDetailRecord(null);
     setDetailLoading(false);
+    setCustomerProfile(null);
   }, [id, supplier]);
 
   useEffect(() => {
@@ -332,6 +334,21 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
       active = false;
     };
   }, [isLive, id, supplier, isDetailRoute, refreshIndex]);
+
+  useEffect(() => {
+    if (!isLive || !isDetailRoute || !id || supplier) return;
+    let active = true;
+    fetchCustomerProfileApi(id)
+      .then((data) => {
+        if (active) setCustomerProfile(data);
+      })
+      .catch(() => {
+        if (active) setCustomerProfile(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isLive, id, supplier, isDetailRoute, refreshIndex, fetchCustomerProfileApi]);
 
   const collection = isLive ? (serverData?.records || []) : (supplier ? state.suppliers : state.customers);
   const person = isDetailRoute
@@ -437,57 +454,129 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
               </Card>
 
               {!supplier && (
-                <>
-                  <Card title="Service history">
-                    <div className="timeline">
-                      {state.jobs
-                        .filter((j) => j.customerId === id)
-                        .map((j) => (
-                          <div key={j.id}>
-                            <small>{dateLabel(j.date)}</small>
+                isLive && customerProfile ? (
+                  <>
+                    <Card title="Category purchase breakdown">
+                      <div className="body-pad category-bars">
+                        <div style={{display: 'flex', justifyContent: 'space-between', padding: '6px 0'}}>
+                          <span>New Goods</span>
+                          <strong>{money((customerProfile.contributions?.newGoodsTotalPaise || 0) / 100)}</strong>
+                        </div>
+                        <div style={{display: 'flex', justifyContent: 'space-between', padding: '6px 0'}}>
+                          <span>Used Goods</span>
+                          <strong>{money((customerProfile.contributions?.usedGoodsTotalPaise || 0) / 100)}</strong>
+                        </div>
+                        <div style={{display: 'flex', justifyContent: 'space-between', padding: '6px 0'}}>
+                          <span>Services & Repairs</span>
+                          <strong>{money((customerProfile.contributions?.serviceTotalPaise || 0) / 100)}</strong>
+                        </div>
+                        <div style={{display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderTop: '1px solid var(--border)', marginTop: 4}}>
+                          <span>Total Invoiced</span>
+                          <strong>{money((customerProfile.summary?.totalSalesPaise || 0) / 100)}</strong>
+                        </div>
+                        {(customerProfile.summary?.totalReturnsPaise || 0) > 0 && (
+                          <div style={{display: 'flex', justifyContent: 'space-between', padding: '6px 0'}}>
+                            <span>Returns / Adjustments</span>
+                            <strong className="negative">−{money((customerProfile.summary.totalReturnsPaise || 0) / 100)}</strong>
+                          </div>
+                        )}
+                        <div style={{display: 'flex', justifyContent: 'space-between', padding: '6px 0'}}>
+                          <span>Total Collections</span>
+                          <strong className="positive">{money((customerProfile.summary?.totalCollectionsPaise || 0) / 100)}</strong>
+                        </div>
+                      </div>
+                    </Card>
+
+                    <Card title="Customer activity timeline">
+                      <div className="timeline">
+                        {(customerProfile.timeline || []).map((item: any) => (
+                          <div key={item.id}>
+                            <small>{item.date}</small>
                             <strong>
-                              <Link href={'/services/' + j.id}>
-                                {j.device} · {j.id}
+                              {item.type === 'Invoice' ? (
+                                <Link className="record-link" href={'/sales/' + item.id}>
+                                  {item.reference}
+                                </Link>
+                              ) : item.type === 'ServiceJob' ? (
+                                <Link className="record-link" href={'/services/' + item.id}>
+                                  {item.reference}
+                                </Link>
+                              ) : item.type === 'Enquiry' ? (
+                                <Link className="record-link" href="/enquiries">
+                                  {item.reference}
+                                </Link>
+                              ) : (
+                                item.reference
+                              )}
+                            </strong>
+                            <p>{item.title}</p>
+                            {typeof item.amountPaise === 'number' && (
+                              <p>
+                                <strong>{money(item.amountPaise / 100)}</strong>
+                              </p>
+                            )}
+                            <Badge>{item.status}</Badge>
+                          </div>
+                        ))}
+                        {(!customerProfile.timeline || !customerProfile.timeline.length) && (
+                          <p className="muted" style={{padding: '12px 0'}}>No activity records recorded yet.</p>
+                        )}
+                      </div>
+                    </Card>
+                  </>
+                ) : (
+                  <>
+                    <Card title="Service history">
+                      <div className="timeline">
+                        {state.jobs
+                          .filter((j) => j.customerId === id)
+                          .map((j) => (
+                            <div key={j.id}>
+                              <small>{dateLabel(j.date)}</small>
+                              <strong>
+                                <Link href={'/services/' + j.id}>
+                                  {j.device} · {j.id}
+                                </Link>
+                              </strong>
+                              <p>{j.problem}</p>
+                              <Badge>{j.status}</Badge>
+                            </div>
+                          ))}
+                        {!state.jobs.some((j) => j.customerId === id) && <p>No service visits yet.</p>}
+                      </div>
+                    </Card>
+                    <Card title="Enquiries and quotations">
+                      <div className="timeline">
+                        {state.enquiries
+                          .filter((e) => e.customerId === id)
+                          .map((e) => (
+                            <div key={e.id}>
+                              <small>{dateLabel(e.date)}</small>
+                              <strong>
+                                <Link href="/enquiries">{e.requirement}</Link>
+                              </strong>
+                              <p>
+                                {e.category} · {money(e.budget)}
+                              </p>
+                              <Badge>{e.status}</Badge>
+                            </div>
+                          ))}
+                        {state.bills
+                          .filter((b) => b.customerId === id && b.kind === 'Quotation')
+                          .map((b) => (
+                            <div key={b.id}>
+                              <Link className="record-link" href={'/quotations/' + b.id}>
+                                {b.id}
                               </Link>
-                            </strong>
-                            <p>{j.problem}</p>
-                            <Badge>{j.status}</Badge>
-                          </div>
-                        ))}
-                      {!state.jobs.some((j) => j.customerId === id) && <p>No service visits yet.</p>}
-                    </div>
-                  </Card>
-                  <Card title="Enquiries and quotations">
-                    <div className="timeline">
-                      {state.enquiries
-                        .filter((e) => e.customerId === id)
-                        .map((e) => (
-                          <div key={e.id}>
-                            <small>{dateLabel(e.date)}</small>
-                            <strong>
-                              <Link href="/enquiries">{e.requirement}</Link>
-                            </strong>
-                            <p>
-                              {e.category} · {money(e.budget)}
-                            </p>
-                            <Badge>{e.status}</Badge>
-                          </div>
-                        ))}
-                      {state.bills
-                        .filter((b) => b.customerId === id && b.kind === 'Quotation')
-                        .map((b) => (
-                          <div key={b.id}>
-                            <Link className="record-link" href={'/quotations/' + b.id}>
-                              {b.id}
-                            </Link>
-                            <p>
-                              {money(roundedTotal(b))} · {b.status}
-                            </p>
-                          </div>
-                        ))}
-                    </div>
-                  </Card>
-                </>
+                              <p>
+                                {money(roundedTotal(b))} · {b.status}
+                              </p>
+                            </div>
+                          ))}
+                      </div>
+                    </Card>
+                  </>
+                )
               )}
             </div>
 
@@ -526,7 +615,16 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
 
               <Card title={supplier ? 'Amount payable' : 'Amount to collect'}>
                 <div className="body-pad">
-                  <h1>{money(bills.reduce((a, b) => a + balance(state, b), 0))}</h1>
+                  <h1>
+                    {isLive && !supplier && customerProfile
+                      ? money((customerProfile.summary?.outstandingDuePaise || 0) / 100)
+                      : money(bills.reduce((a, b) => a + balance(state, b), 0))}
+                  </h1>
+                  {isLive && !supplier && customerProfile && (customerProfile.summary?.availableAdvancesPaise || 0) > 0 && (
+                    <p style={{color: 'var(--accent)', marginTop: 4}}>
+                      Available advance: {money(customerProfile.summary.availableAdvancesPaise / 100)}
+                    </p>
+                  )}
                   <p className="spaced">Linked bills and opening balances determine this balance.</p>
                   <Link className="text-link spaced" href="/dues">
                     View outstanding bills <ArrowUpRight size={14} />

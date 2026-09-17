@@ -74,13 +74,8 @@ const groups = [
 ];
 
 type ModuleMode = 'live' | 'mixed' | 'preview';
-const previewPaths = new Set([
-  '/enquiries', '/documents', '/services',
-  '/register', '/profit', '/communication',
-]);
-const mixedPaths = new Set([
-  '/', '/customers', '/dues', '/reports',
-]);
+const previewPaths = new Set<string>([]);
+const mixedPaths = new Set<string>([]);
 
 function moduleMode(url: string): ModuleMode {
   if (previewPaths.has(url)) return 'preview';
@@ -89,7 +84,6 @@ function moduleMode(url: string): ModuleMode {
 }
 
 function currentModuleMode(path: string): ModuleMode {
-  if (path === '/') return 'mixed';
   const root = `/${path.split('/').filter(Boolean)[0] || ''}`;
   return moduleMode(root);
 }

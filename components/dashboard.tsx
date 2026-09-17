@@ -1,8 +1,250 @@
 'use client';
+import {useState, useEffect} from 'react';
 import Analytics from './analytics';
 import Link from 'next/link';
-import {ArrowUpRight,IndianRupee,Wallet,Wrench,Package,Plus,ChevronRight,ArrowDownLeft,ArrowUpRight as ArrowOut,CalendarDays} from 'lucide-react';
+import {
+  ArrowUpRight,
+  IndianRupee,
+  Wallet,
+  Wrench,
+  Package,
+  Plus,
+  ArrowDownLeft,
+  ArrowUpRight as ArrowOut,
+  CalendarDays,
+} from 'lucide-react';
 import {useStore} from './store';
-import {Card,Stat,PageHead,Badge} from './ui';
-import {TODAY,roundedTotal,money,shortMoney,accountBalance,balance} from '@/lib/domain';
-export default function Dashboard(){const {state}=useStore();const sales=state.bills.filter(b=>b.kind!=='Quotation'&&b.status==='Issued');const today=sales.filter(b=>b.date===TODAY);const low=state.products.filter(p=>p.stock<=p.low);const bars=[36,54,30,69,45,58,77,62,42,70,52,84,64,76,57,91,78,62,87,73,58,81,66,92,70,87,96,75,68,88];return <><PageHead title="Dashboard" description="A clear view of your store, all in one place." actions={<><span className="date-chip"><CalendarDays size={16}/>10 September 2026</span><Link className="btn" href="/sales/new"><Plus size={17}/>New invoice</Link></>}/><div className="welcome-strip"><div><span className="sun-icon">☀</span><div><strong>Good evening, Ramesh</strong><p>Here’s what’s happening at your Salem store today.</p></div></div><Link href="/register">Open cash & account <ArrowUpRight size={17}/></Link></div><div className="stats-grid"><Stat label="Today’s sales" value={shortMoney(today.reduce((a,b)=>a+roundedTotal(b),0))} detail={`${today.length} invoices issued today`} icon={<IndianRupee size={20}/>}/><Stat label="Cash in drawer" value={shortMoney(accountBalance(state,'Cash'))} detail="Expected balance · before closing" icon={<Wallet size={20}/>} accent="green"/><Stat label="Active service jobs" value={state.jobs.filter(j=>j.status!=='Delivered').length.toString().padStart(2,'0')} detail="1 ready for customer collection" icon={<Wrench size={20}/>} accent="orange"/><Stat label="Low stock items" value={low.length.toString().padStart(2,'0')} detail="Review items below reorder level" icon={<Package size={20}/>} accent="blue"/></div><Analytics/><div className="dashboard-bottom"><Card title="Recent invoices" sub="Your latest sales and service bills" actions={<Link href="/sales" className="text-link">View all <ArrowUpRight size={15}/></Link>}><div className="table-wrap"><table><thead><tr><th>Invoice / customer</th><th>Category</th><th>Amount</th><th>Payment</th><th/></tr></thead><tbody>{sales.slice(0,4).map(b=><tr key={b.id}><td><Link className="record-link" href={'/sales/'+b.id}>{b.id}</Link><small>{state.customers.find(c=>c.id===b.customerId)?.name}</small></td><td>{b.category}</td><td className="amount">{money(roundedTotal(b))}</td><td><Badge>{balance(state,b)===0?'Paid':'Partial'}</Badge></td><td><Link href={'/sales/'+b.id} aria-label={'View '+b.id}><ArrowUpRight size={17}/></Link></td></tr>)}</tbody></table></div></Card><Card title="Money today" sub="Actual receipts and payments"><div className="money-list">{state.payments.filter(p=>p.date===TODAY).slice(0,4).map(p=><div key={p.id}><span className={`money-icon ${p.direction==='In'?'green':'orange'}`}>{p.direction==='In'?<ArrowDownLeft size={17}/>:<ArrowOut size={17}/>}</span><div><strong>{p.purpose}</strong><small>{p.account}</small></div><b className={p.direction==='In'?'positive':''}>{p.direction==='In'?'+':'−'}{money(p.amount)}</b></div>)}</div><Link className="card-bottom-link" href="/register">View all transactions <ArrowUpRight size={16}/></Link></Card></div></>;}
+import {Card, Stat, PageHead, Badge} from './ui';
+import {TODAY, roundedTotal, money, shortMoney, accountBalance, balance} from '@/lib/domain';
+
+export default function Dashboard() {
+  const {state, isLive, companySession} = useStore();
+  const [liveData, setLiveData] = useState<any>(null);
+
+  useEffect(() => {
+    if (!isLive) return;
+    let active = true;
+    fetch('/api/company/dashboard')
+      .then((res) => res.json())
+      .then((data) => {
+        if (active && data && !data.error) setLiveData(data);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [isLive]);
+
+  // Demo fallbacks
+  const demoSales = state.bills.filter((b) => b.kind !== 'Quotation' && b.status === 'Issued');
+  const demoToday = demoSales.filter((b) => b.date === TODAY);
+  const demoLow = state.products.filter((p) => p.stock <= p.low);
+
+  const todaySalesTotal = isLive && liveData
+    ? (liveData.sales?.todayTotalPaise || 0) / 100
+    : demoToday.reduce((a, b) => a + roundedTotal(b), 0);
+
+  const todaySalesCount = isLive && liveData
+    ? (liveData.sales?.todayCount || 0)
+    : demoToday.length;
+
+  const cashBalance = isLive && liveData
+    ? (liveData.cash?.balancePaise || 0) / 100
+    : accountBalance(state, 'Cash');
+
+  const activeJobsCount = isLive && liveData
+    ? liveData.serviceJobs?.activeCount ?? 0
+    : state.jobs.filter((j) => j.status !== 'Delivered').length;
+
+  const readyJobsCount = isLive && liveData
+    ? liveData.serviceJobs?.readyCount ?? 0
+    : state.jobs.filter((j) => j.status === 'Ready').length;
+
+  const lowStockCount = isLive && liveData
+    ? liveData.inventory?.lowStockCount ?? 0
+    : demoLow.length;
+
+  const recentInvoices = isLive && liveData
+    ? liveData.recentInvoices || []
+    : demoSales.slice(0, 4).map((b) => ({
+        id: b.id,
+        invoiceNumber: b.id,
+        customerName: state.customers.find((c) => c.id === b.customerId)?.name || 'Customer',
+        category: b.category,
+        amountPaise: Math.round(roundedTotal(b) * 100),
+        duePaise: Math.round(balance(state, b) * 100),
+        paymentStatus: balance(state, b) === 0 ? 'Paid' : 'Partial',
+      }));
+
+  const todayMovements = isLive && liveData
+    ? liveData.todayMovements || []
+    : state.payments
+        .filter((p) => p.date === TODAY)
+        .slice(0, 4)
+        .map((p) => ({
+          id: p.id,
+          purpose: p.purpose,
+          account: p.account,
+          direction: p.direction,
+          amountPaise: Math.round(p.amount * 100),
+        }));
+
+  const companyName = companySession?.company?.name || state.settings.name || 'iTech Computers';
+  const userName = companySession?.user?.name || 'Store Manager';
+
+  return (
+    <>
+      <PageHead
+        title="Dashboard"
+        description="A clear view of your store, all in one place."
+        actions={
+          <>
+            <span className="date-chip">
+              <CalendarDays size={16} />
+              {isLive ? TODAY : '10 September 2026'}
+            </span>
+            <Link className="btn" href="/sales/new">
+              <Plus size={17} />
+              New invoice
+            </Link>
+          </>
+        }
+      />
+
+      <div className="welcome-strip">
+        <div>
+          <span className="sun-icon">☀</span>
+          <div>
+            <strong>Welcome, {userName}</strong>
+            <p>
+              Here’s what’s happening at {companyName} today
+              {isLive ? ' (Live Store Account)' : ' (Interactive Demo)'}.
+            </p>
+          </div>
+        </div>
+        <Link href="/register">
+          Open cash & account <ArrowUpRight size={17} />
+        </Link>
+      </div>
+
+      <div className="stats-grid">
+        <Stat
+          label="Today’s sales"
+          value={shortMoney(todaySalesTotal)}
+          detail={`${todaySalesCount} invoices issued today`}
+          icon={<IndianRupee size={20} />}
+        />
+        <Stat
+          label="Cash in drawer"
+          value={shortMoney(cashBalance)}
+          detail="Physical drawer balance"
+          icon={<Wallet size={20} />}
+          accent="green"
+        />
+        <Stat
+          label="Active service jobs"
+          value={String(activeJobsCount).padStart(2, '0')}
+          detail={`${readyJobsCount} ready for customer collection`}
+          icon={<Wrench size={20} />}
+          accent="orange"
+        />
+        <Stat
+          label="Low stock items"
+          value={String(lowStockCount).padStart(2, '0')}
+          detail="Review items below reorder level"
+          icon={<Package size={20} />}
+          accent="blue"
+        />
+      </div>
+
+      <Analytics />
+
+      <div className="dashboard-bottom">
+        <Card
+          title="Recent invoices"
+          sub="Your latest sales and service bills"
+          actions={
+            <Link href="/sales" className="text-link">
+              View all <ArrowUpRight size={15} />
+            </Link>
+          }
+        >
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Invoice / customer</th>
+                  <th>Category</th>
+                  <th>Amount</th>
+                  <th>Payment</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {recentInvoices.map((b: any) => (
+                  <tr key={b.id}>
+                    <td>
+                      <Link className="record-link" href={'/sales/' + b.id}>
+                        {b.invoiceNumber || b.id}
+                      </Link>
+                      <small>{b.customerName}</small>
+                    </td>
+                    <td>{b.category}</td>
+                    <td className="amount">{money((b.amountPaise || 0) / 100)}</td>
+                    <td>
+                      <Badge>
+                        {b.paymentStatus === 'Paid' || b.duePaise === 0 ? 'Paid' : 'Partial / Due'}
+                      </Badge>
+                    </td>
+                    <td>
+                      <Link href={'/sales/' + b.id} aria-label={'View ' + b.id}>
+                        <ArrowUpRight size={17} />
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+                {!recentInvoices.length && (
+                  <tr>
+                    <td colSpan={5} style={{textAlign: 'center', padding: '16px'}} className="muted">
+                      No invoices recorded yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+
+        <Card title="Money today" sub="Actual receipts and payments">
+          <div className="money-list">
+            {todayMovements.map((p: any) => (
+              <div key={p.id}>
+                <span
+                  className={`money-icon ${p.direction === 'In' ? 'green' : 'orange'}`}
+                >
+                  {p.direction === 'In' ? <ArrowDownLeft size={17} /> : <ArrowOut size={17} />}
+                </span>
+                <div>
+                  <strong>{p.purpose}</strong>
+                  <small>{p.account}</small>
+                </div>
+                <b className={p.direction === 'In' ? 'positive' : ''}>
+                  {p.direction === 'In' ? '+' : '−'}
+                  {money((p.amountPaise || 0) / 100)}
+                </b>
+              </div>
+            ))}
+            {!todayMovements.length && (
+              <p className="muted" style={{padding: '16px', textAlign: 'center'}}>
+                No cash or bank movements recorded today.
+              </p>
+            )}
+          </div>
+          <Link className="card-bottom-link" href="/register">
+            View all transactions <ArrowUpRight size={16} />
+          </Link>
+        </Card>
+      </div>
+    </>
+  );
+}

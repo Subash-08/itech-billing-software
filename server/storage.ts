@@ -154,15 +154,28 @@ export async function cleanupOrphanFiles(identity: Identity) {
     return {markedOrphaned: 0, deletedFromStorage: 0, errors: []};
   }
 
-  // Check referenced files in purchases, warranties, claims, and company logos for this tenant
-  const [usedPurchases, usedWarranties, usedClaims, usedTenants] = await Promise.all([
+  // Check referenced files across all relevant collections for this tenant
+  const [
+    usedPurchases,
+    usedWarranties,
+    usedClaims,
+    usedTenants,
+    usedCompanySettings,
+    usedServiceJobs,
+    usedInvoices,
+    usedTemplates,
+    usedTemplateRevisions,
+  ] = await Promise.all([
     db.collection('purchases').find(
       {tenantId: identity.tenantId, attachmentFileId: {$exists: true, $ne: ''}},
       {projection: {attachmentFileId: 1}}
     ).toArray(),
     db.collection('warranties').find(
-      {tenantId: identity.tenantId, attachmentIds: {$exists: true, $ne: []}},
-      {projection: {attachmentIds: 1}}
+      {tenantId: identity.tenantId, $or: [
+        {attachmentIds: {$exists: true, $ne: []}},
+        {photos: {$exists: true, $ne: []}},
+      ]},
+      {projection: {attachmentIds: 1, photos: 1}}
     ).toArray(),
     db.collection('warrantyClaims').find(
       {tenantId: identity.tenantId, attachmentIds: {$exists: true, $ne: []}},
@@ -172,13 +185,60 @@ export async function cleanupOrphanFiles(identity: Identity) {
       {_id: identity.tenantId, logoFileId: {$exists: true, $ne: ''}},
       {projection: {logoFileId: 1}}
     ).toArray(),
+    db.collection('companySettings').find(
+      {tenantId: identity.tenantId, logoFileId: {$exists: true, $ne: ''}},
+      {projection: {logoFileId: 1}}
+    ).toArray(),
+    db.collection('serviceJobs').find(
+      {tenantId: identity.tenantId, $or: [
+        {'device.photos': {$exists: true, $ne: []}},
+        {photos: {$exists: true, $ne: []}},
+      ]},
+      {projection: {'device.photos': 1, photos: 1}}
+    ).toArray(),
+    db.collection('invoices').find(
+      {tenantId: identity.tenantId, $or: [
+        {'sellerSnapshot.logoFileId': {$exists: true, $ne: ''}},
+        {attachmentFileId: {$exists: true, $ne: ''}},
+      ]},
+      {projection: {'sellerSnapshot.logoFileId': 1, attachmentFileId: 1}}
+    ).toArray(),
+    db.collection('invoiceTemplates').find(
+      {tenantId: identity.tenantId, logoFileId: {$exists: true, $ne: ''}},
+      {projection: {logoFileId: 1}}
+    ).toArray(),
+    db.collection('templateRevisions').find(
+      {tenantId: identity.tenantId, 'snapshot.logoFileId': {$exists: true, $ne: ''}},
+      {projection: {'snapshot.logoFileId': 1}}
+    ).toArray(),
   ]);
 
   const usedIds = new Set<string>();
-  usedPurchases.forEach((p: any) => { if (p.attachmentFileId) usedIds.add(p.attachmentFileId); });
-  usedWarranties.forEach((w: any) => { if (Array.isArray(w.attachmentIds)) w.attachmentIds.forEach((id: string) => usedIds.add(id)); });
-  usedClaims.forEach((c: any) => { if (Array.isArray(c.attachmentIds)) c.attachmentIds.forEach((id: string) => usedIds.add(id)); });
-  usedTenants.forEach((t: any) => { if (t.logoFileId) usedIds.add(t.logoFileId); });
+  const addId = (id: unknown) => {
+    if (typeof id === 'string' && id.trim()) usedIds.add(id.trim());
+  };
+  const addList = (list: unknown) => {
+    if (Array.isArray(list)) list.forEach(addId);
+  };
+
+  usedPurchases.forEach((p: any) => addId(p.attachmentFileId));
+  usedWarranties.forEach((w: any) => {
+    addList(w.attachmentIds);
+    addList(w.photos);
+  });
+  usedClaims.forEach((c: any) => addList(c.attachmentIds));
+  usedTenants.forEach((t: any) => addId(t.logoFileId));
+  usedCompanySettings.forEach((cs: any) => addId(cs.logoFileId));
+  usedServiceJobs.forEach((s: any) => {
+    addList(s.device?.photos);
+    addList(s.photos);
+  });
+  usedInvoices.forEach((inv: any) => {
+    addId(inv.sellerSnapshot?.logoFileId);
+    addId(inv.attachmentFileId);
+  });
+  usedTemplates.forEach((t: any) => addId(t.logoFileId));
+  usedTemplateRevisions.forEach((r: any) => addId(r.snapshot?.logoFileId));
 
   let markedOrphaned = 0;
   let deletedFromStorage = 0;

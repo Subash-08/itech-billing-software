@@ -247,9 +247,40 @@ All six defect categories and five adjustments identified in `PHASE4-COMPLETION-
   - Phase 1 & 2: Live
   - Phase 3 & 3.5: Live
   - Phase 4: **Live** (authoritative master verified by 11 acceptance chains + 25 isolation scenarios)
-  - Phase 5: **Pending** (untouched)
+  - Phase 5: **In Progress** (Pass 1 and Pass 2 complete and verified; Pass 3–7 pending)
 
-## 2026-09-15 — Phase 4 Live Browser Verification & Supplier Workflow Invariants Verified
+## 2026-09-16 — Pass 1 & Pass 2: Transaction Boundaries, Hardened Database & Live Money Desk
+
+- Scope completed:
+  1. Database connection hardening:
+     - Made public DNS resolvers (`8.8.8.8`, `1.1.1.1`) opt-in via `ENABLE_PUBLIC_DNS_OVERRIDE=true` or `MONGODB_DNS_SERVERS`.
+     - Added optional `MONGODB_FALLBACK_URI` support in `server/db.ts` for identified DNS discovery failures (`ETIMEOUT`, `querySrv`, `ENOTFOUND`).
+     - Closed failed `MongoClient` instances cleanly before abandoning.
+     - Removed all hardcoded cluster hostnames and replica-set identifiers from source code.
+     - Upgraded `safeCreateIndex` to strictly verify index keys, `unique`, `partialFilterExpression`, and TTL `expireAfterSeconds`. Incompatible indexes throw actionable dry-run migration proposals and prevent false `ensureIndexes` success.
+  2. Pass 1 — Unified Transaction Foundation:
+     - Implemented attempt-scoped business-day write fence (`server/business-day.ts`). `runInAttemptContext` ensures MongoDB `withTransaction` retries reset the lock flag, while nested calls within the same attempt increment the version at most once.
+     - Hardened ordinary direct purchase creation and bill posting with deterministic idempotency keys (`create-post:...`, `post-bill:...`).
+     - Bound operational date checks to Kolkata business day with cutoff enforcement. Fast-read idempotency check returns cached response even on closed dates.
+     - Covered every financial and inventory writer (`lockBusinessDay`, `{session}`, transactional audit).
+  3. Pass 2 — Live Cash & Account Register:
+     - Created `server/money-schema.ts` and `server/money-service.ts`.
+     - Implemented Money In (`OwnerContribution`, `OtherReceipt` with subcategories), Money Out (`Expense`, `OwnerWithdrawal`), atomic linked Transfers (`fromAccount` -> `toAccount` with opposite signed movements), and audited Reversals with atomic non-negative overdraft guards.
+     - Integrated `components/money-desk.tsx` with live `/api/money` endpoints, date/account/category filtering, integer paise arithmetic, and CSV export.
+     - Promoted `/register` from `preview` to `live` in `components/shell.tsx`.
+- Collections/indexes/migrations: Verified indexes on `accountMovements`, `tenantAccountBalances`, `businessDayGates`, and `idempotencyOperations`.
+- Important files changed: `server/db.ts`, `server/business-day.ts`, `server/purchase-service.ts`, `server/warranties.ts`, `server/money-schema.ts`, `server/money-service.ts`, `components/money-desk.tsx`, `components/shell.tsx`, `tests/pass1-pass2-verification.mjs`.
+- Verification commands and results:
+  - `npm run typecheck`: Passed (0 errors).
+  - `npm test`: Passed (26/26 domain tests).
+  - `node tests/pass1-pass2-verification.mjs`: Passed 100% across all 5 checks:
+    1. Ping & index options validation.
+    2. Shared business-day gate lock acquisition.
+    3. Idempotency replay on closed business day.
+    4. Unpaid purchase -> receipt -> settlement -> balance update.
+    5. Transfer -> expense -> reversals -> balance restoration.
+- Remaining mock behavior: Daily closing (`/profit`) remains Preview until Pass 3. Service jobs, enquiries, and customer communication proceed in subsequent passes.
+
 
 1. **Browser Acceptance Evidence & Verification Chains**:
    - **Chain A (Signup, Admin Approval, Live Header, Opening Setup Finalization & Customer Directory)**:
@@ -293,5 +324,92 @@ All six defect categories and five adjustments identified in `PHASE4-COMPLETION-
 5. **Tenant Isolation & Scope Guarantees**:
    - User company `test 1` (`test1@gmail.com`, `95687d2f-0b5f-4aad-be5c-947d589b7cc4`) was completely untouched.
    - All tests executed against dynamically generated UUID test tenants and completely torn down upon exit.
-   - Phase 5 remains untouched.
+
+## 2026-09-16 — Phase 5: Complete Implementation across Milestones A through G
+
+- Scope completed: Completed all seven passes of Phase 5 for the iTech billing & management software:
+  1. Milestone A: Corrections to Passes 1–2. Atomic in-transaction reversal eligibility claims, business-day lock (`lockBusinessDay`), safe integer paise arithmetic, positive reversal eligibility (`ManualMoneyEntry` and `ManualTransfer` only).
+  2. Milestone B: Daily Closing, Manual Profit, Holidays. In-transaction profit adjustment tracking for closed-day invoice returns, pending adjustment gate before day closing, server-session profit unlock protection with rate-limiting and 10-minute expiry (`/api/auth/profit-unlock`).
+  3. Milestone C: Live Service Jobs & Invoicing Integration. Consumed parts stock conservation (`quantityConsumed` bucket on `stockLots`, `ConsumedInService` serial status), `ConsumedPart` invoice lines without double stock decrement, warranty issuance on service jobs, service job lifecycle tracking (`server/service-job-service.ts`, `/api/services/*`).
+  4. Milestone D: Customers, Dues, Enquiries & WhatsApp. Monotonic enquiry sequencing (`ENQ-YYYY-XXXX`), customer snapshotting, version checking, and rules preventing manual `Won` status without an issued invoice. Customer profile endpoint (`/api/sales/customers/[id]/profile`) returning category contributions (`newGoodsTotalPaise`, `usedGoodsTotalPaise`, `serviceTotalPaise`) and chronological timeline. Persistent `promisedPaymentDate` on invoices and purchases with audit notes. Single-customer WhatsApp preview with E.164 normalization and direct `wa.me` launch.
+  5. Milestone E: Documents, Templates, Storage & Filtered Exports. Template revision immutability snapshotting, invoice preview watermark suppression in live mode, secure tenant file storage (`POST /api/files`) with 5 MB validation and RFC 5987 downloads, spreadsheet formula injection sanitization without mutating legitimate negative numbers (`/^-?\d+(\.\d+)?$/`), streaming PDF ZIP export (`/api/sales/invoices/export-zip`).
+  6. Milestone F: Dashboard, Reports & Status Badges. Live `/api/company/dashboard` and `/api/company/reports` computing sales, collections, cash/bank drawer balances, active service jobs, dues, and tax summaries. Transitioned all sidebar module badges in `components/shell.tsx` to `live`.
+  7. Milestone G: Verification and Documentation Updates. Verified index integrity in MongoDB, resolved serial resolution error mapping (404 to 400 Bad Request on customer returns), and verified 100% test suite pass rate.
+- User-visible behavior:
+  - Entire application operates against the live multi-tenant backend when authenticated.
+  - Cash and Bank register supports real-time balances, linked transfers, and audited reversals.
+  - Daily closing enforces physical cash and bank counts, requires manual profit entries for issued bills, and enforces reconciliation of returns on closed days.
+  - Service jobs accurately track device repair stages, consume spare parts from inventory without double deduction on invoicing, and issue warranties.
+  - Enquiries are persisted, tracked, and automatically marked Won when linked to an issued invoice.
+  - Dues tab displays original due date alongside promised payment date with update modals and audit history.
+  - WhatsApp communication provides single-click launching of formatted messages to customer phones.
+  - Dashboard and Reports render live store performance, sales breakdowns, and dues summaries.
+- Important files changed:
+  - `server/db.ts`
+  - `server/business-day.ts`
+  - `server/service-schema.ts`, `server/service-job-service.ts`
+  - `server/enquiry-schema.ts`, `server/enquiry-service.ts`
+  - `server/sales-returns.ts`
+  - `server/serial-identity.ts`
+  - `app/api/services/**`, `app/api/enquiries/**`
+  - `app/api/sales/customers/[id]/profile/route.ts`
+  - `app/api/sales/invoices/[id]/due-date/route.ts`, `app/api/purchases/[id]/due-date/route.ts`
+  - `app/api/sales/invoices/export-zip/route.ts`
+  - `app/api/company/dashboard/route.ts`, `app/api/company/reports/route.ts`
+  - `components/daybook.tsx`, `components/service.tsx`, `components/enquiries.tsx`
+  - `components/finance.tsx`, `components/communication.tsx`, `components/dashboard.tsx`
+  - `components/reports.tsx`, `components/shell.tsx`, `components/store.tsx`
+- Verification commands and results:
+  - `npm run typecheck`: Exited 0 (0 errors).
+  - `npm test`: 26/26 unit/domain tests passed.
+  - `node tests/pass1-pass2-verification.mjs`: All checks passed.
+  - `node tests/phase35-isolation.test.mjs`: 32/32 isolation checks passed.
+  - `node tests/phase4-corrections.test.mjs`: 10/10 acceptance chains passed.
+  - `node tests/phase4-isolation.test.mjs`: 25/25 scenarios passed.
+  - `node tests/focused-supplier-scenario.test.mjs`: 100% verified across all supplier liability invariants.
+- Follow-up work: All planned milestones (A through G) across all 7 passes are fully completed and verified.
+
+## 2026-09-17 — Architectural Hardening, 8 Correctness Findings & 14-Step Acceptance Flow Verification
+
+- Scope completed:
+  1. Standardized business day gate ID strictly to `DAY-${tenantId}` across all services (`server/closing-service.ts`, `server/business-day.ts`) and aligned closing review version checks.
+  2. Implemented file orphan cleanup safety in `server/storage.ts`: preserves `companySettings.logoFileId`, `serviceJobs.device.photos`, `warranties.attachmentIds`, `invoices.sellerSnapshot.logoFileId`, and `templateRevisions.snapshot.logoFileId` while deleting truly unreferenced orphan records and underlying storage files.
+  3. Corrected net operating expense calculation in `getClosingDashboard` and `closeBusinessDay` in `server/closing-service.ts` to offset `ExpenseReversal` movements.
+  4. Implemented full ConsumedPart customer return lifecycle in `server/sales-returns.ts` and `server/serial-identity.ts`: customer return decrements `stockLots.quantityConsumed`, restores `stockLots.quantitySellable`, transitions serial units back to `InStock`, and marks warranties `Returned`.
+  5. Updated ZIP PDF export in `app/api/sales/invoices/export-zip/route.ts` to apply active/frozen invoice templates including page size, margins, font sizes, primary colors, and dynamic column definitions.
+  6. Implemented idempotency replay caching on daily closing in `server/closing-service.ts` and `components/daybook.tsx`.
+  7. Corrected logo MIME validation in `server/master-service.ts` to check both `.type` and `.mime` fields defensively.
+  8. Added read-only Storage status card in Settings UI (`GET /api/files`) reporting `PRIVATE_STORAGE_ROOT=D:/AI/itech-private-dev`, and aligned all closing routes to `/api/closings`, `/api/closings/[date]`, `/api/closings/[date]/profit`, `/api/closings/[date]/draft`.
+  9. Resolved runtime `TypeError: (p.purpose + ...).toLowerCase is not a function` in `components/money-desk.tsx` and `components/finance.tsx` with safe optional array joining and fallback mappings in `lib/mappers.ts`.
+- User-visible behavior:
+  - Daily closing now rejects mismatched cash/bank counts with clear difference amounts, supports clean idempotent retry without errors, and locks transactions on closed days.
+  - Expense reversals correctly reset net daily operating expenses to zero.
+  - Returned service parts restore stock into sellable inventory and restore serial numbers for reuse.
+  - Settings displays a read-only Storage status card confirming private filesystem health and upload readiness.
+  - Money Desk and Finance search gracefully handles mapped payments without crashes.
+- Important files changed:
+  - `server/closing-service.ts`
+  - `server/business-day.ts`
+  - `server/storage.ts`
+  - `server/sales-returns.ts`
+  - `server/serial-identity.ts`
+  - `server/master-service.ts`
+  - `app/api/sales/invoices/export-zip/route.ts`
+  - `app/api/files/route.ts`
+  - `components/settings.tsx`
+  - `components/money-desk.tsx`
+  - `components/finance.tsx`
+  - `components/daybook.tsx`
+  - `lib/mappers.ts`
+  - `tests/manual-acceptance-flow.test.mjs`
+  - `FEATURE-STATUS.md`
+  - `REMAINING-WORK.md`
+  - `VERIFICATION-CHECKLIST.md`
+- Verification commands and results:
+  - `npm run typecheck`: Passed with 0 errors.
+  - `node tests/manual-acceptance-flow.test.mjs`: Passed 100% (All 14 business flow steps, final position matching, count mismatch refusal, day closing with exact tally, idempotency replay, closed-day lock, ConsumedPart return lifecycle, ZIP PDF export with template application, file cleanup safety, and storage status).
+  - `node tests/phase4-isolation.test.mjs`: Passed 100% (25/25 scenarios).
+  - `node tests/phase4-corrections.test.mjs`: Passed 100% (10/10 acceptance chains).
+- Follow-up work: All findings, acceptance criteria, and documentation fully aligned and verified.
+
 

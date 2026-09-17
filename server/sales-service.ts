@@ -49,7 +49,10 @@ export type QuotationStatus = 'Draft' | 'Sent' | 'Accepted' | 'Rejected' | 'Conv
 export type SaleLineDocument = {
   lineId: string;
   clientLineKey: string;
-  lineType: 'Product' | 'Service' | 'Charge';
+  lineType: 'Product' | 'Service' | 'Charge' | 'ConsumedPart';
+  partId?: string;
+  lotId?: string;
+  serials?: string[];
   productId?: string;
   productSnapshot?: {
     name: string; hsn: string; category: string;
@@ -244,6 +247,29 @@ async function buildSaleLines(
         serviceSnap = {name: svc.name, sac: svc.sac || l.sac};
       }
       result.push({...base, lineType: 'Service', serviceId: l.serviceId, serviceSnapshot: serviceSnap, serviceJobId: l.serviceJobId, sac: l.sac, warrantyMonths: l.warrantyMonths ?? 0});
+    } else if (l.lineType === 'ConsumedPart') {
+      const product = await col(db, 'products').findOne({_id: l.productId, tenantId, status: 'Active'}, sessionOpt(session));
+      if (!product) throw new AppError(404, `Line ${idx + 1}: Consumed part product not found or archived.`);
+      result.push({
+        ...base,
+        lineType: 'ConsumedPart',
+        serviceJobId: l.serviceJobId,
+        partId: l.partId,
+        productId: l.productId,
+        productSnapshot: {
+          name: product.name,
+          hsn: l.hsn || product.hsn || '',
+          category: product.category || 'General',
+          brand: product.brand || '',
+          model: product.model || '',
+          isSerialTracked: !!product.isSerialTracked,
+          condition: product.condition === 'Used' ? 'Used' : 'New',
+        },
+        lotId: l.lotId,
+        serials: l.serials || [],
+        warrantyMonths: l.warrantyMonths ?? 0,
+        hsn: l.hsn || product.hsn || '',
+      });
     } else {
       result.push({...base, lineType: 'Charge', sac: l.sac});
     }
@@ -552,8 +578,22 @@ export async function issueInvoice(db: Db, identity: Identity, rawInput: IssueIn
     const seller = await col(db, 'companySettings').findOne({tenantId}, {session});
     if (!seller?.name) throw new AppError(409, 'Complete company settings before issuing.');
     if (draft.reservationId) throw new AppError(409, 'Select a stock hold on each relevant lot allocation; the legacy invoice-level hold reference is not supported.');
-    if (draft.serviceJobId || draft.enquiryId || draft.lines.some((l: SaleLineDocument) => l.serviceJobId))
-      throw new AppError(409, 'Linked jobs and enquiries require the live workflow pass. Standalone invoices are supported.');
+    let linkedServiceJob: any = null;
+    if (draft.serviceJobId) {
+      linkedServiceJob = await col(db, 'serviceJobs').findOne({_id: draft.serviceJobId, tenantId}, {session});
+      if (!linkedServiceJob) throw new AppError(404, 'Linked service job not found.');
+      if (linkedServiceJob.customerId !== draft.customerId) throw new AppError(400, 'Service job customer does not match invoice customer.');
+      if (linkedServiceJob.invoiceId && linkedServiceJob.invoiceId !== draft._id) {
+        throw new AppError(409, `Service job is already billed on invoice ${linkedServiceJob.invoiceId}.`);
+      }
+    }
+    if (draft.enquiryId) {
+      const enquiry = await col(db, 'enquiries').findOne({_id: draft.enquiryId, tenantId}, {session});
+      if (!enquiry) throw new AppError(404, 'Linked enquiry not found.');
+      if (enquiry.customerId && enquiry.customerId !== draft.customerId) {
+        throw new AppError(400, 'Enquiry customer does not match invoice customer.');
+      }
+    }
     if (draft.sourceQuotationId) {
       const quotation = await col(db, 'quotations').findOne({_id: draft.sourceQuotationId, tenantId,
         customerId: draft.customerId, convertedToInvoiceId: draft._id, status: {$in: ['Draft', 'Sent', 'Accepted']}}, {session});
@@ -568,6 +608,32 @@ export async function issueInvoice(db: Db, identity: Identity, rawInput: IssueIn
     const now = new Date();
     const usedSerials = new Set<string>();
     for (const line of lines) {
+      if (line.lineType === 'ConsumedPart') {
+        const jId = line.serviceJobId || draft.serviceJobId;
+        if (!jId) throw new AppError(400, 'Consumed part lines require a linked serviceJobId.');
+        if (!linkedServiceJob || linkedServiceJob._id !== jId) {
+          linkedServiceJob = await col(db, 'serviceJobs').findOne({_id: jId, tenantId}, {session});
+        }
+        const part = (linkedServiceJob?.parts || []).find((p: any) => p.partId === line.partId);
+        if (!part) throw new AppError(404, `Part ${line.partId} not found on service job ${jId}.`);
+        if (part.reversed) throw new AppError(400, `Part ${part.productName || line.partId} has been reversed and cannot be billed.`);
+        if (part.invoiced && part.invoiceId !== draft._id) throw new AppError(409, `Part ${part.productName || line.partId} is already billed.`);
+
+        // Mark part as invoiced on service job - stock was ALREADY decremented during consumption!
+        await col(db, 'serviceJobs').updateOne(
+          {_id: jId, tenantId, 'parts.partId': line.partId},
+          {
+            $set: {
+              'parts.$.invoiced': true,
+              'parts.$.invoiceId': draft._id,
+              'parts.$.billingRatePaise': line.unitRatePaise,
+              updatedAt: now,
+            },
+          },
+          {session}
+        );
+        continue;
+      }
       if (line.lineType !== 'Product') continue;
       for (const allocation of line.stockAllocations!) {
         const rawSerials = allocation.serials || [];
@@ -613,23 +679,19 @@ export async function issueInvoice(db: Db, identity: Identity, rawInput: IssueIn
             },
           });
         }
-        const r = await col(db, 'stockLots').updateOne({_id: allocation.lotId, tenantId, productId: line.productId,
-          quantitySellable: {$gte: allocation.quantity}, quantityRemaining: {$gte: allocation.quantity},
-          $expr: {$eq: ['$quantityRemaining', '$quantitySellable']}},
+        const updatedLot = await col(db, 'stockLots').updateOne({_id: allocation.lotId, tenantId, productId: line.productId,
+          quantitySellable: {$gte: allocation.quantity}},
           {$inc: {quantitySellable: -allocation.quantity, quantityRemaining: -allocation.quantity, quantitySold: allocation.quantity, version: 1},
-           $set: {updatedAt: now}}, {session});
-        if (r.matchedCount !== 1) throw new AppError(409, 'Insufficient sellable stock, or the lot balance needs reconciliation. Reserved stock cannot be sold through this flow.');
-        await col(db, 'stockMovements').insertOne({_id: uid('SMV'), tenantId, productId: line.productId,
-          lotId: allocation.lotId, date: draft.invoiceDate, qty: -allocation.quantity,
-          onHandDelta: -allocation.quantity, sellableDelta: -allocation.quantity, reservedDelta: 0,
-          defectiveDelta: 0, soldDelta: allocation.quantity, returnedDelta: 0,
-          reason: 'Sale', reference: draft._id, sourceType: 'Invoice', sourceId: draft._id,
-          invoiceId: draft._id, invoiceLineId: line.lineId, serials: allocation.serials,
-          createdAt: now, createdBy: identity.userId}, {session});
+            $set: {updatedAt: now}}, {session});
+        if (updatedLot.matchedCount !== 1) throw new AppError(409, 'Stock lot sellable quantity changed concurrently. Reload allocations.');
+        await col(db, 'stockMovements').insertOne({_id: uid('STM'), tenantId, productId: line.productId!, lotId: allocation.lotId,
+          date: draft.invoiceDate, type: 'Sale', qty: -allocation.quantity, onHandDelta: -allocation.quantity,
+          sellableDelta: -allocation.quantity, soldDelta: allocation.quantity, reference: draft._id,
+          invoiceId: draft._id, invoiceLineId: line.lineId, createdAt: now, createdBy: identity.userId}, {session});
       }
     }
     const settlement = await settleInvoiceOnIssue(db, identity, session, {...draft, totalPaise: totals.totalPaise}, input);
-    const year = draft.invoiceDate.slice(0, 4);
+    const year = deriveFinancialYear(draft.invoiceDate);
     const invoiceNumber = await nextTenantSequence(db, tenantId,
       draft.invoiceKind === 'Service' ? 'ServiceInvoice' : 'Invoice', year,
       draft.invoiceKind === 'Service' ? 'SRV' : 'INV', session);
@@ -650,8 +712,70 @@ export async function issueInvoice(db: Db, identity: Identity, rawInput: IssueIn
         paymentStatus: settlement.duePaise === 0 ? 'Paid' : settlement.duePaise < totals.totalPaise ? 'PartlyPaid' : 'Unpaid',
         updatedAt: now, updatedBy: identity.userId}, $inc: {version: 1}}, {session});
     if (updated.matchedCount !== 1) throw new AppError(409, 'Draft changed during issue.');
+
+    if (draft.serviceJobId) {
+      await col(db, 'serviceJobs').updateOne(
+        {_id: draft.serviceJobId, tenantId},
+        {
+          $set: {
+            invoiceId: draft._id,
+            status: linkedServiceJob?.status === 'Delivered' ? 'Delivered' : 'ReadyForDelivery',
+            updatedAt: now,
+            updatedBy: identity.userId,
+          },
+          $inc: {version: 1},
+        },
+        {session}
+      );
+    }
+    if (draft.enquiryId) {
+      await col(db, 'enquiries').updateOne(
+        {_id: draft.enquiryId, tenantId},
+        {
+          $set: {
+            status: 'Converted',
+            convertedInvoiceId: draft._id,
+            updatedAt: now,
+            updatedBy: identity.userId,
+          },
+          $inc: {version: 1},
+        },
+        {session}
+      );
+    }
+
     for (const line of lines) {
       if (!line.warrantyMonths) continue;
+      if (line.lineType === 'ConsumedPart') {
+        const serials = line.serials || [];
+        const units = serials.length > 0 ? serials.map(serial => ({serial, quantity: 1})) : [{serial: null, quantity: line.quantity}];
+        for (const unit of units) {
+          await col(db, 'warranties').insertOne({
+            _id: uid('WAR'),
+            tenantId,
+            invoiceId: draft._id,
+            invoiceNumber,
+            invoiceLineId: line.lineId,
+            customerId: draft.customerId,
+            customerSnapshot: draft.customerSnapshot,
+            productId: line.productId,
+            productSnapshot: line.productSnapshot,
+            serviceId: undefined,
+            serviceJobId: draft.serviceJobId || line.serviceJobId,
+            ...unit,
+            serialNumber: unit.serial ?? undefined,
+            startDate: draft.invoiceDate,
+            endDate: addWarrantyMonths(draft.invoiceDate, line.warrantyMonths),
+            warrantyMonths: line.warrantyMonths,
+            status: 'Active',
+            version: 1,
+            attachmentIds: [],
+            createdAt: now,
+            createdBy: identity.userId,
+          }, {session});
+        }
+        continue;
+      }
       const units = line.lineType === 'Product' && line.productSnapshot?.isSerialTracked
         ? line.stockAllocations!.flatMap(a => a.serials.map(serial => ({serial, quantity: 1})))
         : [{serial: null, quantity: line.quantity}];

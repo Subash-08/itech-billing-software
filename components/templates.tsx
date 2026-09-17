@@ -19,7 +19,7 @@ export function TemplateInvoice({
   templateId?: string;
   template?: InvoiceTemplate;
 }) {
-  const {state} = useStore();
+  const {state, isLive} = useStore();
   const t =
     template ||
     state.templates.find((t) => t.id === (templateId || bill.templateId || state.defaultTemplateId)) ||
@@ -305,7 +305,7 @@ export function TemplateInvoice({
           )}
         </div>
         {f.footer && <p className="invoice-foot">{t.footer}</p>}
-        <p className="invoice-foot">DEMO — not a valid tax invoice</p>
+        {!isLive && <p className="invoice-foot">DEMO — not a valid tax invoice</p>}
       </article>
     </div>
   );

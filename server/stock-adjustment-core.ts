@@ -6,7 +6,7 @@ import {canonicalSerialKey, resolveSerialUnit, transitionSerialUnit} from './ser
 export type RemovedLotAllocation = {lotId: string; quantity: number; serials: string[]};
 
 function assertLot(lot: any) {
-  const keys = ['quantityReceived', 'quantitySellable', 'quantityReserved', 'quantityDefective', 'quantitySold', 'quantityReturned', 'quantityRemoved'];
+  const keys = ['quantityReceived', 'quantitySellable', 'quantityReserved', 'quantityDefective', 'quantitySold', 'quantityReturned', 'quantityRemoved', 'quantityConsumed'];
   const values = keys.map(k => lot[k] ?? 0);
   if (!values.every(n => Number.isSafeInteger(n) && n >= 0) ||
       values[0] !== values.slice(1).reduce((a, b) => a + b, 0) ||

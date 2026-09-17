@@ -1,6 +1,7 @@
 import 'server-only';
 import {removeAvailableStock} from './stock-adjustment-core';
 import {initializeAccountBalances} from './account-initialization';
+import {lockBusinessDay} from './business-day';
 import {Db, ClientSession} from 'mongodb';
 import {database, mongo, AppError} from './db';
 import {Identity} from './security';
@@ -79,7 +80,8 @@ export async function updateCompanySettings(identity: Identity, input: CompanySe
         if (!file) {
           throw new AppError(404, 'Logo file not found.');
         }
-        if (file.mime && !file.mime.startsWith('image/')) {
+        const mimeType = (file as any).type || (file as any).mime || '';
+        if (!mimeType.startsWith('image/')) {
           throw new AppError(400, 'Logo file must be an image (PNG, JPEG, WebP, SVG).');
         }
       }
@@ -123,7 +125,8 @@ export async function updateCompanyLogo(identity: Identity, logoFileId: string |
     if (!file) {
       throw new AppError(404, 'Logo file not found.');
     }
-    if (file.mime && !file.mime.startsWith('image/')) {
+    const mimeType = (file as any).type || (file as any).mime || '';
+    if (!mimeType.startsWith('image/')) {
       throw new AppError(400, 'Logo file must be an image (PNG, JPEG, WebP, SVG).');
     }
   }
@@ -199,7 +202,6 @@ export async function createCustomer(identity: Identity, input: CustomerInput) {
         const existingGst = await col(db, 'customers').findOne({
           tenantId: identity.tenantId,
           gstNormalized: normGst,
-          status: 'Active',
         }, {session});
         if (existingGst) {
           throw new AppError(400, 'A customer with this GSTIN already exists.');
@@ -281,7 +283,6 @@ export async function updateCustomer(identity: Identity, id: string, input: Cust
           tenantId: identity.tenantId,
           gstNormalized: normGst,
           _id: {$ne: id},
-          status: 'Active',
         }, {session});
         if (conflict) {
           throw new AppError(400, 'A customer with this GSTIN already exists.');
@@ -1074,6 +1075,7 @@ export async function adjustProductStock(identity: Identity, id: string, input: 
       if (setup?.status !== 'Finalized') {
         throw new AppError(400, 'Cannot perform manual stock adjustments before opening setup is finalized.');
       }
+      await lockBusinessDay(db, session, identity.tenantId);
 
       if (input.idempotencyKey) {
         const existing = await col(db, 'stockMovements').findOne({

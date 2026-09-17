@@ -1,8 +1,239 @@
 'use client';
-import {useState} from 'react';
+import {useState, useEffect} from 'react';
 import {useSearchParams} from 'next/navigation';
-import {MessageCircle,Plus,Copy,Eye,Download} from 'lucide-react';
+import {MessageCircle, Copy, Eye, ExternalLink, Send} from 'lucide-react';
 import {useStore} from './store';
-import {TODAY,uid,money,balance} from '@/lib/domain';
-import {PageHead,Card,Btn,Field,Modal,Badge,csvDownload} from './ui';
-export default function Communication(){const {state,setState,notify}=useStore();const params=useSearchParams();const [tab,setTab]=useState('Individual message'),[customerId,setCustomerId]=useState(params.get('customer')||state.customers[0].id),[template,setTemplate]=useState(params.get('job')?'Service received':params.get('reminder')?'Payment reminder':'General message'),[message,setMessage]=useState(''),[preview,setPreview]=useState(false),[name,setName]=useState(''),[audience,setAudience]=useState('All customers'),[campaign,setCampaign]=useState(''),[imported,setImported]=useState(''),[from,setFrom]=useState('2026-09-01');const c=state.customers.find(c=>c.id===customerId);const job=state.jobs.find(j=>j.id===params.get('job'))||state.jobs.find(j=>j.customerId===customerId);const bill=state.bills.find(b=>b.id===params.get('reminder'))||state.bills.find(b=>b.customerId===customerId&&b.kind!=='Quotation'&&balance(state,b)>0);const generated=template==='Service received'?`Hello ${c?.name}, thank you for visiting iTech Computers. We have received your ${job?.device||'device'} for service. Reported issue: ${job?.problem||'to be reviewed'}. Job: ${job?.id||'to be assigned'}.`:template==='Service ready'?`Hello ${c?.name}, your ${job?.device||'device'} service is complete. ${job?.work||''} Final service amount: ${money(job?.final||0)}. Please contact iTech Computers to arrange collection.`:template==='Payment reminder'?`Hello ${c?.name}, a friendly reminder that ${bill?money(balance(state,bill)):'your balance'} is pending${bill?' against '+bill.id:''}. Thank you, iTech Computers.`:`Hello ${c?.name}, thank you for choosing iTech Computers. How can we help you today?`;const recipients=state.customers.filter(c=>audience==='All customers'||(audience==='Service customers'?state.jobs.some(j=>j.customerId===c.id&&j.date>=from):state.bills.some(b=>b.customerId===c.id&&b.kind==='Sale'&&b.date>=from)));return <><PageHead title="WhatsApp & offers" description="Prepare messages and preview offer campaigns. Sending will be connected later."/><div className="notice">Mock communication only. No WhatsApp account is connected and no messages will be sent.</div><div className="tabs">{['Individual message','Bulk offers','Campaign history'].map(t=><button key={t} className={tab===t?'active':''} onClick={()=>setTab(t)}>{t}</button>)}</div>{tab==='Individual message'?<div className="detail-grid"><Card title="Prepare a customer message"><div className="form-body stack"><Field label="Customer"><select value={customerId} onChange={e=>{setCustomerId(e.target.value);setMessage('');}}>{state.customers.map(c=><option key={c.id} value={c.id}>{c.name} · {c.phone}</option>)}</select></Field><Field label="Message template"><select value={template} onChange={e=>{setTemplate(e.target.value);setMessage('');}}>{['General message','Service received','Service ready','Payment reminder'].map(t=><option key={t}>{t}</option>)}</select></Field><Field label="Message"><textarea style={{minHeight:160}} value={message||generated} onChange={e=>setMessage(e.target.value)}/></Field><div className="actions"><Btn onClick={()=>setPreview(true)}><Eye size={16}/>Preview message</Btn><Btn secondary onClick={async()=>{try{await navigator.clipboard.writeText(message||generated);notify('Message copied. Nothing was sent.');}catch{notify('Copy unavailable. Select and copy the message text.');}}}><Copy size={15}/>Copy text</Btn></div></div></Card><Card title="Contact preview"><div className="body-pad"><div className="customer-cell"><div className="avatar">{c?.name[0]}</div><div><strong>{c?.name}</strong><small>{c?.phone}</small></div></div><div className="chat-preview"><div className="chat-bubble">{message||generated}<small>Preview only · Not sent</small></div></div></div></Card></div>:tab==='Bulk offers'?<div className="detail-grid"><Card title="Create an offer draft"><form onSubmit={e=>{e.preventDefault();setState(s=>({...s,campaigns:[{id:uid('CAM'),name,message:campaign,audience,status:'Draft'},...s.campaigns]}));notify('Offer draft saved. No messages sent.');setTab('Campaign history');}}><div className="form-body stack"><Field label="Campaign name"><input required value={name} onChange={e=>setName(e.target.value)} placeholder="Weekend laptop offers"/></Field><div className="form-grid"><Field label="Audience"><select value={audience} onChange={e=>setAudience(e.target.value)}><option>All customers</option><option>Sales customers</option><option>Service customers</option></select></Field><Field label="Activity since"><input type="date" value={from} max={TODAY} onChange={e=>setFrom(e.target.value)}/></Field></div><Field label="Offer message"><textarea required value={campaign} onChange={e=>setCampaign(e.target.value)} placeholder="Write your offer…"/></Field><Field label="Contact sheet (mock import)" hint="Select an Excel or CSV file to preview the import state. It will not be uploaded or processed yet."><input type="file" accept=".xlsx,.xls,.csv" onChange={e=>setImported(e.target.files?.[0]?.name||'')}/></Field>{imported&&<p className="notice">Selected: {imported}. Import processing will be connected later.</p>}<div className="actions"><Btn type="submit">Save offer draft</Btn><Btn secondary onClick={()=>{if(!campaign.trim()){notify('Write an offer message first.');return;}setPreview(true);}}>Preview offer</Btn></div></div></form></Card><Card title={`${recipients.length} selected customers`} actions={<button className="link-button" onClick={()=>csvDownload('campaign-contacts.csv',[['Name','Phone'],...recipients.map(c=>[c.name,c.phone])])}><Download size={15}/>Export</button>}><div className="body-pad stack">{recipients.map(c=><div className="customer-cell" key={c.id}><div className="avatar">{c.name[0]}</div><div><strong>{c.name}</strong><small>{c.phone}</small></div></div>)}</div></Card></div>:<Card title="Offer drafts"><div className="table-wrap"><table><thead><tr><th>Campaign</th><th>Audience</th><th>Status</th><th/></tr></thead><tbody>{state.campaigns.map(c=><tr key={c.id}><td>{c.name}<small>{c.id}</small></td><td>{c.audience}</td><td><Badge>{c.status}</Badge></td><td><button className="link-button" onClick={()=>{setName(c.name);setCampaign(c.message);setAudience(c.audience);setTab('Bulk offers');}}>Use as new draft</button></td></tr>)}</tbody></table></div></Card>}{preview&&<Modal title="WhatsApp message preview" onClose={()=>setPreview(false)}><div className="form-body"><div className="chat-preview"><div className="chat-bubble">{tab==='Individual message'?(message||generated):campaign}<small>Mock preview · Not sent</small></div></div><p className="notice spaced">Sending and delivery tracking will be implemented later.</p></div><div className="form-actions"><Btn onClick={()=>setPreview(false)}>Done</Btn></div></Modal>}</>;}
+import {money, balance, TODAY} from '@/lib/domain';
+import {PageHead, Card, Btn, Field, Modal, Badge} from './ui';
+
+export default function Communication() {
+  const {state, notify} = useStore();
+  const params = useSearchParams();
+
+  const initialCustomerId = params.get('customer') || state.customers[0]?.id || '';
+  const [customerId, setCustomerId] = useState(initialCustomerId);
+  const [template, setTemplate] = useState(
+    params.get('job')
+      ? 'Service received'
+      : params.get('reminder')
+      ? 'Payment reminder'
+      : 'General message'
+  );
+  const [message, setMessage] = useState('');
+  const [preview, setPreview] = useState(false);
+
+  const customer = state.customers.find((c) => c.id === customerId);
+  const job =
+    state.jobs.find((j) => j.id === params.get('job')) ||
+    state.jobs.find((j) => j.customerId === customerId);
+  const bill =
+    state.bills.find((b) => b.id === params.get('reminder')) ||
+    state.bills.find((b) => b.customerId === customerId && b.kind !== 'Quotation' && balance(state, b) > 0);
+  const quote = state.bills.find((b) => b.customerId === customerId && b.kind === 'Quotation');
+
+  const shopName = state.settings.name || 'iTech Computers';
+
+  const defaultTemplates: Record<string, string> = {
+    'General message': `Hello ${customer?.name || 'Customer'}, thank you for contacting ${shopName}. How can we assist you today?`,
+    'Service received': `Hello ${customer?.name || 'Customer'}, thank you for choosing ${shopName}. We have received your ${job?.device || 'device'} for service. Reported issue: ${job?.problem || 'under diagnosis'}. Job Ref: ${job?.id || 'pending'}. We will update you once diagnosis is complete.`,
+    'Service ready': `Hello ${customer?.name || 'Customer'}, your ${job?.device || 'device'} service is complete at ${shopName}.${job?.work ? ` Work done: ${job.work}.` : ''} Total payable: ${money(job?.final || 0)}. Please visit our store to collect your device.`,
+    'Payment reminder': `Hello ${customer?.name || 'Customer'}, this is a gentle reminder from ${shopName} regarding your outstanding balance of ${bill ? money(balance(state, bill)) : 'pending amount'}${bill ? ' against invoice ' + bill.id : ''}. Kindly arrange for settlement at your earliest convenience. Thank you!`,
+    'Quotation follow-up': `Hello ${customer?.name || 'Customer'}, following up on the quotation ${quote?.id || ''} provided by ${shopName}. Please let us know if you would like to proceed or need any adjustments to the configuration.`,
+  };
+
+  const currentMessage = message || defaultTemplates[template] || '';
+
+  function getWhatsAppUrl(phoneStr: string, text: string): string | null {
+    const digits = phoneStr.replace(/\D/g, '');
+    if (!digits) return null;
+    const normalized = digits.length === 10 ? `91${digits}` : digits;
+    return `https://wa.me/${normalized}?text=${encodeURIComponent(text)}`;
+  }
+
+  const phone = customer?.phone || '';
+  const waUrl = getWhatsAppUrl(phone, currentMessage);
+
+  return (
+    <>
+      <PageHead
+        title="WhatsApp communication"
+        description="Review, customize, and launch direct WhatsApp messages to customers for service updates, payment reminders, and quotations."
+      />
+
+      <div className="notice spaced">
+        Direct staff-initiated messaging: Launches WhatsApp Web or Desktop on your device. No automated third-party bots or unscheduled bulk spam.
+      </div>
+
+      <div className="detail-grid">
+        <Card title="Compose customer message">
+          <div className="form-body stack">
+            <Field label="Select customer">
+              <select
+                value={customerId}
+                onChange={(e) => {
+                  setCustomerId(e.target.value);
+                  setMessage('');
+                }}
+              >
+                {state.customers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} {c.phone ? `(${c.phone})` : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Message scenario / template">
+              <select
+                value={template}
+                onChange={(e) => {
+                  setTemplate(e.target.value);
+                  setMessage('');
+                }}
+              >
+                <option value="General message">General customer query</option>
+                <option value="Service received">Service device intake</option>
+                <option value="Service ready">Service ready for delivery</option>
+                <option value="Payment reminder">Payment / due reminder</option>
+                <option value="Quotation follow-up">Quotation follow-up</option>
+              </select>
+            </Field>
+
+            <Field label="Editable message text">
+              <textarea
+                style={{minHeight: 160}}
+                value={currentMessage}
+                onChange={(e) => setMessage(e.target.value)}
+              />
+            </Field>
+
+            <div className="actions" style={{display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center'}}>
+              {waUrl ? (
+                <a
+                  className="btn"
+                  style={{backgroundColor: '#25D366', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: '6px'}}
+                  href={waUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <MessageCircle size={16} />
+                  Open in WhatsApp
+                  <ExternalLink size={14} />
+                </a>
+              ) : (
+                <Btn disabled>
+                  <MessageCircle size={16} />
+                  No valid phone number
+                </Btn>
+              )}
+
+              <Btn
+                secondary
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(currentMessage);
+                    notify('Message copied to clipboard.');
+                  } catch {
+                    notify('Could not copy. Select and copy the text manually.');
+                  }
+                }}
+              >
+                <Copy size={15} />
+                Copy text
+              </Btn>
+
+              <Btn secondary onClick={() => setPreview(true)}>
+                <Eye size={16} />
+                Preview in chat bubble
+              </Btn>
+            </div>
+          </div>
+        </Card>
+
+        <div className="stack">
+          <Card title="Customer contact details">
+            <div className="body-pad">
+              <div className="customer-cell" style={{marginBottom: 16}}>
+                <div className="avatar">{customer?.name?.[0] || 'C'}</div>
+                <div>
+                  <strong>{customer?.name}</strong>
+                  <small>{customer?.phone || 'No phone entered'}</small>
+                </div>
+              </div>
+
+              <dl className="detail-list">
+                <div>
+                  <dt>Email</dt>
+                  <dd>{customer?.email || '—'}</dd>
+                </div>
+                <div>
+                  <dt>Address</dt>
+                  <dd>{customer?.address || '—'}</dd>
+                </div>
+                <div>
+                  <dt>GSTIN</dt>
+                  <dd>{customer?.gst || 'Unregistered'}</dd>
+                </div>
+                <div>
+                  <dt>Outstanding Dues</dt>
+                  <dd>
+                    {bill ? (
+                      <span className="negative">{money(balance(state, bill))}</span>
+                    ) : (
+                      <span className="positive">All settled</span>
+                    )}
+                  </dd>
+                </div>
+              </dl>
+            </div>
+          </Card>
+
+          <Card title="Message preview">
+            <div className="body-pad">
+              <div className="chat-preview">
+                <div className="chat-bubble">
+                  {currentMessage}
+                  <small>Preview for {customer?.name} ({customer?.phone || 'No phone'})</small>
+                </div>
+              </div>
+            </div>
+          </Card>
+        </div>
+      </div>
+
+      {preview && (
+        <Modal title="WhatsApp chat preview" onClose={() => setPreview(false)}>
+          <div className="form-body">
+            <div className="chat-preview">
+              <div className="chat-bubble">
+                {currentMessage}
+                <small>To: {customer?.name} · {customer?.phone}</small>
+              </div>
+            </div>
+            <p className="notice spaced">
+              Clicking "Open in WhatsApp" will open WhatsApp Web or Desktop with this pre-filled message ready to review and send.
+            </p>
+          </div>
+          <div className="form-actions">
+            {waUrl && (
+              <a
+                className="btn"
+                style={{backgroundColor: '#25D366', color: '#fff'}}
+                href={waUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setPreview(false)}
+              >
+                <MessageCircle size={16} style={{marginRight: 6}} />
+                Launch WhatsApp
+              </a>
+            )}
+            <Btn secondary onClick={() => setPreview(false)}>
+              Close
+            </Btn>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}

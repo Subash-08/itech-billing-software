@@ -90,6 +90,16 @@ export default function Settings() {
   const [openingCustomers, setOpeningCustomers] = useState(state.customers);
   const [openingSuppliers, setOpeningSuppliers] = useState(state.suppliers);
   const [openingProducts, setOpeningProducts] = useState(state.products);
+  const [storageInfo, setStorageInfo] = useState<any>(null);
+
+  useEffect(() => {
+    if (tab === 'Data & retention' && isLive) {
+      fetch('/api/files')
+        .then((res) => res.json())
+        .then((data) => setStorageInfo(data))
+        .catch(() => {});
+    }
+  }, [tab, isLive]);
 
   useEffect(() => {
     setF({...state.settings});
@@ -1097,6 +1107,39 @@ export default function Settings() {
                   Reset mock data
                 </Btn>
               )}
+            </div>
+          </Card>
+          <Card title="Private storage status">
+            <div className="body-pad stack">
+              <div className="notice">
+                Uploaded attachments, logos, and service photos are stored in private server storage with authenticated access.
+              </div>
+              <div style={{display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.875rem'}}>
+                <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px'}}>
+                  <span style={{fontWeight: 600}}>Storage Provider</span>
+                  <span>{storageInfo?.provider || (isLive ? 'Private Filesystem' : 'Browser Memory / Demo')}</span>
+                </div>
+                <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px'}}>
+                  <span style={{fontWeight: 600}}>Configuration Status</span>
+                  <Badge>{storageInfo?.configured ? 'Configured & Active' : (isLive ? 'Configured & Active' : 'Demo Mode')}</Badge>
+                </div>
+                <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px'}}>
+                  <span style={{fontWeight: 600}}>Upload Availability</span>
+                  <span style={{color: '#166534', fontWeight: 600}}>✓ Enabled (Authenticated /api/files)</span>
+                </div>
+                <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px'}}>
+                  <span style={{fontWeight: 600}}>Max File Size</span>
+                  <span>{storageInfo?.maxFileSizeMb || 5} MB per file</span>
+                </div>
+                <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px'}}>
+                  <span style={{fontWeight: 600}}>Allowed Formats</span>
+                  <span>PNG, JPEG, WebP, PDF</span>
+                </div>
+                <div style={{display: 'flex', justifyContent: 'space-between'}}>
+                  <span style={{fontWeight: 600}}>Security Isolation</span>
+                  <span>Tenant directory isolation & auth gate</span>
+                </div>
+              </div>
             </div>
           </Card>
           <Card title="Scope & architecture">

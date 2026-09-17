@@ -389,6 +389,7 @@ export async function createWarrantyCoverage(db: Db, identity: Identity, raw: un
     input.invoiceId,
     input,
     async (session: ClientSession) => {
+      await assertSalePostingDay(db, tenantId, todayInKolkata(), session);
       const invoice = await col(db, 'invoices').findOneAndUpdate(
         {
           _id: input.invoiceId,

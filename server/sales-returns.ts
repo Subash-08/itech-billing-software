@@ -142,9 +142,12 @@ export async function createCustomerReturn(
         throw new AppError(400, 'Return serial numbers must be distinct.');
       }
 
-      if (line.lineType === 'Product' && line.productId) {
+      const isPhysical = (line.lineType === 'Product' || line.lineType === 'ConsumedPart') && line.productId;
+      const isConsumedPart = line.lineType === 'ConsumedPart';
+
+      if (isPhysical) {
         if (input.stockDisposition === 'NoStock') {
-          throw new AppError(400, 'Choose sellable or defective stock for a physical product return.');
+          throw new AppError(400, 'Choose sellable or defective stock for a physical product or consumed part return.');
         }
 
         const tracked = !!line.productSnapshot?.isSerialTracked;
@@ -152,7 +155,23 @@ export async function createCustomerReturn(
           throw new AppError(400, tracked ? 'Select every returned serial number.' : 'This product does not track serial numbers.');
         }
 
-        const allocations = line.stockAllocations ?? [];
+        let allocations = line.stockAllocations ?? [];
+        if (!allocations.length && isConsumedPart) {
+          let lotId = line.lotId;
+          let sers = line.serials || [];
+          if ((!lotId || !sers.length) && line.serviceJobId && line.partId) {
+            const jobDoc = await col(db, 'serviceJobs').findOne({_id: line.serviceJobId, tenantId}, {session});
+            const partDoc = (jobDoc?.parts || []).find((p: any) => p.partId === line.partId);
+            if (partDoc) {
+              lotId = lotId || partDoc.lotId;
+              if (!sers.length && partDoc.serials?.length) sers = partDoc.serials;
+            }
+          }
+          if (lotId) {
+            allocations = [{lotId, quantity: line.quantity, serials: sers}];
+          }
+        }
+
         const issuedPerLot = new Map<string, number>();
         const issuedSerialLots = new Map<string, string>();
         for (const allocation of allocations) {
@@ -175,13 +194,25 @@ export async function createCustomerReturn(
         if (tracked) {
           const lots = new Map<string, number>();
           for (const rawSerial of (input.serials || [])) {
-            const {unit, version} = await resolveSerialUnit(db, session, tenantId, rawSerial, {
-              productId: line.productId,
-              expectedStatus: 'Sold',
-              expectedInvoiceId: invoice._id,
-            });
-            if (unit.invoiceLineId && unit.invoiceLineId !== line.lineId) {
+            let resolved;
+            try {
+              resolved = await resolveSerialUnit(db, session, tenantId, rawSerial, {
+                productId: line.productId,
+                expectedStatus: isConsumedPart ? 'ConsumedInService' : 'Sold',
+                expectedInvoiceId: isConsumedPart ? undefined : invoice._id,
+              });
+            } catch (err: any) {
+              if (err instanceof AppError && err.status === 404) {
+                throw new AppError(400, `Serial "${rawSerial}" does not exist or was not billed on this invoice.`);
+              }
+              throw err;
+            }
+            const {unit, version} = resolved;
+            if (!isConsumedPart && unit.invoiceLineId && unit.invoiceLineId !== line.lineId) {
               throw new AppError(400, `Serial ${rawSerial} was not sold on this invoice line or is not available for return.`);
+            }
+            if (isConsumedPart && line.serviceJobId && unit.serviceJobId && unit.serviceJobId !== line.serviceJobId) {
+              throw new AppError(400, `Serial ${rawSerial} belongs to a different service job.`);
             }
             if (unit.replacedBySerial) {
               throw new AppError(409, `Serial ${rawSerial} was already replaced under warranty and cannot be returned directly.`);
@@ -213,74 +244,155 @@ export async function createCustomerReturn(
 
         const restock = input.stockDisposition === 'RestockSellable';
         for (const {lotId, qty} of lotRestorations) {
-          if (qty + (returnedPerLot.get(lotId) ?? 0) > (issuedPerLot.get(lotId) ?? 0)) {
-            // If it's a warranty replacement unit return, verify quantitySold on lot
+          if (isConsumedPart) {
             const checkLot = await col(db, 'stockLots').findOne({_id: lotId, tenantId, productId: line.productId}, {session});
-            if (!checkLot || checkLot.quantitySold < qty) {
-              throw new AppError(409, 'Return exceeds the quantity sold from this source lot.');
+            if (!checkLot || (checkLot.quantityConsumed ?? 0) < qty) {
+              throw new AppError(409, 'Return exceeds the quantity consumed from this source lot.');
             }
-          }
-          const result = await col(db, 'stockLots').updateOne(
-            {_id: lotId, tenantId, productId: line.productId, quantitySold: {$gte: qty}},
-            {
-              $inc: {
-                quantitySold: -qty,
-                quantitySellable: restock ? qty : 0,
-                quantityRemaining: restock ? qty : 0,
-                quantityDefective: restock ? 0 : qty,
-                version: 1,
+            const result = await col(db, 'stockLots').updateOne(
+              {_id: lotId, tenantId, productId: line.productId, quantityConsumed: {$gte: qty}},
+              {
+                $inc: {
+                  quantityConsumed: -qty,
+                  quantitySellable: restock ? qty : 0,
+                  quantityRemaining: restock ? qty : 0,
+                  quantityDefective: restock ? 0 : qty,
+                  version: 1,
+                },
+                $set: {updatedAt: now},
               },
-              $set: {updatedAt: now},
-            },
-            {session}
-          );
-          if (result.matchedCount !== 1) throw new AppError(409, 'Sold stock changed. Reload before returning.');
+              {session}
+            );
+            if (result.matchedCount !== 1) throw new AppError(409, 'Consumed stock changed. Reload before returning.');
 
-          await col(db, 'stockMovements').insertOne(
-            {
-              _id: uid('STM'),
-              tenantId,
-              productId: line.productId,
-              lotId,
-              date: input.date,
-              type: restock ? 'SaleReturnRestock' : 'SaleReturnDefective',
-              qty,
-              onHandDelta: qty,
-              sellableDelta: restock ? qty : 0,
-              defectiveDelta: restock ? 0 : qty,
-              soldDelta: -qty,
-              reference: returnNumber,
-              invoiceId: invoice._id,
-              invoiceLineId: line.lineId,
-              returnId,
-              createdAt: now,
-              createdBy: identity.userId,
-            },
-            {session}
-          );
+            await col(db, 'stockMovements').insertOne(
+              {
+                _id: uid('STM'),
+                tenantId,
+                productId: line.productId,
+                lotId,
+                date: input.date,
+                type: restock ? 'SaleReturnRestock' : 'SaleReturnDefective',
+                qty,
+                onHandDelta: qty,
+                sellableDelta: restock ? qty : 0,
+                defectiveDelta: restock ? 0 : qty,
+                consumedDelta: -qty,
+                reference: returnNumber,
+                invoiceId: invoice._id,
+                invoiceLineId: line.lineId,
+                returnId,
+                createdAt: now,
+                createdBy: identity.userId,
+              },
+              {session}
+            );
+          } else {
+            if (qty + (returnedPerLot.get(lotId) ?? 0) > (issuedPerLot.get(lotId) ?? 0)) {
+              // If it's a warranty replacement unit return, verify quantitySold on lot
+              const checkLot = await col(db, 'stockLots').findOne({_id: lotId, tenantId, productId: line.productId}, {session});
+              if (!checkLot || checkLot.quantitySold < qty) {
+                throw new AppError(409, 'Return exceeds the quantity sold from this source lot.');
+              }
+            }
+            const result = await col(db, 'stockLots').updateOne(
+              {_id: lotId, tenantId, productId: line.productId, quantitySold: {$gte: qty}},
+              {
+                $inc: {
+                  quantitySold: -qty,
+                  quantitySellable: restock ? qty : 0,
+                  quantityRemaining: restock ? qty : 0,
+                  quantityDefective: restock ? 0 : qty,
+                  version: 1,
+                },
+                $set: {updatedAt: now},
+              },
+              {session}
+            );
+            if (result.matchedCount !== 1) throw new AppError(409, 'Sold stock changed. Reload before returning.');
+
+            await col(db, 'stockMovements').insertOne(
+              {
+                _id: uid('STM'),
+                tenantId,
+                productId: line.productId,
+                lotId,
+                date: input.date,
+                type: restock ? 'SaleReturnRestock' : 'SaleReturnDefective',
+                qty,
+                onHandDelta: qty,
+                sellableDelta: restock ? qty : 0,
+                defectiveDelta: restock ? 0 : qty,
+                soldDelta: -qty,
+                reference: returnNumber,
+                invoiceId: invoice._id,
+                invoiceLineId: line.lineId,
+                returnId,
+                createdAt: now,
+                createdBy: identity.userId,
+              },
+              {session}
+            );
+          }
         }
 
         for (const item of serialDocs) {
-          await transitionSerialUnit(db, session, item.unit._id, {
-            transition: 'CustomerReturn',
-            expected: {
-              tenantId,
-              productId: line.productId,
-              lotId: item.unit.lotId,
-              status: 'Sold',
-              invoiceId: invoice._id,
-              invoiceLineId: line.lineId,
-              version: item.version,
+          if (isConsumedPart) {
+            await transitionSerialUnit(db, session, item.unit._id, {
+              transition: 'CustomerReturn',
+              expected: {
+                tenantId,
+                productId: line.productId,
+                lotId: item.unit.lotId,
+                status: 'ConsumedInService',
+                version: item.version,
+              },
+              nextState: {
+                status: restock ? 'InStock' : 'Defective',
+                lastReturnId: returnId,
+                serviceJobId: null,
+                reservationId: null,
+                invoiceId: null,
+                soldInvoiceId: null,
+                invoiceLineId: null,
+              },
+            });
+          } else {
+            await transitionSerialUnit(db, session, item.unit._id, {
+              transition: 'CustomerReturn',
+              expected: {
+                tenantId,
+                productId: line.productId,
+                lotId: item.unit.lotId,
+                status: 'Sold',
+                invoiceId: invoice._id,
+                invoiceLineId: line.lineId,
+                version: item.version,
+              },
+              nextState: {
+                status: restock ? 'InStock' : 'Defective',
+                lastReturnId: returnId,
+                reservationId: null,
+                invoiceId: null,
+                soldInvoiceId: null,
+                invoiceLineId: null,
+              },
+            });
+          }
+        }
+
+        if (isConsumedPart && line.serviceJobId && line.partId) {
+          await col(db, 'serviceJobs').updateOne(
+            {_id: line.serviceJobId, tenantId, 'parts.partId': line.partId},
+            {
+              $set: {
+                'parts.$.returned': true,
+                'parts.$.returnId': returnId,
+                updatedAt: now,
+              },
             },
-            nextState: {
-              status: restock ? 'InStock' : 'Defective',
-              lastReturnId: returnId,
-              reservationId: null,
-              invoiceId: null,
-              soldInvoiceId: null,
-              invoiceLineId: null,
-            },
-          });
+            {session}
+          );
         }
 
         // Warranty adjustments
@@ -529,6 +641,50 @@ export async function createCustomerReturn(
       };
 
       await col<CustomerReturnDocument>(db, 'customerReturns').insertOne(returnRecord, {session});
+
+      // Profit review integration:
+      // Before closing: invalidate affected invoice profit review atomically
+      // After closing: preserve original profit and create a pending linked current-day adjustment review
+      const isOriginalDateClosed = Boolean(
+        await col(db, 'dailyClosings').findOne({tenantId, date: invoice.invoiceDate}, {session})
+      );
+
+      if (!isOriginalDateClosed) {
+        await col(db, 'invoices').updateOne(
+          {_id: invoice._id, tenantId},
+          {
+            $set: {manualProfitPaise: null, profitInvalidatedReason: `Customer return ${returnNumber}`, updatedAt: now},
+            $inc: {version: 1},
+          },
+          {session}
+        );
+      } else {
+        const existingAdj = await col(db, 'manualProfitAdjustments').findOne(
+          {tenantId, triggerType: 'CustomerReturn', triggerReference: returnId},
+          {session}
+        );
+        if (!existingAdj) {
+          await col(db, 'manualProfitAdjustments').insertOne(
+            {
+              _id: uid('MPA'),
+              tenantId,
+              date: input.date,
+              originalDocumentType: 'Invoice',
+              originalDocumentId: invoice._id,
+              originalDocumentNumber: invoice.invoiceNumber || invoice._id,
+              triggerType: 'CustomerReturn',
+              triggerReference: returnId,
+              signedAdjustmentPaise: null,
+              status: 'Pending',
+              reason: `Customer return ${returnNumber} on closed invoice ${invoice.invoiceNumber || invoice._id}`,
+              createdAt: now,
+              createdBy: identity.userId,
+            },
+            {session}
+          );
+        }
+      }
+
       await recordAudit(db, {
         identity,
         action: 'Create',

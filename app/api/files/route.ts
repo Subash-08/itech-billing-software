@@ -32,3 +32,20 @@ export async function POST(request: Request) {
     return storeFile(identity, file);
   });
 }
+
+export async function GET() {
+  return endpoint(async () => {
+    await requireIdentity();
+    const isVercel = !!process.env.VERCEL;
+    const isConfigured = !!process.env.PRIVATE_STORAGE_ROOT && !isVercel;
+    return {
+      provider: isVercel ? 'Vercel Ephemeral (External Adapter Required)' : 'Private Filesystem',
+      configured: isConfigured,
+      status: isConfigured ? 'Ready' : isVercel ? 'Adapter Required' : 'Not Configured',
+      uploadsAvailable: isConfigured,
+      maxFileSizeMb: 5,
+      allowedTypes: ['image/png', 'image/jpeg', 'image/webp', 'application/pdf'],
+    };
+  });
+}
+

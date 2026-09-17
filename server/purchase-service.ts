@@ -3,7 +3,7 @@ import {ensureAccountBalances, initializeAccountBalances, signedAccountMovementP
 import {Db, ClientSession, Filter, Document} from 'mongodb';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {randomUUID} from 'node:crypto';
-import {AppError, database} from './db';
+import {AppError, database, assertWriteIntegrity} from './db';
 import {Identity, tenantFilter, digest} from './security';
 import {recordAudit} from './audit';
 import {uid} from '../lib/domain';
@@ -66,6 +66,7 @@ import {
   resolveSerialUnit,
   transitionSerialUnit,
 } from './serial-identity';
+import {lockBusinessDay, runInAttemptContext} from './business-day';
 
 const purchaseTransaction = new AsyncLocalStorage<ClientSession>();
 
@@ -79,7 +80,7 @@ function escapeRegex(value: string): string {
 export async function nextTenantSequence(
   db: Db,
   tenantId: string,
-  sequenceType: 'Purchase' | 'Receipt' | 'Payment' | 'CreditNote' | 'Return' | 'Refund' | 'Advance' | 'Quotation' | 'Invoice' | 'ServiceInvoice',
+  sequenceType: 'Purchase' | 'Receipt' | 'Payment' | 'CreditNote' | 'Return' | 'Refund' | 'Advance' | 'Quotation' | 'Invoice' | 'ServiceInvoice' | 'ServiceJob' | 'Enquiry',
   year: string,
   prefix: string,
   session?: ClientSession
@@ -182,6 +183,8 @@ export async function executeIdempotentTransaction<T>(
   const parentSession = purchaseTransaction.getStore();
   if (parentSession) return fn(parentSession);
 
+  assertWriteIntegrity();
+
   const tenantId = identity.tenantId;
   const requestFingerprint = digest(`${operationType}:${targetId || ''}:${JSON.stringify(rawPayload)}`);
 
@@ -203,35 +206,37 @@ export async function executeIdempotentTransaction<T>(
   try {
     let result: T;
     await session.withTransaction(async () => {
-      // In-transaction recheck
-      const inTxCheck = await col<IdempotencyOperationDocument>(db, 'idempotencyOperations').findOne(
-        {tenantId, idempotencyKey},
-        {session}
-      );
-      if (inTxCheck) {
-        if (inTxCheck.requestFingerprint === requestFingerprint) {
-          result = inTxCheck.responseBody as T;
-          return;
+      return runInAttemptContext(async () => {
+        // In-transaction recheck
+        const inTxCheck = await col<IdempotencyOperationDocument>(db, 'idempotencyOperations').findOne(
+          {tenantId, idempotencyKey},
+          {session}
+        );
+        if (inTxCheck) {
+          if (inTxCheck.requestFingerprint === requestFingerprint) {
+            result = inTxCheck.responseBody as T;
+            return;
+          }
+          throw new AppError(409, 'Idempotency key was already used with a different request payload.');
         }
-        throw new AppError(409, 'Idempotency key was already used with a different request payload.');
-      }
 
-      result = await purchaseTransaction.run(session, () => fn(session));
+        result = await purchaseTransaction.run(session, () => fn(session));
 
-      await col<IdempotencyOperationDocument>(db, 'idempotencyOperations').insertOne(
-        {
-          _id: `IDEMP-${tenantId}-${idempotencyKey}`,
-          tenantId,
-          idempotencyKey,
-          operationType,
-          targetId,
-          requestFingerprint,
-          statusCode: 200,
-          responseBody: result,
-          createdAt: new Date(),
-        },
-        {session}
-      );
+        await col<IdempotencyOperationDocument>(db, 'idempotencyOperations').insertOne(
+          {
+            _id: `IDEMP-${tenantId}-${idempotencyKey}`,
+            tenantId,
+            idempotencyKey,
+            operationType,
+            targetId,
+            requestFingerprint,
+            statusCode: 200,
+            responseBody: result,
+            createdAt: new Date(),
+          },
+          {session}
+        );
+      });
     });
 
     return result!;
@@ -245,10 +250,23 @@ export async function executeIdempotentTransaction<T>(
   }
 }
 
-// 1. Create Purchase (Draft or Confirmed/Posted)
-export async function createPurchase(db: Db, identity: Identity, input: CreatePurchaseInput) {
+export async function createPurchase(db: Db, identity: Identity, input: CreatePurchaseInput): Promise<PurchaseDocument> {
   const tenantId = identity.tenantId;
   const session = purchaseTransaction.getStore();
+  if (input.postImmediately && !session) {
+    const key =
+      (input as any).idempotencyKey ||
+      `create-post:${tenantId}:${input.supplierId}:${input.supplierInvoiceNumber || ''}:${input.supplierInvoiceDate || ''}:${input.orderDate}`;
+    return executeIdempotentTransaction(
+      db,
+      identity,
+      key,
+      'PurchaseCreateAndPost',
+      input.supplierId,
+      input,
+      async () => createPurchase(db, identity, input)
+    );
+  }
   await assertTenantFile(db, tenantId, input.attachmentFileId);
 
   const supplier = await col(db, 'suppliers').findOne({_id: input.supplierId, tenantId, status: 'Active'}, session ? {session} : {});
@@ -353,6 +371,9 @@ export async function createPurchase(db: Db, identity: Identity, input: CreatePu
     }
     await assertOperationalPostingAllowed(db, tenantId, todayInKolkata());
     await assertAfterCutoffDate(db, tenantId, input.supplierInvoiceDate, 'Supplier invoice date');
+    if (session) {
+      await lockBusinessDay(db, session, tenantId);
+    }
 
     supInvNorm = input.supplierInvoiceNumber.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
     const dup = await col(db, 'purchases').findOne({
@@ -641,24 +662,21 @@ export async function confirmPurchaseOrder(
       before: existing,
       after: res,
       detail: `Confirmed purchase order ${res.purchaseNumber}`,
-    });
+    }, session);
 
     return res;
   };
 
-  if (input?.idempotencyKey) {
-    return executeIdempotentTransaction(
-      db,
-      identity,
-      input.idempotencyKey,
-      'ConfirmPurchaseOrder',
-      purchaseId,
-      input,
-      fn
-    );
-  }
-
-  return fn();
+  const key = input?.idempotencyKey || `confirm-po-${purchaseId}-${input?.expectedVersion ?? 0}`;
+  return executeIdempotentTransaction(
+    db,
+    identity,
+    key,
+    'ConfirmPurchaseOrder',
+    purchaseId,
+    input,
+    fn
+  );
 }
 
 // 4. Post Bill
@@ -669,10 +687,10 @@ export async function postPurchaseBill(
   input: PostPurchaseBillInput
 ) {
   const tenantId = identity.tenantId;
-  await assertOperationalPostingAllowed(db, tenantId, todayInKolkata());
   await assertAfterCutoffDate(db, tenantId, input.supplierInvoiceDate, 'Supplier invoice date');
 
   const fn = async (session?: ClientSession) => {
+    await assertOperationalPostingAllowed(db, tenantId, todayInKolkata());
     const existing = await col<PurchaseDocument>(db, 'purchases').findOne(
       {_id: purchaseId, tenantId},
       session ? {session} : {}
@@ -735,6 +753,8 @@ export async function postPurchaseBill(
       throw new AppError(409, 'Failed to post bill due to concurrent update: version changed.');
     }
 
+    await lockBusinessDay(db, session!, tenantId);
+
     await recordAudit(db, {
       identity,
       action: 'purchase.postBill',
@@ -743,24 +763,24 @@ export async function postPurchaseBill(
       before: existing,
       after: res,
       detail: `Posted bill ${res.purchaseNumber} (${input.supplierInvoiceNumber})`,
-    });
+    }, session);
 
     return res;
   };
 
-  if (input.idempotencyKey) {
-    return executeIdempotentTransaction(
-      db,
-      identity,
-      input.idempotencyKey,
-      'PostPurchaseBill',
-      purchaseId,
-      input,
-      fn
-    );
-  }
-
-  return fn();
+  const supInvNorm = input.supplierInvoiceNumber.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const key =
+    input.idempotencyKey ||
+    `post-bill:${tenantId}:${purchaseId}:${input.expectedVersion ?? 0}:${supInvNorm}`;
+  return executeIdempotentTransaction(
+    db,
+    identity,
+    key,
+    'PostPurchaseBill',
+    purchaseId,
+    input,
+    fn
+  );
 }
 
 // 5. Cancel Purchase Order
@@ -825,24 +845,21 @@ export async function cancelPurchaseOrder(
       before: existing,
       after: res,
       detail: `Cancelled purchase order ${res.purchaseNumber}`,
-    });
+    }, session);
 
     return res;
   };
 
-  if (input?.idempotencyKey) {
-    return executeIdempotentTransaction(
-      db,
-      identity,
-      input.idempotencyKey,
-      'CancelPurchaseOrder',
-      purchaseId,
-      input,
-      fn
-    );
-  }
-
-  return fn();
+  const key = input?.idempotencyKey || `cancel-po-${purchaseId}-${input?.expectedVersion ?? 0}`;
+  return executeIdempotentTransaction(
+    db,
+    identity,
+    key,
+    'CancelPurchaseOrder',
+    purchaseId,
+    input,
+    fn
+  );
 }
 
 // 6. Close Remainder (ClosedPartlyReceived)
@@ -912,24 +929,21 @@ export async function closePurchaseRemainder(
       before: existing,
       after: res,
       detail: `Closed remainder on purchase ${res.purchaseNumber}: ${input?.reason || 'Closed remainder by user'}`,
-    });
+    }, session);
 
     return res;
   };
 
-  if (input?.idempotencyKey) {
-    return executeIdempotentTransaction(
-      db,
-      identity,
-      input.idempotencyKey,
-      'CloseRemainder',
-      purchaseId,
-      input,
-      fn
-    );
-  }
-
-  return fn();
+  const key = input?.idempotencyKey || `close-rem-${purchaseId}-${input?.expectedVersion ?? 0}`;
+  return executeIdempotentTransaction(
+    db,
+    identity,
+    key,
+    'CloseRemainder',
+    purchaseId,
+    input,
+    fn
+  );
 }
 
 // 6. Receive Goods Stock
@@ -940,7 +954,6 @@ export async function receivePurchaseStock(
   input: ReceiveStockInput
 ) {
   const tenantId = identity.tenantId;
-  await assertOperationalPostingAllowed(db, tenantId, input.receiptDate);
 
   return executeIdempotentTransaction(
     db,
@@ -950,6 +963,8 @@ export async function receivePurchaseStock(
     purchaseId,
     input,
     async session => {
+      await assertOperationalPostingAllowed(db, tenantId, input.receiptDate);
+      await lockBusinessDay(db, session, tenantId, {date: input.receiptDate});
       const purchase = await col<PurchaseDocument>(db, 'purchases').findOne({_id: purchaseId, tenantId}, {session});
       if (!purchase) throw new AppError(404, 'Purchase record not found.');
       if (!['Posted', 'Credited', 'FullyCredited'].includes(purchase.billStatus)) {
@@ -1267,6 +1282,7 @@ export async function canReverseReceipt(
       lot.quantitySold > 0 ||
       lot.quantityReserved > 0 ||
       (lot.quantityRemoved ?? 0) > 0 ||
+      (lot.quantityConsumed ?? 0) > 0 ||
       lot.quantityReturned > 0
     ) {
       return { canReverse: false, reverseBlockReason: 'Stock has downstream movements' };
@@ -1326,7 +1342,6 @@ export async function reversePurchaseReceipt(
 ) {
   const tenantId = identity.tenantId;
   await assertPhase3MigrationComplete(db, tenantId);
-  await assertOperationalPostingAllowed(db, tenantId, todayInKolkata());
 
   const key = input.idempotencyKey || `rev-rcp-${receiptId}-${Date.now()}-${randomUUID()}`;
   return executeIdempotentTransaction(
@@ -1337,6 +1352,8 @@ export async function reversePurchaseReceipt(
     receiptId,
     input,
     async session => {
+      await assertOperationalPostingAllowed(db, tenantId, todayInKolkata());
+      await lockBusinessDay(db, session, tenantId);
       const receipt = await col<PurchaseReceiptDocument>(db, 'purchaseReceipts').findOne(
         { _id: receiptId, tenantId },
         { session }
@@ -1505,6 +1522,7 @@ export async function quarantineStockLot(
     input.lotId,
     input,
     async session => {
+      await lockBusinessDay(db, session, tenantId);
       const lot = await col<StockLotDocument>(db, 'stockLots').findOne(
         { _id: input.lotId, tenantId },
         { session }
@@ -1591,7 +1609,7 @@ export async function quarantineStockLot(
         before: lot,
         after: updatedLot,
         detail: `Quarantined ${input.quantity} units in lot ${input.lotId}: ${input.reason}`,
-      });
+      }, session);
 
       return updatedLot;
     }
@@ -1617,6 +1635,7 @@ export async function restoreDefectiveStock(
     input.lotId,
     input,
     async session => {
+      await lockBusinessDay(db, session, tenantId);
       const lot = await col<StockLotDocument>(db, 'stockLots').findOne(
         { _id: input.lotId, tenantId },
         { session }
@@ -1703,7 +1722,7 @@ export async function restoreDefectiveStock(
         before: lot,
         after: updatedLot,
         detail: `Restored ${input.quantity} defective units in lot ${input.lotId}: ${input.reason}`,
-      });
+      }, session);
 
       return updatedLot;
     }
@@ -1850,7 +1869,6 @@ export async function recordSupplierPayment(
 ) {
   const tenantId = identity.tenantId;
   await assertPhase3MigrationComplete(db, tenantId);
-  await assertOperationalPostingAllowed(db, tenantId, input.date);
 
   const totalComponentPaise = input.components.reduce((sum, c) => sum + c.amountPaise, 0);
   const totalAllocatedPaise = input.allocations.reduce((sum, a) => sum + a.amountPaise, 0);
@@ -1885,6 +1903,8 @@ export async function recordSupplierPayment(
     input.supplierId,
     input,
     async session => {
+      await assertOperationalPostingAllowed(db, tenantId, input.date);
+      await lockBusinessDay(db, session, tenantId, {date: input.date});
       const supplier = await col(db, 'suppliers').findOne({_id: input.supplierId, tenantId}, {session});
       if (!supplier) throw new AppError(404, 'Supplier record not found.');
 
@@ -1924,6 +1944,11 @@ export async function recordSupplierPayment(
         date: string;
         account: string;
         qty: number;
+        amountPaise?: number;
+        direction?: 'In' | 'Out';
+        category?: string;
+        sourceType?: string;
+        sourceId?: string;
         reason: string;
         reference: string;
         createdAt: Date;
@@ -1947,6 +1972,11 @@ export async function recordSupplierPayment(
           date: input.date,
           account: c.account,
           qty: -c.amountPaise, // Signed negative integer
+          amountPaise: c.amountPaise,
+          direction: 'Out' as const,
+          category: 'SupplierPayment' as const,
+          sourceType: 'SupplierPayment' as const,
+          sourceId: paymentId,
           reason: 'Supplier payment',
           reference: paymentNumber,
           createdAt: now,
@@ -2133,6 +2163,7 @@ export async function allocateSupplierAdvance(
     advanceId,
     input,
     async session => {
+      await lockBusinessDay(db, session, tenantId, {date: input.effectiveDate});
       // Deduct from supplierAdvance
       const advRes = await col<SupplierAdvanceDocument>(db, 'supplierAdvances').findOneAndUpdate(
         {
@@ -2265,6 +2296,7 @@ export async function reverseSupplierAllocation(
     allocationId,
     input,
     async session => {
+      await lockBusinessDay(db, session, tenantId);
       const originalAlloc = await col<SupplierAllocationDocument>(db, 'supplierAllocations').findOne(
         {_id: allocationId, tenantId},
         {session}
@@ -2398,6 +2430,8 @@ export async function reverseSupplierPayment(
     paymentId,
     input,
     async session => {
+      await assertOperationalPostingAllowed(db, tenantId, todayInKolkata());
+      await lockBusinessDay(db, session, tenantId);
       const payment = await col<SupplierPaymentDocument>(db, 'supplierPayments').findOne({_id: paymentId, tenantId}, {session});
       if (!payment) throw new AppError(404, 'Supplier payment record not found.');
       if (payment.isReversed) throw new AppError(400, 'This payment has already been reversed.');
@@ -2452,6 +2486,12 @@ export async function reverseSupplierPayment(
           date: todayInKolkata(),
           account: comp.account,
           qty: comp.amountPaise, // Signed positive integer
+          amountPaise: comp.amountPaise,
+          direction: 'In' as const,
+          category: 'SupplierPaymentReversal' as const,
+          sourceType: 'SupplierPaymentReversal' as const,
+          sourceId: paymentId,
+          isReversal: true,
           reason: 'Supplier payment reversal',
           reference: payment.paymentNumber,
           createdAt: now,
@@ -2486,7 +2526,6 @@ export async function recordSupplierReturn(
   input: SupplierReturnInput
 ) {
   const tenantId = identity.tenantId;
-  await assertOperationalPostingAllowed(db, tenantId, todayInKolkata());
 
   return executeIdempotentTransaction(
     db,
@@ -2496,6 +2535,8 @@ export async function recordSupplierReturn(
     input.purchaseId,
     input,
     async session => {
+      await assertOperationalPostingAllowed(db, tenantId, todayInKolkata());
+      await lockBusinessDay(db, session, tenantId);
       const purchase = await col<PurchaseDocument>(db, 'purchases').findOne({_id: input.purchaseId, tenantId}, {session});
       if (!purchase) throw new AppError(404, 'Purchase record not found.');
       if (!['Posted', 'Credited', 'FullyCredited'].includes(purchase.billStatus)) throw new AppError(400, 'Cannot return goods for an unposted bill.');
@@ -2675,7 +2716,7 @@ export async function acceptReturnCreditNote(
   input: AcceptReturnCreditNoteInput
 ) {
   const tenantId = identity.tenantId;
-  await assertOperationalPostingAllowed(db, tenantId, input.date);
+  await assertPhase3MigrationComplete(db, tenantId);
 
   return executeIdempotentTransaction(
     db,
@@ -2685,6 +2726,8 @@ export async function acceptReturnCreditNote(
     returnId,
     input,
     async session => {
+      await assertOperationalPostingAllowed(db, tenantId, input.date);
+      await lockBusinessDay(db, session, tenantId, {date: input.date});
       const ret = await col<SupplierReturnDocument>(db, 'supplierReturns').findOne({_id: returnId, tenantId}, {session});
       if (!ret) throw new AppError(404, 'Supplier return record not found.');
       if (ret.status !== 'PendingCreditAcceptance') {
@@ -2828,7 +2871,6 @@ export async function createStandaloneCreditNote(
   input: CreateStandaloneCreditNoteInput
 ) {
   const tenantId = identity.tenantId;
-  await assertOperationalPostingAllowed(db, tenantId, input.date);
 
   return executeIdempotentTransaction(
     db,
@@ -2838,6 +2880,8 @@ export async function createStandaloneCreditNote(
     input.supplierId,
     input,
     async session => {
+      await assertOperationalPostingAllowed(db, tenantId, input.date);
+      await lockBusinessDay(db, session, tenantId, {date: input.date});
       const supplier = await col(db, 'suppliers').findOne({_id: input.supplierId, tenantId}, {session});
       if (!supplier) throw new AppError(404, 'Supplier not found.');
 
@@ -2942,6 +2986,7 @@ export async function reverseSupplierCreditNote(
     creditNoteId,
     input,
     async session => {
+      await lockBusinessDay(db, session, tenantId);
       const creditNote = await col<SupplierCreditNoteDocument>(db, 'supplierCreditNotes').findOne(
         {_id: creditNoteId, tenantId},
         {session}
@@ -3026,7 +3071,6 @@ export async function recordSupplierRefund(
 ) {
   const tenantId = identity.tenantId;
   await assertPhase3MigrationComplete(db, tenantId);
-  await assertOperationalPostingAllowed(db, tenantId, input.date);
 
   return executeIdempotentTransaction(
     db,
@@ -3036,6 +3080,8 @@ export async function recordSupplierRefund(
     input.advanceId,
     input,
     async session => {
+      await assertOperationalPostingAllowed(db, tenantId, input.date);
+      await lockBusinessDay(db, session, tenantId, {date: input.date});
       // Atomic deduction from supplierAdvances (only authoritative source)
       const advRes = await col<SupplierAdvanceDocument>(db, 'supplierAdvances').findOneAndUpdate(
         {
@@ -3082,6 +3128,11 @@ export async function recordSupplierRefund(
           date: input.date,
           account: input.account,
           qty: input.amountPaise, // Signed positive integer
+          amountPaise: input.amountPaise,
+          direction: 'In' as const,
+          category: 'SupplierRefund' as const,
+          sourceType: 'SupplierRefund' as const,
+          sourceId: refundId,
           reason: 'Supplier refund',
           reference: refundNumber,
           createdAt: now,
@@ -3132,6 +3183,8 @@ export async function reverseSupplierRefund(
     refundId,
     input,
     async session => {
+      await assertOperationalPostingAllowed(db, tenantId, todayInKolkata());
+      await lockBusinessDay(db, session, tenantId);
       const refund = await col<SupplierRefundDocument>(db, 'supplierRefunds').findOne({_id: refundId, tenantId}, {session});
       if (!refund) throw new AppError(404, 'Refund record not found.');
       if (refund.isReversed) throw new AppError(400, 'Refund is already reversed.');
@@ -3165,6 +3218,12 @@ export async function reverseSupplierRefund(
           date: todayInKolkata(),
           account: refund.account,
           qty: -refund.amountPaise, // Signed negative integer
+          amountPaise: refund.amountPaise,
+          direction: 'Out' as const,
+          category: 'SupplierRefundReversal' as const,
+          sourceType: 'SupplierRefundReversal' as const,
+          sourceId: refundId,
+          isReversal: true,
           reason: 'Supplier refund reversal',
           reference: refund.refundNumber,
           createdAt: now,
@@ -3970,7 +4029,8 @@ export async function migratePhase35StockMovements(
                 (lot.quantityReserved || 0) +
                 (lot.quantityDefective || 0) +
                 (lot.quantitySold || 0) +
-                (lot.quantityReturned || 0) + (lot.quantityRemoved || 0);
+                (lot.quantityReturned || 0) + (lot.quantityRemoved || 0) +
+                (lot.quantityConsumed || 0);
     if (sum !== lot.quantityReceived) {
       anomalies.push(`Lot ${lot._id} conservation invariant failed: received=${lot.quantityReceived}, sum=${sum}`);
     }
