@@ -206,6 +206,12 @@ export async function ensureIndexes() {
         safeCreateIndex(db.collection('authSessions'), {expiresAt: 1}, {expireAfterSeconds: 0}),
         safeCreateIndex(db.collection('rateLimits'), {expiresAt: 1}, {expireAfterSeconds: 0}),
         safeCreateIndex(db.collection('files'), {tenantId: 1, createdAt: -1}),
+        safeCreateIndex(db.collection('files'), {tenantId: 1, _id: 1, storageConnectionId: 1, status: 1}),
+        safeCreateIndex(db.collection('storageConnections'), {tenantId: 1, _id: 1}),
+        safeCreateIndex(db.collection('storageConnections'), {tenantId: 1, status: 1}),
+        safeCreateIndex(db.collection('pendingUploads'), {tenantId: 1, userId: 1, status: 1}),
+        safeCreateIndex(db.collection('pendingUploads'), {expiresAt: 1}, {expireAfterSeconds: 0}),
+        safeCreateIndex(db.collection('pendingUploads'), {tenantId: 1, publicId: 1}, {unique: true}),
         safeCreateIndex(db.collection('authUsers'), {tenantId: 1}),
         safeCreateIndex(db.collection('authSessions'), {userId: 1}),
         safeCreateIndex(db.collection('authSessions'), {token: 1}, {unique: true}),
@@ -371,6 +377,12 @@ export async function ensureIndexes() {
         safeCreateIndex(db.collection('stockMovements'), {tenantId: 1, reservationId: 1}),
         safeCreateIndex(db.collection('serialUnits'), {tenantId: 1, reservationId: 1}),
         safeCreateIndex(db.collection('tenantSerialGates'), {tenantId: 1}, {unique: true}),
+
+        // Storage & uploads indexes
+        safeCreateIndex(db.collection('storageConnections'), {tenantId: 1, status: 1}),
+        safeCreateIndex(db.collection('pendingUploads'), {tenantId: 1, status: 1, expiresAt: 1}),
+        safeCreateIndex(db.collection('pendingUploads'), {tenantId: 1, userId: 1, createdAt: -1}),
+        safeCreateIndex(db.collection('files'), {tenantId: 1, _id: 1, storageConnectionId: 1, status: 1}),
       ]);
       globalDb.indexIntegrityVerified = true;
     })().catch(e => {

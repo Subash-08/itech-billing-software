@@ -1,5 +1,6 @@
 import {endpoint, requireIdentity} from '@/server/auth';
 import {getFile, rfc5987Encode} from '@/server/storage';
+import {Readable} from 'node:stream';
 
 export const runtime = 'nodejs';
 
@@ -7,10 +8,14 @@ export async function GET(_request: Request, context: {params: Promise<{id: stri
   try {
     const identity = await requireIdentity();
     const {id} = await context.params;
-    const {record, bytes} = await getFile(identity, id);
-    return new Response(new Uint8Array(bytes), {
+    const {record, stream, size} = await getFile(identity, id);
+
+    const webStream = stream instanceof ReadableStream ? stream : Readable.toWeb(stream as any);
+
+    return new Response(webStream as any, {
       headers: {
         'Content-Type': record.type,
+        'Content-Length': String(size),
         'Content-Disposition': `attachment; filename*=UTF-8''${rfc5987Encode(record.name)}`,
         'Cache-Control': 'private, no-store',
         'X-Content-Type-Options': 'nosniff',

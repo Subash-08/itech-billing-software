@@ -5,6 +5,7 @@ import {useState, useEffect, useCallback} from 'react';
 import Link from 'next/link';
 import {ArrowUpRight} from 'lucide-react';
 import {Warranty, TODAY, dateLabel, uid} from '@/lib/domain';
+import {uploadFile} from '@/lib/upload';
 import {useStore} from './store';
 import {PageHead, Card, SearchBox, Btn, Modal, Field, Badge, Empty} from './ui';
 
@@ -119,12 +120,8 @@ export default function WarrantyPage() {
     setUploadingPhotos(true);
     try {
       for (const file of files) {
-        const formData = new FormData();
-        formData.append('file', file);
-        const res = await fetch('/api/files', {method: 'POST', body: formData});
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Upload failed');
-        setClaimAttachmentIds((prev) => [...prev, data.id]);
+        const data = await uploadFile(file);
+        setClaimAttachmentIds((prev) => [...prev, data.id || data._id]);
       }
       notify('Photo uploaded.');
     } catch (err: any) {

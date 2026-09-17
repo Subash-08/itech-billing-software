@@ -3,6 +3,7 @@ import {useState, useEffect, useCallback} from 'react';
 import Link from 'next/link';
 import {Upload, FileText, ArrowUpRight, Eye} from 'lucide-react';
 import {TODAY, uid, Attachment, Bill} from '@/lib/domain';
+import {uploadFile} from '@/lib/upload';
 import {useStore} from './store';
 import {PageHead, Card, Btn, Field, Modal, SearchBox, Empty, Badge} from './ui';
 
@@ -71,15 +72,7 @@ export default function Library() {
     if (isLive) {
       setUploading(true);
       try {
-        const fd = new FormData();
-        fd.append('file', file);
-        const res = await fetch('/api/files', {
-          method: 'POST',
-          body: fd,
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Failed to upload document.');
-
+        const data = await uploadFile(file);
         const fileId = data._id || data.id;
         const fileUrl = `/api/files/${fileId}`;
 

@@ -1,5 +1,5 @@
 'use client';
-import {useState, useEffect} from 'react';
+import {useState, useEffect, useCallback} from 'react';
 import {
   Save,
   Download,
@@ -91,15 +91,149 @@ export default function Settings() {
   const [openingSuppliers, setOpeningSuppliers] = useState(state.suppliers);
   const [openingProducts, setOpeningProducts] = useState(state.products);
   const [storageInfo, setStorageInfo] = useState<any>(null);
+  const [customCloudName, setCustomCloudName] = useState('');
+  const [customApiKey, setCustomApiKey] = useState('');
+  const [customApiSecret, setCustomApiSecret] = useState('');
+  const [storageAccountPassword, setStorageAccountPassword] = useState('');
+  const [testingStorage, setTestingStorage] = useState(false);
+  const [savingStorage, setSavingStorage] = useState(false);
+  const [resettingStorage, setResettingStorage] = useState(false);
+  const [storageStatusMsg, setStorageStatusMsg] = useState<{type: 'success' | 'error'; text: string} | null>(null);
+  const [showCustomForm, setShowCustomForm] = useState(false);
+
+  const refreshStorageStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/company/storage');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to load storage settings.');
+      setStorageInfo(data);
+    } catch {
+      setStorageInfo(null);
+      setStorageStatusMsg({type: 'error', text: 'Unable to refresh storage settings. Reopen this tab before changing storage.'});
+    }
+  }, []);
 
   useEffect(() => {
     if (tab === 'Data & retention' && isLive) {
-      fetch('/api/files')
-        .then((res) => res.json())
-        .then((data) => setStorageInfo(data))
-        .catch(() => {});
+      refreshStorageStatus();
     }
-  }, [tab, isLive]);
+  }, [tab, isLive, refreshStorageStatus]);
+
+  async function handleTestStorage() {
+    if (!customCloudName.trim() || !customApiKey.trim() || !customApiSecret.trim()) {
+      setStorageStatusMsg({type: 'error', text: 'Enter Cloud Name, API Key, and API Secret.'});
+      return;
+    }
+    if (!storageAccountPassword) {
+      setStorageStatusMsg({type: 'error', text: 'Enter your account login password to authorize verification.'});
+      return;
+    }
+    setTestingStorage(true);
+    setStorageStatusMsg(null);
+    try {
+      const res = await fetch('/api/company/storage/test', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          cloudName: customCloudName.trim(),
+          apiKey: customApiKey.trim(),
+          apiSecret: customApiSecret.trim(),
+          accountPassword: storageAccountPassword,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Verification failed.');
+      setStorageStatusMsg({type: 'success', text: '✓ Cloudinary connection verified successfully!'});
+    } catch (err: any) {
+      setStorageStatusMsg({type: 'error', text: err.message || 'Verification failed.'});
+    } finally {
+      setTestingStorage(false);
+    }
+  }
+
+  async function handleSaveCustomStorage() {
+    if (savingStorage || resettingStorage || testingStorage) return;
+    if (!Number.isSafeInteger(storageInfo?.storageSettingsVersion)) {
+      await refreshStorageStatus();
+      setStorageStatusMsg({type: 'error', text: 'Storage settings refreshed. Review the current connection, then submit again.'});
+      return;
+    }
+    if (!customCloudName.trim() || !customApiKey.trim() || !customApiSecret.trim()) {
+      setStorageStatusMsg({type: 'error', text: 'Enter Cloud Name, API Key, and API Secret.'});
+      return;
+    }
+    if (!storageAccountPassword) {
+      setStorageStatusMsg({type: 'error', text: 'Enter your account login password to authorize storage change.'});
+      return;
+    }
+    setSavingStorage(true);
+    setStorageStatusMsg(null);
+    try {
+      const res = await fetch('/api/company/storage', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          cloudName: customCloudName.trim(),
+          apiKey: customApiKey.trim(),
+          apiSecret: customApiSecret.trim(),
+          accountPassword: storageAccountPassword,
+          expectedVersion: storageInfo.storageSettingsVersion,
+        }),
+      });
+      const data = await res.json();
+      if (res.status === 409) {
+        await refreshStorageStatus();
+        throw new Error('Storage configuration changed. Review the refreshed connection and submit again. Your entries have been preserved.');
+      }
+      if (!res.ok) throw new Error(data.error || 'Failed to save storage settings.');
+      notify('Custom Cloudinary storage activated for future uploads.');
+      setStorageStatusMsg({type: 'success', text: '✓ Custom storage activated successfully!'});
+      setCustomApiSecret('');
+      setStorageAccountPassword('');
+      setShowCustomForm(false);
+      await refreshStorageStatus();
+    } catch (err: any) {
+      setStorageStatusMsg({type: 'error', text: err.message || 'Failed to save storage settings.'});
+    } finally {
+      setSavingStorage(false);
+    }
+  }
+
+  async function handleResetToPlatform() {
+    if (savingStorage || resettingStorage || testingStorage) return;
+    if (!Number.isSafeInteger(storageInfo?.storageSettingsVersion)) {
+      await refreshStorageStatus();
+      setStorageStatusMsg({type: 'error', text: 'Storage settings refreshed. Review the current connection, then submit again.'});
+      return;
+    }
+    if (!storageAccountPassword) {
+      setStorageStatusMsg({type: 'error', text: 'Enter your account login password to authorize resetting storage.'});
+      return;
+    }
+    setResettingStorage(true);
+    setStorageStatusMsg(null);
+    try {
+      const res = await fetch('/api/company/storage', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({accountPassword: storageAccountPassword, expectedVersion: storageInfo.storageSettingsVersion}),
+      });
+      const data = await res.json();
+      if (res.status === 409) {
+        await refreshStorageStatus();
+        throw new Error('Storage configuration changed. Review the refreshed connection and submit again. Your entries have been preserved.');
+      }
+      if (!res.ok) throw new Error(data.error || 'Failed to reset storage.');
+      notify('Switched to platform storage for future uploads.');
+      setStorageStatusMsg({type: 'success', text: '✓ Switched to platform storage for future uploads.'});
+      setStorageAccountPassword('');
+      await refreshStorageStatus();
+    } catch (err: any) {
+      setStorageStatusMsg({type: 'error', text: err.message || 'Failed to reset storage.'});
+    } finally {
+      setResettingStorage(false);
+    }
+  }
 
   useEffect(() => {
     setF({...state.settings});
@@ -1109,37 +1243,148 @@ export default function Settings() {
               )}
             </div>
           </Card>
-          <Card title="Private storage status">
+          <Card title="Cloud & private storage configuration">
             <div className="body-pad stack">
               <div className="notice">
-                Uploaded attachments, logos, and service photos are stored in private server storage with authenticated access.
+                Company logos, service repair photos, invoice PDFs, and warranty evidence are stored in secure private storage with authenticated access.
               </div>
+
               <div style={{display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.875rem'}}>
                 <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px'}}>
-                  <span style={{fontWeight: 600}}>Storage Provider</span>
-                  <span>{storageInfo?.provider || (isLive ? 'Private Filesystem' : 'Browser Memory / Demo')}</span>
+                  <span style={{fontWeight: 600}}>Active Storage Provider</span>
+                  <span>{storageInfo?.provider || (isLive ? 'Platform Managed Cloud Storage' : 'Browser Memory / Demo')}</span>
+                </div>
+                <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px'}}>
+                  <span style={{fontWeight: 600}}>Storage Destination</span>
+                  <span>{storageInfo?.safeLabel || 'Platform Default Storage'}</span>
                 </div>
                 <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px'}}>
                   <span style={{fontWeight: 600}}>Configuration Status</span>
-                  <Badge>{storageInfo?.configured ? 'Configured & Active' : (isLive ? 'Configured & Active' : 'Demo Mode')}</Badge>
+                  <Badge>{storageInfo?.configured || storageInfo?.isConfigured ? 'Configured & Active' : (isLive ? 'Configured & Active' : 'Demo Mode')}</Badge>
                 </div>
                 <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px'}}>
-                  <span style={{fontWeight: 600}}>Upload Availability</span>
-                  <span style={{color: '#166534', fontWeight: 600}}>✓ Enabled (Authenticated /api/files)</span>
+                  <span style={{fontWeight: 600}}>Delivery & Access Gate</span>
+                  <span style={{color: '#166534', fontWeight: 600}}>✓ Authenticated & Session-Gated</span>
                 </div>
                 <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px'}}>
                   <span style={{fontWeight: 600}}>Max File Size</span>
-                  <span>{storageInfo?.maxFileSizeMb || 5} MB per file</span>
+                  <span>5 MB (Direct signed upload)</span>
                 </div>
                 <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px'}}>
                   <span style={{fontWeight: 600}}>Allowed Formats</span>
                   <span>PNG, JPEG, WebP, PDF</span>
                 </div>
-                <div style={{display: 'flex', justifyContent: 'space-between'}}>
-                  <span style={{fontWeight: 600}}>Security Isolation</span>
-                  <span>Tenant directory isolation & auth gate</span>
-                </div>
+                {storageInfo?.lastVerifiedAt && (
+                  <div style={{display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #e5e7eb', paddingBottom: '4px'}}>
+                    <span style={{fontWeight: 600}}>Last Verified At</span>
+                    <span>{new Date(storageInfo.lastVerifiedAt).toLocaleString('en-IN')}</span>
+                  </div>
+                )}
               </div>
+
+              {isLive && (
+                <div style={{marginTop: 16, paddingTop: 16, borderTop: '1px solid #e5e7eb'}}>
+                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12}}>
+                    <div>
+                      <h4 style={{margin: 0}}>Custom Cloudinary Storage (Optional)</h4>
+                      <small className="muted">Use your own Cloudinary account for complete data ownership and private storage.</small>
+                    </div>
+                    <Btn secondary onClick={() => setShowCustomForm(!showCustomForm)}>
+                      {showCustomForm ? 'Close form' : storageInfo?.isCustom ? 'Modify custom storage' : 'Connect custom account'}
+                    </Btn>
+                  </div>
+
+                  {storageStatusMsg && (
+                    <div
+                      className="notice"
+                      style={{
+                        marginBottom: 12,
+                        backgroundColor: storageStatusMsg.type === 'success' ? '#f0fdf4' : '#fef2f2',
+                        borderColor: storageStatusMsg.type === 'success' ? '#bbf7d0' : '#fecaca',
+                        color: storageStatusMsg.type === 'success' ? '#166534' : '#991b1b',
+                      }}
+                    >
+                      {storageStatusMsg.text}
+                    </div>
+                  )}
+
+                  {storageInfo?.isCustom && !showCustomForm && (
+                    <div style={{padding: 12, backgroundColor: '#f8fafc', borderRadius: 6, border: '1px solid #e2e8f0', marginBottom: 12}}>
+                      <div style={{marginBottom: 8, fontSize: '0.875rem'}}>
+                        Currently uploading to custom Cloudinary account: <b>{storageInfo.cloudName}</b>.
+                      </div>
+                      <p className="muted" style={{fontSize: '0.8rem', margin: '0 0 12px 0'}}>
+                        <b>Notice:</b> Resetting to platform storage only changes the destination for future uploads. Previously uploaded files remain safely accessible in their original Cloudinary account.
+                      </p>
+                      <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
+                        <input
+                          type="password"
+                          placeholder="Account login password"
+                          value={storageAccountPassword}
+                          onChange={(e) => setStorageAccountPassword(e.target.value)}
+                          style={{maxWidth: 240}}
+                        />
+                        <Btn secondary disabled={resettingStorage} onClick={handleResetToPlatform}>
+                          {resettingStorage ? 'Resetting…' : 'Use platform storage for future uploads'}
+                        </Btn>
+                      </div>
+                    </div>
+                  )}
+
+                  {showCustomForm && (
+                    <div style={{background: '#f8fafc', padding: 16, borderRadius: 8, border: '1px solid #e2e8f0'}}>
+                      <p className="muted" style={{fontSize: '0.85rem', margin: '0 0 12px 0'}}>
+                        Enter your Cloudinary developer API credentials. The API secret is encrypted server-side with AES-256-GCM and never exposed.
+                      </p>
+                      <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12}}>
+                        <div>
+                          <label style={{display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: 4}}>Cloud Name</label>
+                          <input
+                            placeholder="e.g. my-store-cloud"
+                            value={customCloudName}
+                            onChange={(e) => setCustomCloudName(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label style={{display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: 4}}>API Key</label>
+                          <input
+                            placeholder="e.g. 123456789012345"
+                            value={customApiKey}
+                            onChange={(e) => setCustomApiKey(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label style={{display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: 4}}>API Secret (Write-only)</label>
+                          <input
+                            type="password"
+                            placeholder="••••••••••••••••"
+                            value={customApiSecret}
+                            onChange={(e) => setCustomApiSecret(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label style={{display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: 4}}>Account Login Password (Reauthentication)</label>
+                          <input
+                            type="password"
+                            placeholder="Your account password"
+                            value={storageAccountPassword}
+                            onChange={(e) => setStorageAccountPassword(e.target.value)}
+                          />
+                        </div>
+                      </div>
+
+                      <div style={{display: 'flex', gap: 8}}>
+                        <Btn secondary disabled={testingStorage || savingStorage} onClick={handleTestStorage}>
+                          {testingStorage ? 'Verifying connection…' : 'Test connection'}
+                        </Btn>
+                        <Btn disabled={testingStorage || savingStorage} onClick={handleSaveCustomStorage}>
+                          {savingStorage ? 'Saving…' : 'Save & activate custom storage'}
+                        </Btn>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </Card>
           <Card title="Scope & architecture">

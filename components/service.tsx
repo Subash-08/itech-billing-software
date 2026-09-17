@@ -1,13 +1,15 @@
 'use client';
-import {useState, useEffect, useCallback} from 'react';
+import {useState, useEffect, useCallback, useRef} from 'react';
 import Link from 'next/link';
 import {useRouter, useSearchParams} from 'next/navigation';
 import {Plus, Pencil, ArrowLeft, ArrowUpRight, FileText, RotateCcw} from 'lucide-react';
 import {Job, TODAY, uid, money, dateLabel, available, balance} from '@/lib/domain';
 import {consumePart} from '@/lib/operations';
+import {uploadFile} from '@/lib/upload';
 import {useStore} from './store';
 import {PageHead, Card, Btn, Field, Modal, SearchBox, Badge, Empty} from './ui';
 import {PaymentDialog} from './payments';
+import ServicePhotos from './service-photos';
 
 export const jobStatuses = [
   'Received',
@@ -310,9 +312,7 @@ export function JobForm({
                     if (files.some(f => f.size > 5 * 1024 * 1024 || !['image/png','image/jpeg','image/webp'].includes(f.type))) { notify('Use PNG, JPEG or WebP images up to 5 MB each.'); return; }
                     setUploading(true);
                     try { for (const file of files) {
-                      const body = new FormData(); body.append('file', file);
-                      const res = await fetch('/api/files', {method: 'POST', body}); const data = await res.json();
-                      if (!res.ok) throw new Error(data.error || 'Photo upload failed.');
+                      const data = await uploadFile(file);
                       setPhotoIds(ids => [...ids, data.id || data._id]);
                     }} catch (error) { notify(error instanceof Error ? error.message : 'Upload failed.'); }
                     finally { setUploading(false); }
@@ -320,7 +320,7 @@ export function JobForm({
               </Field>
               <p className="muted">Add intake, damage, repair or handover evidence. Save the job to attach uploaded photos.</p>
               {uploading && <p role="status">Uploading photos…</p>}
-              <div className="actions">{photoIds.map(id => <a key={id} href={'/api/files/' + encodeURIComponent(id)} target="_blank" rel="noreferrer"><img src={'/api/files/' + encodeURIComponent(id)} alt="Service evidence" width={90} height={70} style={{objectFit:'cover', borderRadius:6}}/></a>)}</div>
+              <ServicePhotos fileIds={photoIds} />
             </div>
 
             {existing && (
@@ -678,61 +678,53 @@ export default function Services({id}: {id?: string}) {
   // Live state
   const [liveJob, setLiveJob] = useState<any | null>(null);
   const [liveList, setLiveList] = useState<any[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(isLive);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
 
-  const fetchJob = useCallback(async (jobId: string) => {
+  const fetchLive = useCallback(async (url: string, detail: boolean) => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setIsLoading(true);
+    setLoadError(null);
+    if (detail) setLiveJob(null);
+    else setLiveList([]);
     try {
-      const res = await fetch(`/api/services/${encodeURIComponent(jobId)}`);
-      if (res.ok) {
-        const data = await res.json();
-        setLiveJob(data);
-      } else {
-        setLiveJob(null);
-      }
-    } catch {
-      setLiveJob(null);
+      const res = await fetch(url, {signal: controller.signal, cache: 'no-store'});
+      if (detail && res.status === 404) return;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to load service records. Please retry.');
+      if (controller.signal.aborted) return;
+      if (detail) setLiveJob(data);
+      else if (Array.isArray(data.jobs)) setLiveList(data.jobs);
+      else throw new Error('The service list response was incomplete. Please retry.');
+    } catch (error: any) {
+      if (controller.signal.aborted || error?.name === 'AbortError') return;
+      setLoadError(error instanceof Error ? error.message : 'Unable to load service records.');
     } finally {
-      setIsLoading(false);
+      if (!controller.signal.aborted) setIsLoading(false);
     }
   }, []);
 
-  const fetchList = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const params = new URLSearchParams();
-      if (status !== 'All jobs' && status !== 'Active jobs') {
-        params.set('status', status);
-      } else if (status === 'Active jobs') {
-        params.set('status', 'Active jobs');
-      }
-      if (q.trim()) params.set('search', q.trim());
-      params.set('limit', '100');
-
-      const res = await fetch(`/api/services?${params.toString()}`);
-      const data = await res.json();
-      if (res.ok && Array.isArray(data.jobs)) {
-        setLiveList(data.jobs);
-      }
-    } catch {
-      // ignore
-    } finally {
-      setIsLoading(false);
-    }
-  }, [status, q]);
+  const fetchJob = useCallback((jobId: string) => fetchLive(`/api/services/${encodeURIComponent(jobId)}`, true), [fetchLive]);
+  const fetchList = useCallback(() => {
+    const params = new URLSearchParams({limit: '100'});
+    if (status !== 'All jobs') params.set('status', status);
+    if (q.trim()) params.set('search', q.trim());
+    return fetchLive(`/api/services?${params}`, false);
+  }, [status, q, fetchLive]);
 
   useEffect(() => {
-    if (isDetailView) {
-      fetchJob(id!);
-    } else {
-      setLiveJob(null);
-      fetchList();
-    }
-  }, [isDetailView, id, fetchJob, fetchList]);
+    if (!isLive) return;
+    if (isDetailView) void fetchJob(id!);
+    else { setLiveJob(null); void fetchList(); }
+    return () => requestRef.current?.abort();
+  }, [isLive, isDetailView, id, fetchJob, fetchList]);
 
   // Only resolve j when in detail view
   const j = isDetailView
-    ? liveJob || (id ? state.jobs.find(x => x.id === id || (x as any)._id === id) : null)
+    ? (isLive ? (liveJob && (liveJob._id === id || liveJob.id === id || liveJob.jobNumber === id) ? liveJob : null) : state.jobs.find(x => x.id === id || (x as any)._id === id))
     : null;
   const customer = j?.customerSnapshot || (j ? state.customers.find(c => c.id === j.customerId) : null);
   const invoice = j ? state.bills.find(b => b.jobId === (j._id || j.id) && b.kind === 'Service') : null;
@@ -759,6 +751,11 @@ export default function Services({id}: {id?: string}) {
     }
     return true;
   });
+
+  if (isLive && loadError) {
+    return <Empty title="Unable to load service records" text={loadError}
+      action={<Btn onClick={() => isDetailView ? fetchJob(id!) : fetchList()}>Retry</Btn>} />;
+  }
 
   if (isDetailView && !j && !isLoading) {
     return (
@@ -889,6 +886,10 @@ export default function Services({id}: {id?: string}) {
                     <dd>{j.status === 'Delivered' ? 'Handed over' : 'In shop custody'}</dd>
                   </div>
                 </dl>
+              </Card>
+
+              <Card title="Service photos" sub="Intake, repair and handover evidence">
+                <div className="body-pad"><ServicePhotos key={j._id || j.id} fileIds={j.device?.photos || j.photos || []} /></div>
               </Card>
 
               <Card title="Diagnostic & Repair Outcome">

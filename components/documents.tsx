@@ -18,6 +18,7 @@ import {
   RotateCcw,
   Archive,
 } from 'lucide-react';
+import {uploadFile} from '@/lib/upload';
 import {
   Bill,
   Line,
@@ -497,11 +498,7 @@ export function DocumentComposer({
     if (file.size > 5 * 1024 * 1024) return notify('Attachment must be 5 MB or smaller.');
     setUploadingAttachment(true);
     try {
-      const form = new FormData();
-      form.append('file', file);
-      const response = await fetch('/api/files', {method: 'POST', body: form});
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Attachment upload failed.');
+      const data = await uploadFile(file);
       setAttachmentFileId(data._id || data.id);
       setAttachmentName(file.name);
       notify('Supplier document attached.');

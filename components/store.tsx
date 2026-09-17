@@ -3,6 +3,7 @@ import {createContext, useContext, useState, useEffect, useCallback, ReactNode} 
 import {seed} from '@/lib/seed';
 import {State, Customer, Supplier, Product, Bill, Reservation, Enquiry, TODAY} from '@/lib/domain';
 import {InvoiceTemplate, ServiceItem} from '@/lib/extensions';
+import {uploadFile} from '@/lib/upload';
 import {
   mapCustomerFromApi,
   mapSupplierFromApi,
@@ -369,12 +370,8 @@ export function StoreProvider({children}: {children: ReactNode}) {
     try {
       let logoFileId = undefined;
       if (logoFile) {
-        const form = new FormData();
-        form.set('file', logoFile);
-        const upRes = await fetch('/api/files', {method: 'POST', body: form});
-        const upData = await upRes.json();
-        if (!upRes.ok) throw new Error(upData.error || 'Failed to upload logo.');
-        logoFileId = upData.id;
+        const upData = await uploadFile(logoFile);
+        logoFileId = upData.id || upData._id;
       }
 
       const payload = {
@@ -417,16 +414,8 @@ export function StoreProvider({children}: {children: ReactNode}) {
     try {
       let logoFileId: string | null = null;
       if (file) {
-        if (file.size > 2 * 1024 * 1024) {
-          throw new Error('Choose a logo image under 2 MB.');
-        }
-        const form = new FormData();
-        form.set('file', file);
-        const upRes = await fetch('/api/files', {method: 'POST', body: form});
-        const upData = await upRes.json();
-        if (!upRes.ok) throw new Error(upData.error || 'Failed to upload logo.');
-        if (!upData.id) throw new Error('File upload succeeded but no file ID was returned.');
-        logoFileId = upData.id;
+        const upData = await uploadFile(file);
+        logoFileId = upData.id || upData._id;
       }
 
       const res = await fetch('/api/company/settings', {

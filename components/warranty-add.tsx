@@ -3,6 +3,7 @@
 import {useState, useEffect} from 'react';
 import {useStore} from './store';
 import {uid, TODAY} from '@/lib/domain';
+import {uploadFile} from '@/lib/upload';
 import {Modal, Field, Btn} from './ui';
 
 export default function WarrantyAdd({onClose}: {onClose: () => void}) {
@@ -102,15 +103,8 @@ export default function WarrantyAdd({onClose}: {onClose: () => void}) {
     setUploading(true);
     try {
       for (const file of files) {
-        const formData = new FormData();
-        formData.append('file', file);
-        const res = await fetch('/api/files', {
-          method: 'POST',
-          body: formData,
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Upload failed');
-        setAttachmentIds((prev) => [...prev, data.id]);
+        const data = await uploadFile(file);
+        setAttachmentIds((prev) => [...prev, data.id || data._id]);
       }
       notify('Photos uploaded.');
     } catch (err: any) {

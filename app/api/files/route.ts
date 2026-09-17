@@ -1,6 +1,6 @@
 import {checkOrigin, endpoint, requireIdentity, jsonBody} from '@/server/auth';
 import {AppError} from '@/server/db';
-import {storeFile} from '@/server/storage';
+import {storeFile, getTenantStorageStatus} from '@/server/storage';
 
 export const runtime = 'nodejs';
 
@@ -8,9 +8,15 @@ export async function POST(request: Request) {
   return endpoint(async () => {
     checkOrigin(request);
     const identity = await requireIdentity();
+
+    // Server-side upload ceiling: 4 MB on Vercel to safely avoid 4.5 MB edge proxy limit
+    const maxServerBytes = process.env.VERCEL ? 4 * 1024 * 1024 : 5 * 1024 * 1024;
     const size = Number(request.headers.get('content-length'));
-    if (!Number.isFinite(size) || size <= 0 || size > 11 * 1024 * 1024) {
-      throw new AppError(413, 'Upload must have a known size below 11 MB.');
+    if (!Number.isFinite(size) || size <= 0 || size > maxServerBytes + 65536) {
+      throw new AppError(
+        413,
+        `Upload payload too large for server-proxied route. Max allowed is ${maxServerBytes / (1024 * 1024)} MB. Use direct signed upload.`
+      );
     }
 
     const contentType = request.headers.get('content-type') || '';
@@ -35,17 +41,17 @@ export async function POST(request: Request) {
 
 export async function GET() {
   return endpoint(async () => {
-    await requireIdentity();
-    const isVercel = !!process.env.VERCEL;
-    const isConfigured = !!process.env.PRIVATE_STORAGE_ROOT && !isVercel;
+    const identity = await requireIdentity();
+    const status = await getTenantStorageStatus(identity);
+
     return {
-      provider: isVercel ? 'Vercel Ephemeral (External Adapter Required)' : 'Private Filesystem',
-      configured: isConfigured,
-      status: isConfigured ? 'Configured — upload verifies access' : isVercel ? 'Adapter Required' : 'Not Configured',
-      uploadsAvailable: isConfigured,
+      provider: status.provider,
+      configured: status.isConfigured,
+      status: status.safeLabel,
+      uploadsAvailable: status.isConfigured,
       maxFileSizeMb: 5,
       allowedTypes: ['image/png', 'image/jpeg', 'image/webp', 'application/pdf'],
+      safeLabel: status.safeLabel,
     };
   });
 }
-

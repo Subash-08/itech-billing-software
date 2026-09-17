@@ -132,8 +132,29 @@ export async function GET(request: Request) {
       if (logoCache.has(fileId)) return logoCache.get(fileId)!;
       try {
         const file = await getFile(identity, fileId);
-        logoCache.set(fileId, file.bytes);
-        return file.bytes;
+        const chunks: Uint8Array[] = [];
+        let length = 0;
+        if (file.stream instanceof ReadableStream) {
+          const reader = file.stream.getReader();
+          try {
+            while (true) {
+              const next = await reader.read();
+              if (next.done) break;
+              length += next.value.byteLength;
+              if (length > 5 * 1024 * 1024) { await reader.cancel(); throw new Error('Logo exceeds size limit'); }
+              chunks.push(next.value);
+            }
+          } finally { reader.releaseLock(); }
+        } else {
+          for await (const chunk of file.stream as AsyncIterable<Uint8Array>) {
+            length += chunk.byteLength;
+            if (length > 5 * 1024 * 1024) throw new Error('Logo exceeds size limit');
+            chunks.push(chunk);
+          }
+        }
+        const bytes = Buffer.concat(chunks);
+        logoCache.set(fileId, bytes);
+        return bytes;
       } catch {
         logoCache.set(fileId, null);
         return null;
