@@ -205,13 +205,11 @@ export async function updateServiceJobStatus(
   const input = UpdateServiceJobStatusSchema.parse(raw);
   const tenantId = identity.tenantId;
 
-  await assertPhase3MigrationComplete(db, tenantId);
 
   const client = await mongo();
   const session = client.startSession();
   try {
     return await session.withTransaction(async () => {
-      await assertOperationalPostingAllowed(db, tenantId, todayInKolkata());
       await lockBusinessDay(db, session, tenantId);
 
       const job = await col<ServiceJobDocument>(db, 'serviceJobs').findOne(
@@ -222,6 +220,15 @@ export async function updateServiceJobStatus(
 
       if (job.version !== input.expectedVersion) {
         throw new AppError(409, 'Service job was modified by another session. Refresh and try again.');
+      }
+
+      // Evidence-only edits do not post money or stock. Keep the shared day fence
+      // and optimistic job version even when onboarding has not been finalized.
+      const evidenceOnly = input.photos !== undefined && input.status === job.status &&
+        (input.diagnosticNotes === undefined || input.diagnosticNotes === (job.diagnosticNotes || ''));
+      if (!evidenceOnly) {
+        await assertPhase3MigrationComplete(db, tenantId, session);
+        await assertOperationalPostingAllowed(db, tenantId, todayInKolkata());
       }
 
       // Check cancellation rules: cannot cancel if unreversed or unbilled parts exist
@@ -250,7 +257,7 @@ export async function updateServiceJobStatus(
         }
         updateFields['device.photos'] = input.photos;
       }
-      if (input.status === 'Delivered') {
+      if (input.status === 'Delivered' && job.status !== 'Delivered') {
         updateFields.deliveredAt = now;
         updateFields.deliveredTo = job.customerSnapshot.name;
       }

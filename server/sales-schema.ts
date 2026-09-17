@@ -5,6 +5,9 @@ import {CalendarDateSchema, normalizeSerial} from './master-schema';
 
 const CalendarDate = CalendarDateSchema;
 const Id = z.string().trim().min(1).max(128);
+// MongoDB may store omitted optional references as null. Required links
+// still use Id; only optional links normalize null to absence.
+const OptionalId = Id.nullish().transform(value => value ?? undefined);
 const Paise = z.number().int().min(0).max(1_000_000_000_00);
 const PositivePaise = z.number().int().min(1).max(1_000_000_000_00);
 const IdempotencyKey = z.string().trim().min(1).max(128);
@@ -36,8 +39,8 @@ export const SaleLineInputSchema = z.discriminatedUnion('lineType', [
     warrantyMonths: z.number().int().min(0).max(240).default(0),
   }),
   CommonLine.extend({
-    lineType: z.literal('Service'), serviceId: Id.optional(), sac: z.string().trim().min(1).max(20),
-    serviceJobId: Id.optional(),
+    lineType: z.literal('Service'), serviceId: OptionalId, sac: z.string().trim().min(1).max(20),
+    serviceJobId: OptionalId,
     warrantyMonths: z.number().int().min(0).max(240).default(0),
   }),
   CommonLine.extend({
@@ -45,7 +48,7 @@ export const SaleLineInputSchema = z.discriminatedUnion('lineType', [
     serviceJobId: Id,
     partId: Id,
     productId: Id,
-    lotId: Id.optional(),
+    lotId: OptionalId,
     hsn: z.string().trim().min(1).max(20).default('847330'),
     warrantyMonths: z.number().int().min(0).max(240).default(0),
     serials: z.array(z.string()).default([]),

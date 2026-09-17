@@ -290,27 +290,6 @@ export async function prepareDirectUpload(
     return {directUploadAvailable: false};
   }
 
-  const db = await database();
-  // Bound active pending upload quotas to prevent signature/storage flooding
-  const activeTenantPending = await db.collection('pendingUploads').countDocuments({
-    tenantId: identity.tenantId,
-    status: 'Pending',
-    expiresAt: {$gt: new Date()},
-  });
-  if (activeTenantPending >= 20) {
-    throw new AppError(429, 'Too many pending uploads for this company. Please complete or wait for existing uploads to expire.');
-  }
-
-  const activeUserPending = await db.collection('pendingUploads').countDocuments({
-    tenantId: identity.tenantId,
-    userId: identity.userId,
-    status: 'Pending',
-    expiresAt: {$gt: new Date()},
-  });
-  if (activeUserPending >= 10) {
-    throw new AppError(429, 'Too many pending uploads for your user account. Please complete or wait for existing uploads to expire.');
-  }
-
   const fileId = randomUUID();
   const folder = `itech/${identity.tenantId}`;
   const publicId = `${folder}/${fileId}`;
@@ -338,7 +317,53 @@ export async function prepareDirectUpload(
     createdAt: new Date(),
   };
 
-  await db.collection<PendingUploadDocument>('pendingUploads').insertOne(pendingDoc);
+  const db = await database();
+  const session = (await mongo()).startSession();
+  try {
+    await session.withTransaction(async () => {
+      const now = new Date();
+
+      // Expire stale pending uploads to reconcile quota
+      await db.collection('pendingUploads').updateMany(
+        {tenantId: identity.tenantId, status: 'Pending', expiresAt: {$lte: now}},
+        {$set: {status: 'Expired', expiredAt: now}},
+        {session}
+      );
+
+      // Serialize tenant quota admissions on companySettings
+      await db.collection('companySettings').updateOne(
+        {tenantId: identity.tenantId},
+        {$inc: {pendingUploadReservationSeq: 1}},
+        {session, upsert: true}
+      );
+
+      // Bound active pending upload quotas to prevent signature/storage flooding
+      const activeTenantPending = await db.collection('pendingUploads').countDocuments({
+        tenantId: identity.tenantId,
+        status: 'Pending',
+        expiresAt: {$gt: now},
+      }, {session});
+
+      if (activeTenantPending >= 20) {
+        throw new AppError(429, 'Too many pending uploads for this company. Please complete or wait for existing uploads to expire.');
+      }
+
+      const activeUserPending = await db.collection('pendingUploads').countDocuments({
+        tenantId: identity.tenantId,
+        userId: identity.userId,
+        status: 'Pending',
+        expiresAt: {$gt: now},
+      }, {session});
+
+      if (activeUserPending >= 10) {
+        throw new AppError(429, 'Too many pending uploads for your user account. Please complete or wait for existing uploads to expire.');
+      }
+
+      await db.collection<PendingUploadDocument>('pendingUploads').insertOne(pendingDoc, {session});
+    });
+  } finally {
+    await session.endSession();
+  }
 
   return {
     directUploadAvailable: true,

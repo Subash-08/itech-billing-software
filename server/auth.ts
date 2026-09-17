@@ -34,6 +34,7 @@ export async function verifyLoginPassword(identity: Identity, password: string):
 }
 
 export async function assertStorageRateLimit(identity: Identity) {
+  if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL && process.env.DISABLE_AUTH_RATE_LIMIT === 'true') return;
   const db = await database();
   const bucket = Math.floor(Date.now() / 900000); // 15 min window
   const attempt = await db.collection<any>('rateLimits').findOneAndUpdate(
@@ -47,6 +48,7 @@ export async function assertStorageRateLimit(identity: Identity) {
 }
 
 export async function assertPrepareRateLimit(identity: Identity) {
+  if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL && process.env.DISABLE_AUTH_RATE_LIMIT === 'true') return;
   const db = await database();
   const bucket = Math.floor(Date.now() / 60000); // 1 min window
   const attempt = await db.collection<any>('rateLimits').findOneAndUpdate(
@@ -65,4 +67,4 @@ export async function profile(){const identity=await requireIdentity(),db=await 
 export async function unlockProfit(value:unknown){const identity=await requireIdentity();const input=z.object({password:z.string().min(1).max(128)}).strict().parse(value);const db=await database(),bucket=Math.floor(Date.now()/900000);const attempt=await db.collection<any>('rateLimits').findOneAndUpdate({_id:digest('profit:'+identity.userId)+':'+bucket},{$inc:{count:1},$setOnInsert:{expiresAt:new Date((bucket+2)*900000)}},{upsert:true,returnDocument:'after'});if(!attempt||attempt.count>5)throw new AppError(429,'Too many attempts. Try again in 15 minutes.');const user=await db.collection<any>('authUsers').findOne({_id:authObjectId(identity.userId),tenantId:identity.tenantId});if(!user?.profitPasswordHash||!await verifyPassword(input.password,user.profitPasswordHash))throw new AppError(403,'Profit password is incorrect.');const until=new Date(Date.now()+600000);await db.collection<any>('authSessions').updateOne({_id:authObjectId(identity.sessionId)},{$set:{profitUntil:until}});return {unlockedUntil:until.toISOString()};}
 export async function requireProfit(){const identity=await requireIdentity();if(!identity.profitUntil||identity.profitUntil<=new Date())throw new AppError(403,'Unlock profit access first.');return identity;}
 export async function relockProfit(){const identity=await requireIdentity();const db=await database();await db.collection<any>('authSessions').updateOne({_id:authObjectId(identity.sessionId)},{$unset:{profitUntil:''}});return {success:true,profitUnlocked:false};}
-export async function endpoint(action:()=>Promise<unknown>){try{return Response.json(await action(),{headers:{'Cache-Control':'no-store'}});}catch(e:any){if(e instanceof z.ZodError)return Response.json({error:e.issues?.[0]?.message||'Please check the form fields.'},{status:400});if(e && typeof e.status === 'number'){return Response.json({error:e.message},{status:e.status,headers:{'Cache-Control':'no-store'}});}console.error('[API_ENDPOINT_ERROR]', e);const error=e instanceof AppError?e:new AppError(503,e?.message||'The backend is unavailable. Check database configuration.');return Response.json({error:error.message},{status:error.status,headers:{'Cache-Control':'no-store'}});}}
+export async function endpoint(action:()=>Promise<unknown>){try{return Response.json(await action(),{headers:{'Cache-Control':'no-store'}});}catch(e:any){if(e instanceof z.ZodError){const issue=e.issues[0];const field=issue?.path.map(String).join('.');return Response.json({error:issue ? `${field ? field + ': ' : ''}${issue.message}` : 'Please check the form fields.'},{status:400,headers:{'Cache-Control':'no-store'}});}if(e && typeof e.status === 'number'){return Response.json({error:e.message},{status:e.status,headers:{'Cache-Control':'no-store'}});}console.error('[API_ENDPOINT_ERROR]', e);const error=e instanceof AppError?e:new AppError(503,e?.message||'The backend is unavailable. Check database configuration.');return Response.json({error:error.message},{status:error.status,headers:{'Cache-Control':'no-store'}});}}

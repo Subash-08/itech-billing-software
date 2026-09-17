@@ -246,7 +246,7 @@ async function buildSaleLines(
         if (!svc) throw new AppError(404, `Line ${idx + 1}: Service not found or archived.`);
         serviceSnap = {name: svc.name, sac: svc.sac || l.sac};
       }
-      result.push({...base, lineType: 'Service', serviceId: l.serviceId, serviceSnapshot: serviceSnap, serviceJobId: l.serviceJobId, sac: l.sac, warrantyMonths: l.warrantyMonths ?? 0});
+      result.push({...base, lineType: 'Service', ...(l.serviceId ? {serviceId: l.serviceId} : {}), serviceSnapshot: serviceSnap, ...(l.serviceJobId ? {serviceJobId: l.serviceJobId} : {}), sac: l.sac, warrantyMonths: l.warrantyMonths ?? 0});
     } else if (l.lineType === 'ConsumedPart') {
       const product = await col(db, 'products').findOne({_id: l.productId, tenantId, status: 'Active'}, sessionOpt(session));
       if (!product) throw new AppError(404, `Line ${idx + 1}: Consumed part product not found or archived.`);

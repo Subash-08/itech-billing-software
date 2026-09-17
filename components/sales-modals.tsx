@@ -11,21 +11,28 @@ export function IssueInvoiceModal({
   onClose,
   draft,
   onIssued,
+  initialPayments = [],
 }: {
   isOpen: boolean;
   onClose: () => void;
   draft: {id: string; version: number; totalPaise: number; customerId: string};
   onIssued?: (invoice: any) => void;
+  initialPayments?: Array<{account: string; method: string; amount: string}>;
 }) {
   const {issueInvoiceApi, notify} = useStore();
   const [busy, setBusy] = useState(false);
   const [applyAdvance, setApplyAdvance] = useState(0);
-  const [recordExcess, setRecordExcess] = useState(true);
+  const [recordExcess, setRecordExcess] = useState(false);
   const [creditLimitOverride, setCreditLimitOverride] = useState(false);
   const [creditLimitReason, setCreditLimitReason] = useState('');
   const [paymentRows, setPaymentRows] = useState<
     Array<{account: 'Cash' | 'Bank'; method: 'Cash' | 'UPI' | 'BankTransfer' | 'Card'; amount: string; reference: string}>
-  >([{account: 'Cash', method: 'Cash', amount: '', reference: ''}]);
+  >(() => initialPayments.map(p => ({
+    account: p.method === 'Cash' ? 'Cash' : 'Bank',
+    method: (p.method === 'Cash' ? 'Cash' : p.method === 'Card' ? 'Card' : p.method === 'UPI' || p.method === 'GPay' ? 'UPI' : 'BankTransfer'),
+    amount: p.amount, reference: '',
+  })));
+  const issueAttempt = useRef<{fingerprint: string; key: string} | null>(null);
 
   if (!isOpen) return null;
 
@@ -64,10 +71,11 @@ export function IssueInvoiceModal({
 
   const handleIssue = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (busy) return;
     for (const r of paymentRows) {
       const amt = parseFloat(r.amount) || 0;
-      if (amt < 0) {
-        notify('Payment amounts must be positive.');
+      if (!/^\d+(?:\.\d{1,2})?$/.test(r.amount.trim()) || !Number.isFinite(amt) || Math.round(amt * 100) < 1) {
+        notify('Enter a positive payment amount with up to two decimals, or remove the unused row for a credit invoice.');
         return;
       }
       if (amt > 0) {
@@ -82,7 +90,7 @@ export function IssueInvoiceModal({
       }
     }
 
-    if (advanceTotal > totalRupees) {
+    if (!Number.isFinite(applyAdvance) || applyAdvance < 0 || advanceTotal > totalRupees) {
       notify('Customer advance applied cannot exceed the invoice total.');
       return;
     }
@@ -96,6 +104,10 @@ export function IssueInvoiceModal({
         reference: r.reference.trim(),
       }));
 
+    const fingerprint = JSON.stringify({draft, components, advanceTotal, recordExcess, creditLimitOverride, creditLimitReason});
+    if (!issueAttempt.current || issueAttempt.current.fingerprint !== fingerprint) {
+      issueAttempt.current = {fingerprint, key: `inv-issue-${crypto.randomUUID()}`};
+    }
     setBusy(true);
     try {
       const res = await issueInvoiceApi(draft.id, {
@@ -106,7 +118,7 @@ export function IssueInvoiceModal({
         recordExcessAsCustomerAdvance: recordExcess,
         creditLimitOverride,
         creditLimitOverrideReason: creditLimitReason.trim(),
-        idempotencyKey: `inv-issue-${uid('IDEM')}`,
+        idempotencyKey: issueAttempt.current.key,
       });
 
       if (res.success) {

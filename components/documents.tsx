@@ -114,7 +114,7 @@ export function DocumentComposer({
   const existing = state.purchases.find((p) => p.id === (existingId || params.get('edit')));
   const job = state.jobs.find((j) => j.id === (params.get('job') || source?.jobId));
   const enquiry = state.enquiries.find((e) => e.id === params.get('enquiry'));
-  const service = !!job || source?.category === 'Service' || params.get('kind') === 'Service';
+  const initialService = !!params.get('job') || !!job || source?.category === 'Service' || params.get('kind') === 'Service';
 
   const [loadedVersion, setLoadedVersion] = useState<number | undefined>((existing as any)?.version);
   const [loadedBillStatus, setLoadedBillStatus] = useState<string | undefined>((existing as any)?.billStatus);
@@ -169,7 +169,8 @@ export function DocumentComposer({
   );
   const [inclusive, setInclusive] = useState(existing?.inclusive ?? source?.inclusive ?? true);
   const [notes, setNotes] = useState(existing?.notes || source?.notes || '');
-  const [category, setCategory] = useState<Bill['category']>(service ? 'Service' : source?.category || 'New goods');
+  const [category, setCategory] = useState<Bill['category']>(initialService ? 'Service' : source?.category || 'New goods');
+  const service = !purchase && category === 'Service';
   const [ref, setRef] = useState(existing?.reference || '');
   const [product, setProduct] = useState('');
   const [search, setSearch] = useState('');
@@ -525,6 +526,7 @@ export function DocumentComposer({
       {
         ...blankLine(),
         productId: p.id,
+        lineType: 'Product',
         name: p.name,
         qty: 1,
         rate: purchase
@@ -779,13 +781,25 @@ export function DocumentComposer({
   }
 
   async function handleSalesAction(action: 'save_draft' | 'issue') {
+    if (busy) return;
+    const wrongLine = lines.findIndex(l => category !== 'Service'
+      ? l.lineType === 'Service' || l.lineType === 'ConsumedPart'
+      : l.lineType === 'Product' || (!l.lineType && !!l.productId));
+    if (wrongLine >= 0) {
+      notify(`Item ${wrongLine + 1}: ${category === 'Service' ? 'Use consumed parts from the service job, or bill this product on a sales invoice.' : 'Choose Service in Business category for service-only billing. If product rows are present, bill the services separately; consumed parts must come from their service job.'}`);
+      return;
+    }
+    if (action === 'issue' && payRows.some(p => !/^\d+(?:\.\d{1,2})?$/.test(p.amount.trim()) || Number(p.amount) <= 0)) {
+      notify('Enter a positive payment amount with up to two decimal places, or remove the unused payment row for credit.');
+      return;
+    }
     if (!validateBasic()) return;
 
     if (!isLive) {
       return saveSales();
     }
 
-    if (!quotation) {
+    if (!quotation && action === 'issue') {
       const missing = lines.findIndex(l => l.lineType !== 'Service' && l.lineType !== 'Charge' && l.lineType !== 'ConsumedPart' && l.productId &&
         (l.stockAllocations ?? []).reduce((n, a) => n + a.quantity, 0) !== l.qty);
       if (missing >= 0) {
@@ -844,8 +858,8 @@ export function DocumentComposer({
       const chosenTemplateId = templateRecord.id;
 
       const linesPayload = lines.map((l: Line) => {
-        const isSvc = l.lineType === 'Service';
-        const isChg = l.lineType === 'Charge';
+        const isSvc = l.lineType === 'Service' || (!l.lineType && !l.productId && category === 'Service');
+        const isChg = l.lineType === 'Charge' || (!l.lineType && !l.productId && category !== 'Service');
         const isConsumed = l.lineType === 'ConsumedPart';
         const treatment = (l.taxTreatment || 'Taxable') as 'Taxable' | 'Exempt' | 'NonGST';
         const isZeroTax = treatment === 'Exempt' || treatment === 'NonGST';
@@ -1218,14 +1232,28 @@ export function DocumentComposer({
                 />
               </Field>
             ) : (
-              !service && (
-                <Field label="Business category">
-                  <select value={category} onChange={(e) => setCategory(e.target.value as Bill['category'])}>
-                    <option>New goods</option>
-                    <option>Used goods</option>
-                  </select>
-                </Field>
-              )
+              <Field label="Business category">
+                <select value={category} disabled={Boolean(params.get('job'))} onChange={(e) => {
+                  const next = e.target.value as Bill['category'];
+                  const incompatible = lines.some(l => next === 'Service'
+                    ? l.lineType === 'Product' || (!l.lineType && Boolean(l.productId))
+                    : l.lineType === 'Service' || l.lineType === 'ConsumedPart');
+                  if (incompatible) {
+                    notify(next === 'Service'
+                      ? 'Remove product-sale rows before switching to Service. Bill physical goods separately; consumed parts come from a service job.'
+                      : 'Remove service and consumed-part rows before switching to goods. Keep repair work on a separate service invoice.');
+                    return;
+                  }
+                  setCategory(next);
+                  setProduct('');
+                  setServiceId('');
+                }}>
+                  <option>New goods</option>
+                  <option>Used goods</option>
+                  <option>Service</option>
+                </select>
+                <span className="muted">Service bills repair work separately. Select a service from the catalogue or add a service line. Job-linked parts are billed from Service jobs.</span>
+              </Field>
             )}
 
             <Field label="GST supply type">
@@ -1390,6 +1418,8 @@ export function DocumentComposer({
                       ...ls,
                       {
                         ...blankLine(),
+                        lineType: 'Service',
+                        serviceId: x.id,
                         name: x.name,
                         rate: inclusive ? x.rate : x.rate / (1 + x.tax / 100),
                         tax: x.tax,
@@ -1635,9 +1665,9 @@ export function DocumentComposer({
               Add other charge
             </Btn>
             {!purchase && (
-              <Btn secondary onClick={() => setLines((ls) => [...ls, blankLine()])}>
+              <Btn secondary onClick={() => setLines((ls) => [...ls, {...blankLine(), lineType: category === 'Service' ? 'Service' : 'Charge'}])}>
                 <Plus size={14} />
-                Add {service ? 'service' : 'custom'} line
+                Add {category === 'Service' ? 'service' : 'custom charge'} line
               </Btn>
             )}
             <span className="muted">Set a line’s GST to 0% for an illustrative non-GST item.</span>
@@ -2091,6 +2121,7 @@ export function DocumentComposer({
           isOpen={issueModalOpen}
           onClose={() => setIssueModalOpen(false)}
           draft={issueTargetDraft}
+          initialPayments={payRows}
           onIssued={(inv) => {
             const invoiceId = inv?._id || inv?.id || issueTargetDraft.id;
             router.push('/sales/' + invoiceId);

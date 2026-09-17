@@ -183,18 +183,18 @@ type Store = {
 const Context = createContext<Store | null>(null);
 
 export function StoreProvider({children}: {children: ReactNode}) {
-  const [state, setState] = useState<State>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem('itech_demo_state_v1');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (parsed && Array.isArray(parsed.purchases)) return parsed;
-        }
-      } catch {}
-    }
-    return structuredClone(seed);
-  });
+  const [state, setState] = useState<State>(() => structuredClone(seed));
+  const [clientReady, setClientReady] = useState(false);
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('itech_demo_state_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && Array.isArray(parsed.purchases)) setState(parsed);
+      }
+    } catch {}
+    setClientReady(true);
+  }, []);
   const [role, setRole] = useState('Staff');
   const [toast, setToast] = useState('');
   const [isLive, setIsLive] = useState(false);
@@ -316,12 +316,12 @@ export function StoreProvider({children}: {children: ReactNode}) {
   }, [refreshMasterData]);
 
   useEffect(() => {
-    if (!isLive && typeof window !== 'undefined') {
+    if (clientReady && !isLoading && !isLive && typeof window !== 'undefined') {
       try {
         localStorage.setItem('itech_demo_state_v1', JSON.stringify(state));
       } catch {}
     }
-  }, [state, isLive]);
+  }, [state, isLive, clientReady, isLoading]);
 
   function resetDemoData() {
     if (typeof window !== 'undefined') {
@@ -2488,7 +2488,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
         fetchCustomerProfileApi,
       }}
     >
-      {children}
+      {clientReady ? children : <div role="status" aria-live="polite" className="body-pad">Loading workspace…</div>}
       {toast && (
         <div className="toast" role="status">
           {toast}

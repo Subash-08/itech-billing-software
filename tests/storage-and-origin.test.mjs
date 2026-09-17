@@ -323,6 +323,7 @@ try {
   // Now reset to platform storage
   const resetRes = await api('DELETE', '/api/company/storage', {
     accountPassword: tenantA.password,
+    expectedVersion: statusRes2.body.storageSettingsVersion ?? 0,
   }, tenantA.cookie);
   assert.strictEqual(resetRes.status, 200);
 
