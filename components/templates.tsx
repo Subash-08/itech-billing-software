@@ -87,6 +87,9 @@ export function TemplateInvoice({
               </div>
               {f.shopAddress && <p>{s.address}</p>}
               {f.shopGst && <p>GSTIN/UIN: {s.gst}</p>}
+              {(s.state || s.stateCode || s.postalCode) && (
+                <p>State: {s.state || '—'}{s.stateCode ? `, Code: ${s.stateCode}` : ''}{s.postalCode ? ` · PIN: ${s.postalCode}` : ''}</p>
+              )}
               {f.shopPhone && <p>Contact: {s.phone}</p>}
               {f.shopEmail && <p>Email: {s.email}</p>}
             </div>
@@ -403,7 +406,23 @@ export default function Templates() {
   const [saving, setSaving] = useState(false);
   const [logoBusy, setLogoBusy] = useState(false);
 
-  const sample = state.bills.find((b) => b.id === sampleId) || state.bills[0];
+  const previewOnlySample: Bill = {
+    id: 'PREVIEW-INV-0001', customerId: 'PREVIEW-CUSTOMER', date: '2026-09-18', due: '2026-09-18',
+    kind: 'Sale', category: 'New goods', status: 'Preview', inclusive: true, taxMode: 'Intra-state',
+    placeOfSupply: 'Tamil Nadu', notes: 'Thank you for your business.', profit: null, previewPaid: 10000,
+    orderRef: 'PO-1042', deliveryNote: 'DN-1042', dispatch: 'By hand',
+    customerSnapshot: {
+      id: 'PREVIEW-CUSTOMER', name: 'Anand Computers', phone: '98765 43210', email: 'accounts@example.com',
+      address: '42, Omalur Main Road, Salem, Tamil Nadu 636009', gst: '33ABCDE1234F1Z5', type: 'Business', notes: '',
+    },
+    shipTo: {name: 'Anand Computers — Warehouse', address: '12, Five Roads, Salem', phone: '98765 43210', state: 'Tamil Nadu', postalCode: '636004'},
+    lines: [
+      {productId: 'PREVIEW-LAPTOP', name: 'Dell Latitude 5420 Laptop', qty: 1, rate: 55000, discount: 0, tax: 18, taxTreatment: 'Taxable', serials: ['DL5420-SN-1001'], hsn: '84713010', warranty: 12, lineType: 'Product'},
+      {productId: 'PREVIEW-RAM', name: 'Crucial 8GB DDR4 RAM', qty: 2, rate: 4000, discount: 0, tax: 18, taxTreatment: 'Taxable', serials: [], hsn: '84733099', warranty: 36, lineType: 'Product'},
+      {productId: '', name: 'PC assembly and testing', qty: 1, rate: 1000, discount: 0, tax: 18, taxTreatment: 'Taxable', serials: [], hsn: '998713', warranty: 1, lineType: 'Charge'},
+    ],
+  };
+  const sample = state.bills.find((b) => b.id === sampleId) || state.bills[0] || previewOnlySample;
 
   async function save() {
     if (!editing?.name.trim()) {
@@ -710,6 +729,7 @@ export default function Templates() {
                 value={sampleId}
                 onChange={(e) => setSampleId(e.target.value)}
               >
+                {state.bills.length === 0 && <option value="">Preview-only sample invoice</option>}
                 {state.bills.map((b) => (
                   <option key={b.id} value={b.id}>
                     {b.id}
@@ -717,7 +737,10 @@ export default function Templates() {
                 ))}
               </select>
             </div>
-            {sample && <TemplateInvoice bill={{...sample, shopSnapshot: state.settings}} template={editing} />}
+            {state.bills.length === 0 && (
+              <div className="template-preview-note">Preview only · no invoice or customer record will be saved</div>
+            )}
+            <TemplateInvoice bill={{...sample, shopSnapshot: state.settings}} template={editing} />
           </div>
         </div>
       ) : state.templates.length === 0 ? (

@@ -186,7 +186,7 @@ function emptyLiveState(): State {
     if (Array.isArray(clean[key])) (clean as any)[key] = [];
   }
   clean.defaultTemplateId = '';
-  clean.settings = {name: '', phone: '', email: '', address: '', gst: '', bank: '', account: '', ifsc: '', declaration: '', logo: ''};
+  clean.settings = {name: '', phone: '', email: '', address: '', gst: '', state: '', stateCode: '', postalCode: '', bank: '', account: '', ifsc: '', declaration: '', logo: ''};
   return clean;
 }
 
@@ -274,6 +274,9 @@ export function StoreProvider({children}: {children: ReactNode}) {
           email: boot.company.email || '',
           address: boot.company.address || '',
           gst: boot.company.gst || '',
+          state: boot.company.state || '',
+          stateCode: boot.company.stateCode || '',
+          postalCode: boot.company.postalCode || '',
           bank: boot.company.bank || '',
           account: boot.company.account || '',
           ifsc: boot.company.ifsc || '',
@@ -392,6 +395,9 @@ export function StoreProvider({children}: {children: ReactNode}) {
         email: f.email || '',
         address: f.address || '',
         gst: f.gst || '',
+        state: f.state || '',
+        stateCode: f.stateCode || '',
+        postalCode: f.postalCode || '',
         bank: f.bank || '',
         account: f.account || '',
         ifsc: f.ifsc || '',

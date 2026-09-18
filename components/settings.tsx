@@ -14,6 +14,7 @@ import {
   FileSpreadsheet,
   Plus,
   Trash2,
+  Loader2,
   Receipt,
   Truck,
   Package,
@@ -87,6 +88,7 @@ export default function Settings() {
   const [draftVersion, setDraftVersion] = useState<number>(openingStatus?.draftVersion || 0);
   const [savingDraft, setSavingDraft] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
   const [openingCustomers, setOpeningCustomers] = useState(state.customers);
   const [openingSuppliers, setOpeningSuppliers] = useState(state.suppliers);
   const [openingProducts, setOpeningProducts] = useState(state.products);
@@ -319,8 +321,14 @@ export default function Settings() {
 
   async function handleSettingsSubmit(e: React.FormEvent) {
     e.preventDefault();
-    await saveSettingsApi(f, logoFile || undefined);
-    setLogoFile(null);
+    if (savingSettings) return;
+    setSavingSettings(true);
+    try {
+      const saved = await saveSettingsApi(f, logoFile || undefined);
+      if (saved) setLogoFile(null);
+    } finally {
+      setSavingSettings(false);
+    }
   }
 
   // Reconciliation computations
@@ -440,9 +448,9 @@ export default function Settings() {
           <Card
             title="Shop and invoice details"
             actions={
-              <Btn type="submit">
-                <Save size={16} />
-                Save changes
+              <Btn type="submit" disabled={savingSettings}>
+                {savingSettings ? <Loader2 className="button-spinner" size={16} /> : <Save size={16} />}
+                {savingSettings ? 'Saving changes…' : 'Save changes'}
               </Btn>
             }
           >
@@ -453,6 +461,9 @@ export default function Settings() {
                 email: 'Email',
                 address: 'Shop address',
                 gst: 'GSTIN',
+                state: 'State name',
+                stateCode: 'GST state code',
+                postalCode: 'Postal code',
                 bank: 'Bank name / branch',
                 account: 'Bank account number',
                 ifsc: 'IFSC',
