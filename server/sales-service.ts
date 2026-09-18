@@ -22,6 +22,7 @@ import {
   UpdateQuotationSchema,
   CancelQuotationSchema,
   ReopenQuotationSchema,
+  ShareQuotationSchema,
   CreateInvoiceDraftSchema,
   IssueInvoiceSchema,
   UpdateInvoiceDraftSchema,
@@ -433,7 +434,30 @@ export async function updateQuotation(db: Db, identity: Identity, id: string, ra
   });
 }
 
-// 2b. Cancel Quotation
+// 2b. Mark a reviewed quotation as shared with the customer.
+export async function shareQuotation(db: Db, identity: Identity, id: string, raw: z.infer<typeof ShareQuotationSchema>) {
+  const input = ShareQuotationSchema.parse(raw);
+  return executeIdempotentTransaction(db, identity, input.idempotencyKey, 'quotation.share', id, input, async session => {
+    const before = await col<QuotationDocument>(db, 'quotations').findOne({_id: id, tenantId: identity.tenantId}, {session});
+    if (!before) throw new AppError(404, 'Quotation not found.');
+    if (before.convertedToInvoiceId || before.status === 'Converted') throw new AppError(409, 'Converted quotation cannot be marked as shared.');
+    if (before.status !== 'Draft' || before.version !== input.expectedVersion) {
+      throw new AppError(409, 'Only the current draft quotation can be marked as shared. Reload and try again.');
+    }
+    const now = new Date();
+    const result = await col<QuotationDocument>(db, 'quotations').updateOne(
+      {_id: id, tenantId: identity.tenantId, status: 'Draft', version: input.expectedVersion},
+      {$set: {status: 'Sent', sharedAt: now, sharedBy: identity.userId, sharedChannel: input.channel, updatedAt: now, updatedBy: identity.userId}, $inc: {version: 1}},
+      {session},
+    );
+    if (result.matchedCount !== 1) throw new AppError(409, 'Quotation changed while it was being marked as shared. Reload and try again.');
+    await recordAudit(db, {identity, action: 'quotation.share', entityType: 'quotation', entityId: id,
+      detail: `Marked quotation ${before.quotationNumber} as shared via ${input.channel}`}, session);
+    return {quotationId: id, status: 'Sent', version: before.version + 1, sharedAt: now, sharedChannel: input.channel};
+  });
+}
+
+// 2c. Cancel Quotation
 export async function cancelQuotation(db: Db, identity: Identity, id: string, raw: z.infer<typeof CancelQuotationSchema>) {
   const input = CancelQuotationSchema.parse(raw);
   return executeIdempotentTransaction(db, identity, input.idempotencyKey, 'quotation.cancel', id, input, async session => {
@@ -458,7 +482,7 @@ export async function cancelQuotation(db: Db, identity: Identity, id: string, ra
   });
 }
 
-// 2c. Reopen Quotation
+// 2d. Reopen Quotation
 export async function reopenQuotation(db: Db, identity: Identity, id: string, raw: z.infer<typeof ReopenQuotationSchema>) {
   const input = ReopenQuotationSchema.parse(raw);
   return executeIdempotentTransaction(db, identity, input.idempotencyKey, 'quotation.reopen', id, input, async session => {
@@ -911,6 +935,10 @@ export async function getSalesSummary(
           sentCount: [{$match: {status: 'Sent'}}, {$count: 'count'}],
           convertedCount: [{$match: {status: 'Converted'}}, {$count: 'count'}],
           expiredCount: [{$match: {status: 'Expired'}}, {$count: 'count'}],
+          pipelineTotals: [
+            {$match: {status: {$in: ['Draft', 'Sent', 'Accepted']}}},
+            {$group: {_id: null, totalQuotedPaise: {$sum: '$totalPaise'}}},
+          ],
         },
       },
     ]).next(),
@@ -939,6 +967,7 @@ export async function getSalesSummary(
       sentCount: quotationsFacet?.sentCount?.[0]?.count ?? 0,
       convertedCount: quotationsFacet?.convertedCount?.[0]?.count ?? 0,
       expiredCount: quotationsFacet?.expiredCount?.[0]?.count ?? 0,
+      totalQuotedPaise: quotationsFacet?.pipelineTotals?.[0]?.totalQuotedPaise ?? 0,
     },
     totalCustomerAdvanceAvailablePaise: advancesRes?.totalRemainingPaise ?? 0,
   };

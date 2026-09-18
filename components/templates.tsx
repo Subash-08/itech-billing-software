@@ -1,6 +1,6 @@
 'use client';
 import {amountWords} from '@/lib/amount-words';
-import {useState} from 'react';
+import {useRef, useState} from 'react';
 import Link from 'next/link';
 import {Copy, Pencil, Printer, ArrowUp, ArrowDown, Check, FileText, Plus} from 'lucide-react';
 import {InvoiceTemplate, templateFields, extensionSeed} from '@/lib/extensions';
@@ -317,16 +317,24 @@ export function TemplateInvoice({
 export function PrintDialog({bills, onClose}: {bills: Bill[]; onClose: () => void}) {
   const {state, notify} = useStore();
   const [busy, setBusy] = useState(false);
+  const previewRefs = useRef(new Map<string, HTMLDivElement>());
 
   async function download() {
     setBusy(true);
     try {
       const e = await import('@/lib/exports');
+      if (!template) throw new Error('Select an active print template.');
+      const entries = bills.map((bill) => {
+        const wrapper = previewRefs.current.get(bill.id);
+        const element = wrapper?.querySelector<HTMLElement>('.invoice-paper');
+        if (!element) throw new Error(`Preview for ${bill.id} is not ready. Wait for it to appear and try again.`);
+        return {name: bill.id, element, template};
+      });
       e.downloadBytes(
         bills.length === 1 ? bills[0].id + '.pdf' : 'invoices.zip',
         bills.length === 1
-          ? await e.invoicePdfBytes(state, bills[0], templateId)
-          : await e.invoiceZipBytes(state, bills, templateId),
+          ? await e.invoicePreviewPdfBytes(entries[0].element, template)
+          : await e.invoicePreviewZipBytes(entries),
         bills.length === 1 ? 'application/pdf' : 'application/zip'
       );
     } catch (error) {
@@ -360,7 +368,15 @@ export function PrintDialog({bills, onClose}: {bills: Bill[]; onClose: () => voi
       </div>
       <div className="batch-print">
         {bills.map((b) => (
-          <TemplateInvoice key={b.id} bill={b} templateId={templateId} />
+          <div
+            key={b.id}
+            ref={(node) => {
+              if (node) previewRefs.current.set(b.id, node);
+              else previewRefs.current.delete(b.id);
+            }}
+          >
+            <TemplateInvoice bill={b} templateId={templateId} />
+          </div>
         ))}
       </div>
       <div className="form-actions">

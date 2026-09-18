@@ -282,6 +282,16 @@ export const FinalizeOpeningOptionsSchema = z.object({
 
 export type FinalizeOpeningOptions = z.infer<typeof FinalizeOpeningOptionsSchema>;
 
+export const CorrectOpeningCutoffSchema = z.object({
+  expectedCutoffDate: CalendarDateSchema,
+  newCutoffDate: CalendarDateSchema,
+  confirmation: z.literal(true, {
+    error: 'Confirm that no operational transactions have been recorded before correcting the cutoff.',
+  }),
+}).strict();
+
+export type CorrectOpeningCutoffInput = z.infer<typeof CorrectOpeningCutoffSchema>;
+
 export const PaginationQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),

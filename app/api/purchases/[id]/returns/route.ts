@@ -17,7 +17,7 @@ export async function GET(request: Request, context: {params: Promise<{id: strin
     const skip = (page - 1) * limit;
 
     const filter = {tenantId: identity.tenantId, purchaseId: id};
-    const [returns, total] = await Promise.all([
+    const [returns, total, purchase] = await Promise.all([
       col<SupplierReturnDocument>(db, 'supplierReturns')
         .find(filter)
         .sort({date: -1, createdAt: -1})
@@ -25,13 +25,16 @@ export async function GET(request: Request, context: {params: Promise<{id: strin
         .limit(limit)
         .toArray(),
       col(db, 'supplierReturns').countDocuments(filter),
+      col(db, 'purchases').findOne({_id: id, tenantId: identity.tenantId}, {projection: {lines: 1}}),
     ]);
 
     const enriched = await Promise.all(
       returns.map(async r => {
         const check = await canReverseSupplierReturn(db, identity.tenantId, r);
+        const line = purchase?.lines?.find((item: any) => item.lineId === r.purchaseLineId);
         return {
           ...r,
+          productName: line?.productSnapshot?.name || line?.description || r.productId,
           canReverse: check.canReverse,
           reverseBlockReason: check.reverseBlockReason,
         };

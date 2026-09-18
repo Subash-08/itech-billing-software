@@ -9,7 +9,9 @@ import {uploadFile} from '@/lib/upload';
 import {useStore} from './store';
 import {PageHead, Card, Btn, Field, Modal, SearchBox, Badge, Empty} from './ui';
 import {PaymentDialog} from './payments';
+import {CustomerReceiptModal} from './sales-modals';
 import ServicePhotos from './service-photos';
+import {mapInvoiceFromApi} from '@/lib/mappers';
 
 export const jobStatuses = [
   'Received',
@@ -677,6 +679,7 @@ export default function Services({id}: {id?: string}) {
 
   // Live state
   const [liveJob, setLiveJob] = useState<any | null>(null);
+  const [liveInvoice, setLiveInvoice] = useState<any | null>(null);
   const [liveList, setLiveList] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(isLive);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -727,7 +730,32 @@ export default function Services({id}: {id?: string}) {
     ? (isLive ? (liveJob && (liveJob._id === id || liveJob.id === id || liveJob.jobNumber === id) ? liveJob : null) : state.jobs.find(x => x.id === id || (x as any)._id === id))
     : null;
   const customer = j?.customerSnapshot || (j ? state.customers.find(c => c.id === j.customerId) : null);
-  const invoice = j ? state.bills.find(b => b.jobId === (j._id || j.id) && b.kind === 'Service') : null;
+  const invoice = isLive
+    ? liveInvoice
+    : (j ? state.bills.find(b => b.jobId === (j._id || j.id) && b.kind === 'Service') : null);
+
+  const reloadLiveInvoice = useCallback(async (invoiceId: string) => {
+    const response = await fetch(`/api/sales/invoices/${encodeURIComponent(invoiceId)}`, {cache: 'no-store'});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to load the linked service invoice.');
+    setLiveInvoice(mapInvoiceFromApi(data.invoice || data));
+  }, []);
+
+  useEffect(() => {
+    if (!isLive || !liveJob?.invoiceId) {
+      setLiveInvoice(null);
+      return;
+    }
+    let active = true;
+    fetch(`/api/sales/invoices/${encodeURIComponent(liveJob.invoiceId)}`, {cache: 'no-store'})
+      .then(async response => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Unable to load the linked service invoice.');
+        if (active) setLiveInvoice(mapInvoiceFromApi(data.invoice || data));
+      })
+      .catch(error => { if (active) setLoadError(error instanceof Error ? error.message : 'Unable to load the linked service invoice.'); });
+    return () => { active = false; };
+  }, [isLive, liveJob?.invoiceId]);
 
   // Filter list for table view
   const rawList = isLive ? liveList : state.jobs;
@@ -1189,7 +1217,17 @@ export default function Services({id}: {id?: string}) {
         />
       )}
 
-      {payment && invoice && <PaymentDialog record={invoice} onClose={() => setPayment(false)} />}
+      {payment && invoice && (isLive ? (
+        <CustomerReceiptModal
+          isOpen={payment}
+          invoice={{id: invoice.id, customerId: invoice.customerId, dueAmount: (invoice as any).dueAmount || 0}}
+          onClose={() => setPayment(false)}
+          onSuccess={() => {
+            setPayment(false);
+            if (liveJob?.invoiceId) void reloadLiveInvoice(liveJob.invoiceId);
+          }}
+        />
+      ) : <PaymentDialog record={invoice} onClose={() => setPayment(false)} />)}
     </>
   );
 }

@@ -33,6 +33,46 @@ export async function invoicePdfBytes(s:State,b:Bill,templateId?:string){
  if(f.amountWords)table(null,[['Amount in words',amountWords(roundedTotal(b))]]);
  if(f.taxSummary){const groups=new Map<string,{hsn:string;rate:number;base:number;cgst:number;sgst:number;igst:number;treatment?:string}>();b.lines.forEach(l=>{const treatment=l.taxTreatment||'Taxable';const key=treatment+'-'+l.hsn+'-'+l.tax;const v=lineTotal(l,b.inclusive,b.taxMode);const row=groups.get(key)||{hsn:l.hsn,rate:(treatment==='Exempt'||treatment==='NonGST')?0:l.tax,base:0,cgst:0,sgst:0,igst:0,treatment};row.base+=v.base;row.cgst+=v.cgst;row.sgst+=v.sgst;row.igst+=v.igst;groups.set(key,row);});table(inter?['HSN / SAC','Rate','Taxable','IGST']:['HSN / SAC','GST rate','Taxable','CGST','SGST'],[...groups.values()].map(x=>[x.hsn,x.treatment==='Exempt'?'Exempt':x.treatment==='NonGST'?'Non-GST':x.rate+'%',cash(x.base),...(inter?[cash(x.igst)]:[cash(x.cgst),cash(x.sgst)])]));}
  if(f.notes&&b.notes)table(null,[['Notes',b.notes]]);if(f.declaration)table(null,[['Declaration',company.declaration]]);if(f.bank)table(null,[['Bank details',[company.name,company.bank,company.account,company.ifsc].join('\n')]]);if(f.signatures)table(null,[['Customer seal and signature','For '+company.name+'\n\nAuthorised signatory']]);
- for(let i=1;i<=doc.getNumberOfPages();i++){doc.setPage(i);doc.setFontSize(8);doc.setTextColor(70);doc.text(text((f.footer?t.footer+' / ':'')+'DEMO - not a valid tax invoice'),12,doc.internal.pageSize.getHeight()-12,{maxWidth:width-24});doc.text(`${b.id} / ${i} of ${doc.getNumberOfPages()}`,12,doc.internal.pageSize.getHeight()-7);}return new Uint8Array(doc.output('arraybuffer'));
+ for(let i=1;i<=doc.getNumberOfPages();i++){doc.setPage(i);doc.setFontSize(8);doc.setTextColor(70);if(f.footer&&t.footer)doc.text(text(t.footer),12,doc.internal.pageSize.getHeight()-12,{maxWidth:width-24});doc.text(`${b.id} / ${i} of ${doc.getNumberOfPages()}`,12,doc.internal.pageSize.getHeight()-7);}return new Uint8Array(doc.output('arraybuffer'));
 }
-export async function invoiceZipBytes(s:State,bills:Bill[],templateId?:string){if(!bills.length)throw new Error('Select at least one invoice.');if(bills.length>100)throw new Error('Export up to 100 invoices at a time in this prototype.');const {default:JSZip}=await import('jszip');const zip=new JSZip();for(const b of bills){zip.file(safeFilename(b.id)+'.pdf',await invoicePdfBytes(s,b,templateId));}zip.file('invoice-index.xlsx',await workbookBytes('Invoice archive',['Invoice','Date','Customer','Total','Paid','Due'],bills.map(b=>[b.id,b.date,s.customers.find(c=>c.id===b.customerId)?.name||'',roundedTotal(b),paid(s,b.id),balance(s,b)]),'Selected records / Demo workspace'));return zip.generateAsync({type:'uint8array',compression:'DEFLATE'});}
+export async function invoiceZipBytes(s:State,bills:Bill[],templateId?:string){if(!bills.length)throw new Error('Select at least one invoice.');if(bills.length>100)throw new Error('Export up to 100 invoices at a time.');const {default:JSZip}=await import('jszip');const zip=new JSZip();for(const b of bills){zip.file(safeFilename(b.id)+'.pdf',await invoicePdfBytes(s,b,templateId));}zip.file('invoice-index.xlsx',await workbookBytes('Invoice archive',['Invoice','Date','Customer','Total','Paid','Due'],bills.map(b=>[b.id,b.date,s.customers.find(c=>c.id===b.customerId)?.name||'',roundedTotal(b),paid(s,b.id),balance(s,b)]),'Selected invoice records'));return zip.generateAsync({type:'uint8array',compression:'DEFLATE'});}
+
+async function waitForPreviewAssets(element: HTMLElement) {
+ const images=Array.from(element.querySelectorAll('img'));
+ await Promise.all(images.map(image=>image.complete?Promise.resolve():new Promise<void>(resolve=>{image.addEventListener('load',()=>resolve(),{once:true});image.addEventListener('error',()=>resolve(),{once:true});})));
+ if(document.fonts?.ready)await document.fonts.ready;
+}
+
+/** Render the exact browser invoice preview rather than rebuilding a second PDF layout. */
+export async function invoicePreviewPdfBytes(element:HTMLElement,template:InvoiceTemplate){
+ await waitForPreviewAssets(element);
+ const [{jsPDF},{default:html2canvas}]=await Promise.all([import('jspdf'),import('html2canvas')]);
+ const doc=new jsPDF({orientation:template.orientation,format:template.paper.toLowerCase() as 'a4'|'letter',unit:'pt'});
+ const sourceWidth=Math.max(1,element.scrollWidth);
+ // A bounded high-resolution raster preserves the exact approved browser layout
+ // without jsPDF's HTML reflow, which can enlarge an A4 preview across many pages.
+ const captureScale=Math.min(3,Math.max(2,2400/sourceWidth));
+ const canvas=await html2canvas(element,{
+  scale:captureScale,useCORS:true,allowTaint:false,backgroundColor:'#ffffff',logging:false,
+  width:sourceWidth,height:Math.max(1,element.scrollHeight),windowWidth:sourceWidth,
+  scrollX:0,scrollY:-window.scrollY,
+ });
+ const pageWidth=doc.internal.pageSize.getWidth();
+ const pageHeight=doc.internal.pageSize.getHeight();
+ const margin=12;
+ const availableWidth=pageWidth-margin*2;
+ const availableHeight=pageHeight-margin*2;
+ const ratio=Math.min(availableWidth/canvas.width,availableHeight/canvas.height);
+ const renderWidth=canvas.width*ratio;
+ const renderHeight=canvas.height*ratio;
+ doc.addImage(canvas.toDataURL('image/png'),'PNG',(pageWidth-renderWidth)/2,margin,renderWidth,renderHeight,undefined,'FAST');
+ return new Uint8Array(doc.output('arraybuffer'));
+}
+
+export async function invoicePreviewZipBytes(entries:Array<{name:string;element:HTMLElement;template:InvoiceTemplate}>){
+ if(!entries.length)throw new Error('Select at least one document.');
+ if(entries.length>100)throw new Error('Export up to 100 documents at a time.');
+ const {default:JSZip}=await import('jszip');const zip=new JSZip();
+ for(const entry of entries)zip.file(safeFilename(entry.name)+'.pdf',await invoicePreviewPdfBytes(entry.element,entry.template));
+ return zip.generateAsync({type:'uint8array',compression:'DEFLATE'});
+}

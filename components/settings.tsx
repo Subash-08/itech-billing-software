@@ -79,7 +79,9 @@ export default function Settings() {
 
   // Opening setup draft state
   const today = new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Kolkata'}).format(new Date());
-  const [cutoffDate, setCutoffDate] = useState(openingStatus?.cutoffDate || today);
+  const [todayYear, todayMonth, todayDay] = today.split('-').map(Number);
+  const previousDate = new Date(Date.UTC(todayYear, todayMonth - 1, todayDay - 1)).toISOString().slice(0, 10);
+  const [cutoffDate, setCutoffDate] = useState(openingStatus?.cutoffDate || previousDate);
   const [cashRupees, setCashRupees] = useState<number | ''>((openingStatus?.openingCashPaise || 0) / 100);
   const [bankRupees, setBankRupees] = useState<number | ''>((openingStatus?.openingBankPaise || 0) / 100);
   const [draftReceivables, setDraftReceivables] = useState<DraftReceivableRow[]>([]);
@@ -88,6 +90,8 @@ export default function Settings() {
   const [draftVersion, setDraftVersion] = useState<number>(openingStatus?.draftVersion || 0);
   const [savingDraft, setSavingDraft] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  const [correctingCutoff, setCorrectingCutoff] = useState(false);
+  const [correctCutoffConfirm, setCorrectCutoffConfirm] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [openingCustomers, setOpeningCustomers] = useState(state.customers);
   const [openingSuppliers, setOpeningSuppliers] = useState(state.suppliers);
@@ -272,7 +276,7 @@ export default function Settings() {
               draft.draftReceivables.map((r: any) => ({
                 customerId: r.customerId || '',
                 reference: r.reference || '',
-                date: r.date || draft.cutoffDate || today,
+                date: r.date || draft.cutoffDate || previousDate,
                 amountRupees: (r.amountPaise || 0) / 100,
                 notes: r.notes || '',
               }))
@@ -283,7 +287,7 @@ export default function Settings() {
               draft.draftPayables.map((p: any) => ({
                 supplierId: p.supplierId || '',
                 reference: p.reference || '',
-                date: p.date || draft.cutoffDate || today,
+                date: p.date || draft.cutoffDate || previousDate,
                 amountRupees: (p.amountPaise || 0) / 100,
                 notes: p.notes || '',
               }))
@@ -294,7 +298,7 @@ export default function Settings() {
               draft.draftStockLots.map((l: any) => ({
                 productId: l.productId || '',
                 batchNumber: l.batchNumber || '',
-                receivedDate: l.receivedDate || draft.cutoffDate || today,
+                receivedDate: l.receivedDate || draft.cutoffDate || previousDate,
                 quantity: l.quantity !== undefined ? l.quantity : 1,
                 unitCostRupees: (l.unitCostPaise || l.costPaise || 0) / 100,
                 serialsText: Array.isArray(l.serials) ? l.serials.join(', ') : '',
@@ -304,7 +308,7 @@ export default function Settings() {
         }
       });
     }
-  }, [tab, isLive, fetchOpeningDraftApi, fetchCustomersPage, fetchSuppliersPage, fetchProductsPage, today]);
+  }, [tab, isLive, fetchOpeningDraftApi, fetchCustomersPage, fetchSuppliersPage, fetchProductsPage, previousDate]);
 
   useEffect(() => {
     if (tab === 'Activity history' && isLive) {
@@ -415,6 +419,32 @@ export default function Settings() {
   }
 
   const isFinalized = !!openingStatus?.isFinalized;
+  const needsCutoffCorrection = isFinalized && cutoffDate >= today;
+
+  async function handleCorrectCutoff() {
+    setCorrectingCutoff(true);
+    try {
+      const response = await fetch('/api/master/opening/correct-cutoff', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          expectedCutoffDate: cutoffDate,
+          newCutoffDate: previousDate,
+          confirmation: true,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to correct the opening cutoff.');
+      setCutoffDate(data.cutoffDate || previousDate);
+      setCorrectCutoffConfirm(false);
+      await refreshMasterData();
+      notify(data.message || 'Opening cutoff corrected.');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Unable to correct the opening cutoff.');
+    } finally {
+      setCorrectingCutoff(false);
+    }
+  }
 
   return (
     <>
@@ -528,11 +558,23 @@ export default function Settings() {
           >
             <div className="body-pad stack">
               {isFinalized ? (
-                <div className="notice" style={{backgroundColor: '#eff6ff', borderColor: '#bfdbfe', color: '#1e40af'}}>
-                  <CheckCircle2 size={18} style={{display: 'inline', marginRight: 6, verticalAlign: 'text-bottom'}} />
-                  <strong>Opening balances are finalized and locked.</strong> Cutoff date: <b>{cutoffDate}</b>. Opening
-                  stock lots, serial units, receivables, payables, and cash/bank ledger entries are posted to your company ledger.
-                </div>
+                <>
+                  <div className="notice" style={{backgroundColor: '#eff6ff', borderColor: '#bfdbfe', color: '#1e40af'}}>
+                    <CheckCircle2 size={18} style={{display: 'inline', marginRight: 6, verticalAlign: 'text-bottom'}} />
+                    <strong>Opening balances are finalized and locked.</strong> Cutoff date: <b>{cutoffDate}</b>. Opening
+                    stock lots, serial units, receivables, payables, and cash/bank ledger entries are posted to your company ledger.
+                  </div>
+                  {needsCutoffCorrection && (
+                    <div className="notice" style={{backgroundColor: '#fff7ed', borderColor: '#fdba74', color: '#9a3412'}}>
+                      <AlertCircle size={18} style={{display: 'inline', marginRight: 6, verticalAlign: 'text-bottom'}} />
+                      This cutoff prevents posting documents today. If no sales, purchases, receipts, payments, returns, service jobs,
+                      stock holds or daily closings were recorded, correct it to <b>{previousDate}</b>.
+                      <div style={{marginTop: 10}}>
+                        <Btn secondary onClick={() => setCorrectCutoffConfirm(true)}>Correct cutoff to {previousDate}</Btn>
+                      </div>
+                    </div>
+                  )}
+                </>
               ) : (
                 <div className="notice">
                   <AlertCircle size={18} style={{display: 'inline', marginRight: 6, verticalAlign: 'text-bottom'}} />
@@ -543,10 +585,11 @@ export default function Settings() {
 
               {/* 1. Base Cash, Bank & Cutoff */}
               <div className="form-grid spaced">
-                <Field label="Opening Cutoff Date" hint="All document dates must be on or before cutoff">
+                <Field label="Opening Cutoff Date" hint={`Choose the last day before live operations. Posting begins the next day; latest allowed is ${previousDate}.`}>
                   <input
                     type="date"
                     disabled={isFinalized}
+                    max={previousDate}
                     value={cutoffDate}
                     onChange={(e) => setCutoffDate(e.target.value)}
                   />
@@ -1454,6 +1497,27 @@ export default function Settings() {
             </Btn>
             <Btn disabled={finalizing} onClick={handleFinalize}>
               <LockKeyhole size={16} /> {finalizing ? 'Finalizing…' : 'Confirm & finalize'}
+            </Btn>
+          </div>
+        </Modal>
+      )}
+
+      {correctCutoffConfirm && (
+        <Modal title="Correct opening cutoff?" onClose={() => !correctingCutoff && setCorrectCutoffConfirm(false)}>
+          <div className="form-body stack">
+            <p>
+              This will move the opening cutoff from <b>{cutoffDate}</b> to <b>{previousDate}</b> and re-date only opening
+              balance records that are later than the corrected cutoff.
+            </p>
+            <div className="notice" style={{backgroundColor: '#fff7ed', borderColor: '#fdba74', color: '#9a3412'}}>
+              The server will refuse this correction if any operational sale, purchase bill, receipt, payment, return,
+              service job, stock hold, stock movement or daily closing exists.
+            </div>
+          </div>
+          <div className="form-actions">
+            <Btn secondary disabled={correctingCutoff} onClick={() => setCorrectCutoffConfirm(false)}>Cancel</Btn>
+            <Btn disabled={correctingCutoff} onClick={handleCorrectCutoff}>
+              {correctingCutoff ? 'Correcting…' : 'Confirm correction'}
             </Btn>
           </div>
         </Modal>

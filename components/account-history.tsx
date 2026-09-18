@@ -10,7 +10,7 @@ import SupplierSettlement from './supplier-settlement';
 import {Card, Btn, Badge, Field, Modal, csvDownload} from './ui';
 import {mapPurchaseFromApi} from '@/lib/mappers';
 
-export default function AccountHistory({id, supplier = false}: {id: string; supplier?: boolean}) {
+export default function AccountHistory({id, supplier = false, profile}: {id: string; supplier?: boolean; profile?: any}) {
   const {
     state,
     isLive,
@@ -565,7 +565,15 @@ export default function AccountHistory({id, supplier = false}: {id: string; supp
           </Card>
         ) : (
           <div className="grid-3">
-            {['New goods', 'Used goods', 'Service'].map((category) => (
+            {['New goods', 'Used goods', 'Service'].map((category) => {
+              const contributionKey = category === 'New goods' ? 'newGoodsTotalPaise' : category === 'Used goods' ? 'usedGoodsTotalPaise' : 'serviceTotalPaise';
+              const countKey = category === 'New goods' ? 'newGoodsInvoiceCount' : category === 'Used goods' ? 'usedGoodsInvoiceCount' : 'serviceInvoiceCount';
+              const categoryBills = bills.filter((b) => b.category === category);
+              const amount = isLive
+                ? (profile ? (profile.contributions?.[contributionKey] || 0) / 100 : null)
+                : categoryBills.reduce((n, b) => n + roundedTotal(b) - credits(state, b.id), 0);
+              const count = isLive ? (profile ? profile.contributions?.[countKey] || 0 : null) : categoryBills.length;
+              return (
               <Card
                 key={category}
                 title={
@@ -577,18 +585,13 @@ export default function AccountHistory({id, supplier = false}: {id: string; supp
                 }
               >
                 <div className="body-pad">
-                  <h2>
-                    {money(
-                      bills
-                        .filter((b) => b.category === category)
-                        .reduce((n, b) => n + roundedTotal(b) - credits(state, b.id), 0)
-                    )}
-                  </h2>
+                  <h2>{amount === null ? '…' : money(amount)}</h2>
                   <p>Net invoice value after return credits</p>
-                  <small>{bills.filter((b) => b.category === category).length} invoices</small>
+                  <small>{count === null ? 'Loading live totals…' : `${count} ${count === 1 ? 'invoice' : 'invoices'}`}</small>
                 </div>
               </Card>
-            ))}
+              );
+            })}
           </div>
         )
       )}

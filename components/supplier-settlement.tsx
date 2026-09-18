@@ -106,22 +106,9 @@ export default function SupplierSettlement({
         due: (item.remainingDuePaise || 0) / 100,
       };
     });
-  } else {
+  } else if (!isLive) {
     rows = bills.flatMap(b =>
-      (isLive
-        ? b.lines.map((line: any) => ({
-            productId: line.productId || line.lineId,
-            name: line.lineType === 'Charge' ? line.description || 'Charge' : line.name,
-            qty: line.qty || 1,
-            total: line.total || 0,
-            paid: line.paid || 0,
-            returned: line.credited || 0,
-            due: line.due || 0,
-            lineId: line.lineId,
-            lineType: line.lineType || 'Product',
-          }))
-        : purchaseLineBalances(state, b)
-      ).map(l => {
+      purchaseLineBalances(state, b).map(l => {
         const liveLine = (b.lines || []).find(
           (x: any) => (x.lineId && x.lineId === (l as any).lineId) || x.productId === l.productId
         );
@@ -159,8 +146,8 @@ export default function SupplierSettlement({
   const advNum = Number(advanceAmount) || 0;
   const total = Math.round((allocatedTotal + advNum) * 100) / 100;
 
-  const cashBal = liveBalances?.cash ?? accountBalance(state, 'Cash');
-  const bankBal = liveBalances?.bank ?? accountBalance(state, 'Bank account');
+  const cashBal = isLive ? (liveBalances?.cash ?? 0) : accountBalance(state, 'Cash');
+  const bankBal = isLive ? (liveBalances?.bank ?? 0) : accountBalance(state, 'Bank account');
 
   function handlePayAll() {
     const next: Record<string, string> = {};

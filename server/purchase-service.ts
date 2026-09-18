@@ -1496,7 +1496,7 @@ export async function reversePurchaseReceipt(
         before: receipt,
         after: updatedReceipt,
         detail: `Reversed purchase receipt ${receipt.receiptNumber}`,
-      });
+      }, session);
 
       return updatedReceipt;
     }

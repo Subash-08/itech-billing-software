@@ -142,6 +142,7 @@ type Store = {
 
   // Phase 4: Live Sales, Quotations, and Stock Holds
   saveQuotationApi: (q: any, existingId?: string, version?: number) => Promise<{success: boolean; quotation?: any; error?: string}>;
+  shareQuotationApi: (id: string, version?: number, idempotencyKey?: string) => Promise<{success: boolean; quotation?: any; error?: string}>;
   cancelQuotationApi: (id: string, version?: number, reason?: string) => Promise<{success: boolean; error?: string}>;
   reopenQuotationApi: (id: string, version?: number, validUntil?: string) => Promise<{success: boolean; error?: string}>;
   convertQuotationApi: (id: string, version?: number, invoiceDate?: string) => Promise<{success: boolean; draft?: any; error?: string}>;
@@ -1796,6 +1797,29 @@ export function StoreProvider({children}: {children: ReactNode}) {
     }
   }
 
+  async function shareQuotationApi(id: string, version: number = 1, idempotencyKey?: string) {
+    if (!isLive) {
+      setState((s) => ({...s, bills: s.bills.map((b) => b.id === id ? {...b, status: 'Shared', version: (b.version || version) + 1} : b)}));
+      return {success: true};
+    }
+    try {
+      const res = await fetch(`/api/sales/quotations/${id}/share`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          expectedVersion: version,
+          channel: 'Manual',
+          idempotencyKey: idempotencyKey || `quote-share-${id}-${version}-${Date.now()}`,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to mark quotation as shared.');
+      return {success: true, quotation: data};
+    } catch (err: any) {
+      return {success: false, error: err.message};
+    }
+  }
+
   async function reopenQuotationApi(id: string, version: number = 1, validUntil?: string) {
     if (!isLive) return {success: true};
     try {
@@ -1850,7 +1874,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
     if (query.page) p.set('page', String(query.page));
     if (query.limit) p.set('limit', String(query.limit));
     if (query.customerId) p.set('customerId', query.customerId);
-    if (query.status && query.status !== 'All') p.set('status', query.status);
+    if (query.status && query.status !== 'All') p.set('status', query.status === 'Shared' ? 'Sent' : query.status);
     if (query.search) p.set('q', query.search);
     if (query.dateFrom) p.set('dateFrom', query.dateFrom);
     if (query.dateTo) p.set('dateTo', query.dateTo);
@@ -2471,6 +2495,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
         fetchInventoryMovementsApi,
         fetchPurchasesPage,
         saveQuotationApi,
+        shareQuotationApi,
         cancelQuotationApi,
         reopenQuotationApi,
         convertQuotationApi,

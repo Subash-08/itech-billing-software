@@ -18,6 +18,7 @@ import {
   InvoiceTemplateInput,
   OpeningDraftInput,
   FinalizeOpeningOptions,
+  CorrectOpeningCutoffInput,
   PaginationQuery,
   normalizeSerial,
   normalizeGstin,
@@ -36,6 +37,11 @@ export const uid = (prefix: string) =>
 
 export function todayInKolkata(): string {
   return new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Kolkata'}).format(new Date());
+}
+
+export function previousCalendarDate(date: string): string {
+  const [year, month, day] = date.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day - 1)).toISOString().slice(0, 10);
 }
 
 export const col = (db: Db, name: string) => db.collection<any>(name);
@@ -1530,7 +1536,7 @@ export async function getOpeningSetup(identity: Identity) {
       tenantId: identity.tenantId,
       status: 'Draft',
       draftVersion: 0,
-      cutoffDate: todayInKolkata(),
+      cutoffDate: previousCalendarDate(todayInKolkata()),
       openingCashPaise: 0,
       openingBankPaise: 0,
       draftReceivables: [],
@@ -1568,6 +1574,14 @@ export async function saveOpeningDraft(identity: Identity, input: OpeningDraftIn
       const existing = await col(db, 'openingSetups').findOne({tenantId: identity.tenantId}, {session});
       if (existing?.status === 'Finalized') {
         throw new AppError(400, 'Opening setup has already been finalized and locked. Corrections require audited adjustments.');
+      }
+
+      const today = todayInKolkata();
+      if (input.cutoffDate >= today) {
+        throw new AppError(
+          400,
+          `Opening cutoff must be earlier than today (${today}). Choose ${previousCalendarDate(today)} or an earlier date so operational posting can begin today.`
+        );
       }
 
       // Validate references within tenant
@@ -1654,6 +1668,15 @@ export async function finalizeOpeningSetup(identity: Identity, options?: Finaliz
 
       if (options?.expectedDraftVersion !== undefined && draft.draftVersion !== options.expectedDraftVersion) {
         throw new AppError(409, 'Opening draft has been updated by another session. Please refresh and review before finalizing.');
+      }
+
+
+      const today = todayInKolkata();
+      if (!draft.cutoffDate || draft.cutoffDate >= today) {
+        throw new AppError(
+          400,
+          `Opening cutoff must be earlier than today (${today}). Return to Opening setup and choose ${previousCalendarDate(today)} or an earlier date.`
+        );
       }
 
       // Check if any live stock movements or financial activity exists outside of opening setup
@@ -1892,6 +1915,135 @@ export async function finalizeOpeningSetup(identity: Identity, options?: Finaliz
   }
 }
 
+/**
+ * Repairs the onboarding mistake where a newly finalized company used today as
+ * its opening cutoff. The correction can only move a today/future cutoff
+ * backwards and refuses to run after operational activity exists.
+ */
+export async function correctFinalizedOpeningCutoff(identity: Identity, input: CorrectOpeningCutoffInput) {
+  const client = await mongo();
+  const session = client.startSession();
+
+  try {
+    return await session.withTransaction(async () => {
+      const db = client.db(process.env.MONGODB_DB || 'itech_dev');
+      await lockBusinessDay(db, session, identity.tenantId, {internalAllowClosed: true});
+
+      const setup = await col(db, 'openingSetups').findOne({tenantId: identity.tenantId}, {session});
+      if (!setup || setup.status !== 'Finalized') {
+        throw new AppError(400, 'Only a finalized opening setup can use this correction.');
+      }
+      if (setup.cutoffDate !== input.expectedCutoffDate) {
+        throw new AppError(409, 'Opening setup changed. Reload the page before correcting the cutoff.');
+      }
+
+      const today = todayInKolkata();
+      if (setup.cutoffDate < today) {
+        throw new AppError(400, 'The opening cutoff is already earlier than today and does not need correction.');
+      }
+      if (input.newCutoffDate >= today || input.newCutoffDate >= setup.cutoffDate) {
+        throw new AppError(400, `Corrected cutoff must be earlier than today (${today}) and earlier than the current cutoff.`);
+      }
+
+      const operationalChecks: Array<{collection: string; filter: Record<string, unknown>; label: string}> = [
+        {collection: 'stockMovements', filter: {reference: {$ne: 'OPENING-SETUP'}}, label: 'stock movement'},
+        {collection: 'accountMovements', filter: {reference: {$ne: 'OPENING-SETUP'}}, label: 'cash or bank movement'},
+        {collection: 'invoices', filter: {status: 'Issued'}, label: 'issued invoice'},
+        {collection: 'purchases', filter: {billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']}}, label: 'posted supplier bill'},
+        {collection: 'purchaseReceipts', filter: {}, label: 'stock receipt'},
+        {collection: 'customerReceipts', filter: {}, label: 'customer receipt'},
+        {collection: 'supplierPayments', filter: {}, label: 'supplier payment'},
+        {collection: 'customerReturns', filter: {}, label: 'customer return'},
+        {collection: 'supplierReturns', filter: {}, label: 'supplier return'},
+        {collection: 'serviceJobs', filter: {}, label: 'service job'},
+        {collection: 'stockReservations', filter: {}, label: 'stock hold'},
+        {collection: 'dailyClosings', filter: {}, label: 'daily closing'},
+      ];
+
+      for (const check of operationalChecks) {
+        const count = await col(db, check.collection).countDocuments(
+          {tenantId: identity.tenantId, ...check.filter},
+          {session, limit: 1}
+        );
+        if (count > 0) {
+          throw new AppError(
+            409,
+            `Opening cutoff cannot be corrected because a ${check.label} already exists. Use an audited current-day adjustment instead.`
+          );
+        }
+      }
+
+      const moveToCutoff = (value: unknown) =>
+        typeof value === 'string' && value > input.newCutoffDate ? input.newCutoffDate : value;
+      const draftReceivables = (setup.draftReceivables || []).map((row: any) => ({...row, date: moveToCutoff(row.date)}));
+      const draftPayables = (setup.draftPayables || []).map((row: any) => ({...row, date: moveToCutoff(row.date)}));
+      const draftStockLots = (setup.draftStockLots || []).map((row: any) => ({
+        ...row,
+        receivedDate: moveToCutoff(row.receivedDate),
+      }));
+      const now = new Date();
+
+      await col(db, 'openingSetups').updateOne(
+        {_id: setup._id, tenantId: identity.tenantId, cutoffDate: input.expectedCutoffDate},
+        {$set: {
+          cutoffDate: input.newCutoffDate,
+          draftReceivables,
+          draftPayables,
+          draftStockLots,
+          correctedAt: now,
+          correctedBy: identity.userId,
+          updatedAt: now,
+          updatedBy: identity.userId,
+        }},
+        {session}
+      );
+      await col(db, 'openingReceivables').updateMany(
+        {tenantId: identity.tenantId, date: {$gt: input.newCutoffDate}},
+        {$set: {date: input.newCutoffDate}},
+        {session}
+      );
+      await col(db, 'openingPayables').updateMany(
+        {tenantId: identity.tenantId, date: {$gt: input.newCutoffDate}},
+        {$set: {date: input.newCutoffDate}},
+        {session}
+      );
+      await col(db, 'stockLots').updateMany(
+        {tenantId: identity.tenantId, lotType: 'Opening', receivedDate: {$gt: input.newCutoffDate}},
+        {$set: {receivedDate: input.newCutoffDate}},
+        {session}
+      );
+      await col(db, 'stockMovements').updateMany(
+        {tenantId: identity.tenantId, reference: 'OPENING-SETUP'},
+        {$set: {date: input.newCutoffDate}},
+        {session}
+      );
+      await col(db, 'accountMovements').updateMany(
+        {tenantId: identity.tenantId, reference: 'OPENING-SETUP'},
+        {$set: {date: input.newCutoffDate}},
+        {session}
+      );
+
+      await recordAudit(db, {
+        identity,
+        action: 'Corrected opening cutoff',
+        entityType: 'openingSetup',
+        entityId: identity.tenantId,
+        before: {cutoffDate: setup.cutoffDate},
+        after: {cutoffDate: input.newCutoffDate},
+        detail: `Corrected the onboarding cutoff from ${setup.cutoffDate} to ${input.newCutoffDate} before any operational activity was recorded.`,
+      }, session);
+
+      return {
+        success: true,
+        cutoffDate: input.newCutoffDate,
+        message: `Opening cutoff corrected to ${input.newCutoffDate}. Operational posting can begin today.`,
+      };
+    });
+  } finally {
+    await session.endSession();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 8. Demo Master Data Import (Fresh Company Only)
 // ---------------------------------------------------------------------------
@@ -1922,7 +2074,7 @@ export async function importDemoMasterData(identity: Identity, options?: { cutof
   try {
     return await session.withTransaction(async () => {
 
-      const cutoff = options?.cutoffDate || todayInKolkata();
+      const cutoff = options?.cutoffDate || previousCalendarDate(todayInKolkata());
 
       // Flag demo import on settings without wiping user's company name/details
       await col(db, 'companySettings').updateOne(

@@ -1,6 +1,6 @@
 'use client';
 
-import {useState, useEffect, useCallback} from 'react';
+import {useState, useEffect, useCallback, useRef} from 'react';
 import Link from 'next/link';
 import {Plus, ArrowUpRight, RotateCcw, Clock, CheckCircle, AlertTriangle, ShieldCheck} from 'lucide-react';
 import {Reservation, TODAY} from '@/lib/domain';
@@ -43,8 +43,11 @@ export default function Reservations() {
   const [notes, setNotes] = useState('');
   const [lots, setLots] = useState<any[]>([]);
   const [availableSerials, setAvailableSerials] = useState<string[]>([]);
+  const [serialsLoading, setSerialsLoading] = useState(false);
+  const [serialsError, setSerialsError] = useState('');
   const [lotsLoading, setLotsLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const createAttempt = useRef<{fingerprint: string; key: string} | null>(null);
 
   // Release modal state
   const [releaseTarget, setReleaseTarget] = useState<Reservation | null>(null);
@@ -107,19 +110,35 @@ export default function Reservations() {
     if (!p?.isSerialTracked || !lotId || !formOpen) {
       setAvailableSerials([]);
       setSelectedSerials([]);
+      setSerialsError('');
+      setSerialsLoading(false);
       return;
     }
     let active = true;
-    fetchInventorySerialsApi({productId, status: 'InStock'})
-      .then((data: any) => {
+    setSerialsLoading(true);
+    setSerialsError('');
+    (async () => {
+      const records: any[] = [];
+      for (let pageNumber = 1; pageNumber <= 20; pageNumber++) {
+        const data = await fetchInventorySerialsApi({productId, lotId, status: 'InStock', page: pageNumber, limit: 100});
+        records.push(...(data?.serials || data?.records || []));
+        if (pageNumber >= (data?.totalPages || 1)) break;
+        if (pageNumber === 20) throw new Error('More than 2,000 serial units match. Narrower server-side selection is required.');
+      }
+      if (!active) return;
+      const serials = records
+        .filter((serial: any) => serial.lotId === lotId && serial.status === 'InStock')
+        .map((serial: any) => serial.serialOriginal ?? serial.serial ?? serial.serialNormalized)
+        .filter((serial: unknown): serial is string => typeof serial === 'string' && serial.trim().length > 0)
+        .map((serial: string) => serial.trim());
+      setAvailableSerials(Array.from(new Set(serials)));
+    })()
+      .catch((error) => {
         if (!active) return;
-        const serials = (data?.serials || [])
-          .filter((s: any) => s.lotId === lotId && s.status === 'InStock')
-          .map((s: any) => s.serial);
-        setAvailableSerials(serials);
+        setAvailableSerials([]);
+        setSerialsError(error instanceof Error ? error.message : 'Failed to load serial units.');
       })
-      .catch(() => {})
-      .finally(() => {});
+      .finally(() => { if (active) setSerialsLoading(false); });
     return () => { active = false; };
   }, [productId, lotId, formOpen, state.products, fetchInventorySerialsApi]);
 
@@ -137,17 +156,33 @@ export default function Reservations() {
       return notify(`Please select exactly ${quantity} serial unit(s).`);
     }
 
+    const cleanSerials = selectedSerials
+      .filter((serial): serial is string => typeof serial === 'string' && serial.trim().length > 0)
+      .map((serial) => serial.trim());
+    if (selectedProduct?.isSerialTracked && cleanSerials.length !== quantity) {
+      return notify('Serial data is incomplete. Reload the selected stock lot and choose the serial numbers again.');
+    }
+
+    const payload = {
+      customerId,
+      productId,
+      lotId,
+      quantity,
+      serials: cleanSerials,
+      reservedAt: TODAY,
+      expiresAt,
+      notes: notes.trim(),
+    };
+    const fingerprint = JSON.stringify(payload);
+    if (createAttempt.current?.fingerprint !== fingerprint) {
+      createAttempt.current = {fingerprint, key: `hold-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`};
+    }
+
     setSubmitting(true);
     try {
       const res = await createReservationApi({
-        customerId,
-        productId,
-        lotId,
-        quantity,
-        serials: selectedSerials,
-        reservedAt: TODAY,
-        expiresAt,
-        notes: notes.trim(),
+        ...payload,
+        idempotencyKey: createAttempt.current.key,
       });
       if (res.success) {
         notify('Stock reservation confirmed successfully.');
@@ -158,6 +193,7 @@ export default function Reservations() {
         setQuantity(1);
         setSelectedSerials([]);
         setNotes('');
+        createAttempt.current = null;
         loadHolds();
       } else {
         notify(res.error || 'Failed to create reservation.');
@@ -207,8 +243,8 @@ export default function Reservations() {
     }
   }
 
-  const records = pageData ? pageData.records : state.reservations;
-  const total = pageData ? pageData.total : records.length;
+  const records = isLive ? (pageData?.records || []) : state.reservations;
+  const total = isLive ? (pageData?.total || 0) : records.length;
   const totalPages = pageData ? pageData.totalPages : 1;
 
   return (
@@ -502,7 +538,11 @@ export default function Reservations() {
 
               {selectedProduct?.isSerialTracked && lotId && (
                 <Field label={`Select ${quantity} serial unit(s)`}>
-                  {!availableSerials.length ? (
+                  {serialsLoading ? (
+                    <small>Loading serial units from the selected receipt lot…</small>
+                  ) : serialsError ? (
+                    <div className="notice" role="alert">{serialsError}</div>
+                  ) : !availableSerials.length ? (
                     <small style={{color: '#ef4444'}}>No InStock serial units in this lot.</small>
                   ) : (
                     <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '8px', maxHeight: '180px', overflowY: 'auto', padding: '8px', border: '1px solid var(--border)', borderRadius: '6px'}}>
@@ -549,7 +589,7 @@ export default function Reservations() {
               <Btn secondary onClick={() => setFormOpen(false)} disabled={submitting}>
                 Cancel
               </Btn>
-              <Btn type="submit" disabled={submitting || !!(productId && !lots.length)}>
+              <Btn type="submit" disabled={submitting || serialsLoading || !!serialsError || !!(productId && !lots.length)}>
                 {submitting ? 'Reserving stock…' : 'Confirm reservation'}
               </Btn>
             </div>

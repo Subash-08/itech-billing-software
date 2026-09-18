@@ -403,7 +403,7 @@ export function mapQuotationFromApi(doc: any) {
     validUntil: doc.validUntil,
     kind: 'Quotation' as const,
     category: (doc.businessCategory === 'NewGoods' ? 'New goods' : doc.businessCategory === 'UsedGoods' ? 'Used goods' : 'Service') as any,
-    status: doc.status || 'Draft',
+    status: doc.status === 'Sent' ? 'Shared' : (doc.status || 'Draft'),
     lines: (doc.lines || []).map((l: any) => ({
       invoiceLineId: l.lineId || l._id || l.id,
       productId: l.productId || '',

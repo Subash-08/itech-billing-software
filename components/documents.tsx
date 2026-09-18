@@ -1,8 +1,8 @@
 'use client';
 
-import {useState, useEffect, useRef} from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import {useRouter, useSearchParams} from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Plus,
   Trash2,
@@ -18,7 +18,7 @@ import {
   RotateCcw,
   Archive,
 } from 'lucide-react';
-import {uploadFile} from '@/lib/upload';
+import { uploadFile } from '@/lib/upload';
 import {
   Bill,
   Line,
@@ -36,17 +36,17 @@ import {
   State,
 } from '@/lib/domain';
 import SupplyReference from './supply-reference';
-import {ProductForm} from './inventory';
+import { ProductForm } from './inventory';
 import SupplierSettlement from './supplier-settlement';
-import {assertOpen, nextDate} from '@/lib/closing';
-import {issueBill, receivePurchase, addPayment} from '@/lib/operations';
-import {useStore} from './store';
-import {PageHead, Card, Btn, Field, Modal, SearchBox, Empty, Badge, csvDownload} from './ui';
-import {PaymentDialog} from './payments';
-import {PersonForm} from './people';
-import {InvoiceTemplate} from '@/lib/extensions';
-import {TemplateInvoice as InvoicePaper, PrintDialog} from './templates';
-import {mapPurchaseFromApi, mapInvoiceFromApi, mapQuotationFromApi, mapTemplateFromApi} from '@/lib/mappers';
+import { assertOpen, nextDate } from '@/lib/closing';
+import { issueBill, receivePurchase, addPayment } from '@/lib/operations';
+import { useStore } from './store';
+import { PageHead, Card, Btn, Field, Modal, SearchBox, Empty, Badge, csvDownload } from './ui';
+import { PaymentDialog } from './payments';
+import { PersonForm } from './people';
+import { InvoiceTemplate } from '@/lib/extensions';
+import { TemplateInvoice as InvoicePaper, PrintDialog } from './templates';
+import { mapPurchaseFromApi, mapInvoiceFromApi, mapQuotationFromApi, mapTemplateFromApi } from '@/lib/mappers';
 import {
   IssueInvoiceModal,
   StockAllocationModal,
@@ -56,7 +56,7 @@ import {
   InvoiceCancelModal,
 } from './sales-modals';
 
-export {InvoicePaper};
+export { InvoicePaper };
 
 const blankLine = (): Line => ({
   productId: '',
@@ -109,7 +109,7 @@ export function DocumentComposer({
   const isEditMode = !!editId;
   const isReceiptMode = purchase && !!existingId && existingId !== 'new';
   const [receiptLoaded, setReceiptLoaded] = useState(false);
-  const receiptAttempt = useRef<{key: string; fingerprint: string; date: string} | null>(null);
+  const receiptAttempt = useRef<{ key: string; fingerprint: string; date: string } | null>(null);
   const source = state.bills.find((b) => b.id === (params.get('from') || params.get('edit')));
   const existing = state.purchases.find((p) => p.id === (existingId || params.get('edit')));
   const job = state.jobs.find((j) => j.id === (params.get('job') || source?.jobId));
@@ -147,12 +147,12 @@ export function DocumentComposer({
           rate: Math.max(
             0,
             (job.final || job.estimate) -
-              job.parts.reduce((a, x) => a + (state.products.find((p) => p.id === x.productId)?.price || 0) * x.qty, 0)
+            job.parts.reduce((a, x) => a + (state.products.find((p) => p.id === x.productId)?.price || 0) * x.qty, 0)
           ),
         },
         ...job.parts.map((part) => {
           const p = state.products.find((p) => p.id === part.productId)!;
-          return {...blankLine(), productId: p.id, name: p.name, qty: part.qty, rate: p.price, tax: p.tax, hsn: p.hsn};
+          return { ...blankLine(), productId: p.id, name: p.name, qty: part.qty, rate: p.price, tax: p.tax, hsn: p.hsn };
         }),
       ];
     }
@@ -186,7 +186,7 @@ export function DocumentComposer({
   const [review, setReview] = useState(false);
   const [newProduct, setNewProduct] = useState(false);
   const [serviceId, setServiceId] = useState('');
-  const [payRows, setPayRows] = useState<{account: string; amount: string; method: string}[]>([]);
+  const [payRows, setPayRows] = useState<{ account: string; amount: string; method: string }[]>([]);
   const [templateId, setTemplateId] = useState(source?.templateId || state.defaultTemplateId);
   const templateChosenByUser = useRef(false);
   useEffect(() => {
@@ -198,7 +198,7 @@ export function DocumentComposer({
   }, [isLive, state.defaultTemplateId, source?.templateId, params]);
   const [shipSeparate, setShipSeparate] = useState(!!source?.shipTo);
   const [shipTo, setShipTo] = useState(
-    source?.shipTo || {name: '', address: '', phone: '', state: 'Tamil Nadu', postalCode: ''}
+    source?.shipTo || { name: '', address: '', phone: '', state: 'Tamil Nadu', postalCode: '' }
   );
   const [orderRef, setOrderRef] = useState('');
   const [deliveryNote, setDeliveryNote] = useState('');
@@ -219,14 +219,14 @@ export function DocumentComposer({
   const [receiveShortcutKey, setReceiveShortcutKey] = useState(() => `record-receive-${uid('IDEM')}`);
   const [receivePayShortcutKey, setReceivePayShortcutKey] = useState(() => `record-receive-pay-${uid('IDEM')}`);
   const [issueModalOpen, setIssueModalOpen] = useState(false);
-  const [issueTargetDraft, setIssueTargetDraft] = useState<{id: string; version: number; totalPaise: number; customerId: string} | null>(null);
+  const [issueTargetDraft, setIssueTargetDraft] = useState<{ id: string; version: number; totalPaise: number; customerId: string } | null>(null);
 
   const [id] = useState(
     existing?.id ||
-      (quotation && params.get('edit') ? source?.id : undefined) ||
-      `${purchase ? 'PUR' : quotation ? 'QUO' : service ? 'SVC' : 'INV'}-2026-${String(
-        100 + state.bills.length + state.purchases.length + 1
-      ).padStart(4, '0')}`
+    (quotation && params.get('edit') ? source?.id : undefined) ||
+    `${purchase ? 'PUR' : quotation ? 'QUO' : service ? 'SVC' : 'INV'}-2026-${String(
+      100 + state.bills.length + state.purchases.length + 1
+    ).padStart(4, '0')}`
   );
 
   const person = purchase
@@ -280,7 +280,7 @@ export function DocumentComposer({
   useEffect(() => {
     if (!purchase || !isLive) return;
     const timer = window.setTimeout(() => {
-      fetchSuppliersPage({limit: 50, q: supplierSearch.trim() || undefined}).then(result => setSupplierChoices(result.records)).catch(() => {});
+      fetchSuppliersPage({ limit: 50, q: supplierSearch.trim() || undefined }).then(result => setSupplierChoices(result.records)).catch(() => { });
     }, 250);
     return () => window.clearTimeout(timer);
   }, [purchase, isLive, supplierSearch, fetchSuppliersPage]);
@@ -288,7 +288,7 @@ export function DocumentComposer({
   useEffect(() => {
     if (purchase || !isLive) return;
     const timer = window.setTimeout(() => {
-      fetchCustomersPage({limit: 50, q: customerSearch.trim() || undefined, status: 'Active'}).then(result => setCustomerChoices(result.records)).catch(() => {});
+      fetchCustomersPage({ limit: 50, q: customerSearch.trim() || undefined, status: 'Active' }).then(result => setCustomerChoices(result.records)).catch(() => { });
     }, 250);
     return () => window.clearTimeout(timer);
   }, [purchase, isLive, customerSearch, fetchCustomersPage]);
@@ -296,7 +296,7 @@ export function DocumentComposer({
   useEffect(() => {
     if (!isLive) return;
     const timer = window.setTimeout(() => {
-      fetchProductsPage({limit: 50, q: search.trim() || undefined, status: 'Active'}).then(result => setProductChoices(result.records)).catch(() => {});
+      fetchProductsPage({ limit: 50, q: search.trim() || undefined, status: 'Active' }).then(result => setProductChoices(result.records)).catch(() => { });
     }, 250);
     return () => window.clearTimeout(timer);
   }, [isLive, search, fetchProductsPage]);
@@ -325,7 +325,8 @@ export function DocumentComposer({
         if (p.supplierInvoiceNumber || p.reference) setRef(p.supplierInvoiceNumber || p.reference);
         if (p.attachmentFileId) setAttachmentFileId(p.attachmentFileId);
         const mapped = mapPurchaseFromApi(p);
-        setLines(mapped.lines.map((line: any) => ({...line,
+        setLines(mapped.lines.map((line: any) => ({
+          ...line,
           qty: isReceiptMode ? Math.max(0, line.quantityOrdered - line.quantityReceived - line.quantityCancelled) : line.quantityOrdered,
           serials: [],
         })));
@@ -370,7 +371,7 @@ export function DocumentComposer({
         if (fromId) {
           const data = await fetchQuotationDetailApi(fromId);
           const q = data.quotation || data;
-        setCategory(q.invoiceKind === 'Service' || q.businessCategory === 'Service' ? 'Service' : q.businessCategory === 'UsedGoods' ? 'Used goods' : 'New goods');
+          setCategory(q.invoiceKind === 'Service' || q.businessCategory === 'Service' ? 'Service' : q.businessCategory === 'UsedGoods' ? 'Used goods' : 'New goods');
           if (q.customerId) setCustomerId(q.customerId);
           if (q.taxMode) setTaxMode(q.taxMode);
           if (q.placeOfSupply) setPlaceOfSupply(q.placeOfSupply);
@@ -485,13 +486,13 @@ export function DocumentComposer({
           setLines(serviceLines);
           notify('Loaded service job details and consumed parts.');
         })
-        .catch(() => {});
+        .catch(() => { });
     }
   }, [isLive, isEditMode, editId]);
 
   function update(i: number, k: keyof Line, v: unknown) {
     if (isReceiptMode && k !== 'qty' && k !== 'serials') return;
-    setLines((ls) => ls.map((l, n) => (n === i ? {...l, [k]: v, ...(k === 'qty' ? {serials: []} : {})} : l)));
+    setLines((ls) => ls.map((l, n) => (n === i ? { ...l, [k]: v, ...(k === 'qty' ? { serials: [] } : {}) } : l)));
   }
 
   async function uploadPurchaseAttachment(file?: File) {
@@ -534,8 +535,8 @@ export function DocumentComposer({
             ? p.cost
             : p.cost / (1 + p.tax / 100)
           : inclusive
-          ? p.price
-          : Math.round((p.price / (1 + p.tax / 100)) * 100) / 100,
+            ? p.price
+            : Math.round((p.price / (1 + p.tax / 100)) * 100) / 100,
         discount: 0,
         tax: p.tax,
         serials: [],
@@ -607,8 +608,10 @@ export function DocumentComposer({
       if (receiptAttempt.current && receiptAttempt.current.fingerprint !== fingerprint) {
         notify('The previous receipt attempt has different quantities. Reopen the purchase and check its receipt history before submitting a changed receipt.'); return;
       }
-      receiptAttempt.current ??= {key: `receipt-${crypto.randomUUID()}`, fingerprint,
-        date: new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Kolkata'}).format(new Date())};
+      receiptAttempt.current ??= {
+        key: `receipt-${crypto.randomUUID()}`, fingerprint,
+        date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date())
+      };
       setBusy(true);
       try {
         const ok = await receivePurchaseStockApi(editId, receiptLines, {
@@ -631,7 +634,7 @@ export function DocumentComposer({
           next = receivePurchase(s, doc);
         } else {
           if (s.purchases.some((p) => p.id === id)) throw new Error('Purchase number already exists.');
-          next = {...s, purchases: [doc, ...s.purchases]};
+          next = { ...s, purchases: [doc, ...s.purchases] };
         }
         return next;
       }, 'Purchase updated.');
@@ -685,7 +688,7 @@ export function DocumentComposer({
             serials: l.serials || [],
           }));
         const res = await recordReceiveShortcutApi({
-          purchase: {...doc, supplierInvoiceNumber: ref.trim(), supplierInvoiceDate: postInvoiceDate},
+          purchase: { ...doc, supplierInvoiceNumber: ref.trim(), supplierInvoiceDate: postInvoiceDate },
           receiptLines,
           supplierInvoiceNumber: ref.trim(),
           supplierInvoiceDate: postInvoiceDate,
@@ -820,7 +823,7 @@ export function DocumentComposer({
               const tDoc = await tRes.json();
               templateRecord = mapTemplateFromApi(tDoc);
             }
-          } catch {}
+          } catch { }
         }
         if (!templateRecord || templateRecord.status === 'Archived') {
           notify('The selected invoice template is unavailable or archived. Please select an active template.');
@@ -846,7 +849,7 @@ export function DocumentComposer({
             const reloaded = mapTemplateFromApi(tDoc);
             chosenTemplateRev = reloaded.currentRevision ?? reloaded.revision;
           }
-        } catch {}
+        } catch { }
       }
 
       if (typeof chosenTemplateRev !== 'number' || chosenTemplateRev < 1) {
@@ -912,12 +915,12 @@ export function DocumentComposer({
           stockAllocations: (l.stockAllocations && l.stockAllocations.length > 0)
             ? l.stockAllocations
             : (l.serials?.length
-                ? [{
-                    lotId: l.lotId || '',
-                    quantity: l.serials.length,
-                    serials: l.serials,
-                  }]
-                : []),
+              ? [{
+                lotId: l.lotId || '',
+                quantity: l.serials.length,
+                serials: l.serials,
+              }]
+              : []),
           warrantyMonths: Number(l.warranty || 0),
         };
       });
@@ -1017,7 +1020,7 @@ export function DocumentComposer({
     const ok = run((s) => {
       let next: State = s;
       next = issueBill(
-        quotation && params.get('edit') ? {...s, bills: s.bills.filter((b) => b.id !== id)} : s,
+        quotation && params.get('edit') ? { ...s, bills: s.bills.filter((b) => b.id !== id) } : s,
         bill
       );
       if (!quotation) {
@@ -1052,19 +1055,19 @@ export function DocumentComposer({
           isReceiptMode
             ? 'Receive stock — payment optional'
             : purchase
-            ? 'New purchase'
-            : quotation
-            ? 'New quotation'
-            : service
-            ? 'New service invoice'
-            : 'New sales invoice'
+              ? 'New purchase'
+              : quotation
+                ? 'New quotation'
+                : service
+                  ? 'New service invoice'
+                  : 'New sales invoice'
         }
         description={
           purchase
             ? (isReceiptMode ? 'Receive delivered goods into inventory. No money leaves Cash or Bank. Pay the supplier later from this purchase or the supplier profile.' : 'Record a supplier bill and receive goods without payment, or choose Record + Receive + Pay to pay now.')
             : quotation
-            ? 'Prepare an estimate. Stock and money stay unchanged until a sale is confirmed.'
-            : 'Add items, check the totals and issue the customer’s invoice.'
+              ? 'Prepare an estimate. Stock and money stay unchanged until a sale is confirmed.'
+              : 'Add items, check the totals and issue the customer’s invoice.'
         }
         actions={
           <>
@@ -1079,7 +1082,7 @@ export function DocumentComposer({
                   Receive stock
                 </Btn>
               ) : (
-                <div className="composer-actions" style={{display: 'flex', gap: '0.5rem', flexWrap: 'wrap'}}>
+                <div className="composer-actions" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                   <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('draft')}>
                     Save draft
                   </Btn>
@@ -1099,7 +1102,7 @@ export function DocumentComposer({
                 </div>
               )
             ) : (
-              <div className="composer-actions" style={{display: 'flex', gap: '0.5rem', flexWrap: 'wrap'}}>
+              <div className="composer-actions" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                 {quotation ? (
                   <Btn disabled={busy} onClick={() => handleSalesAction('save_draft')}>
                     <Check size={16} /> Save quotation
@@ -1173,15 +1176,15 @@ export function DocumentComposer({
                   ))}
                 </select>
                 {isLive && state.templates.filter(t => t.status === 'Active').length === 0 ? (
-                  <div style={{marginTop: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap'}}>
-                    <span style={{color: '#d97706', fontSize: '0.85rem'}}>No saved templates found.</span>
+                  <div style={{ marginTop: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+                    <span style={{ color: '#d97706', fontSize: '0.85rem' }}>No saved templates found.</span>
                     <Link className="text-link" href="/templates" target="_blank" rel="noopener noreferrer">
                       Create template (opens new tab)
                     </Link>
                     <button
                       type="button"
                       className="link-button"
-                      style={{fontSize: '0.85rem', color: 'var(--primary)'}}
+                      style={{ fontSize: '0.85rem', color: 'var(--primary)' }}
                       onClick={async () => {
                         await refreshMasterData();
                         notify('Templates refreshed.');
@@ -1191,14 +1194,14 @@ export function DocumentComposer({
                     </button>
                   </div>
                 ) : (
-                  <div style={{marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.75rem'}}>
+                  <div style={{ marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                     <Link className="text-link" href="/templates" target="_blank" rel="noopener noreferrer">
                       Edit layouts and logo (new tab)
                     </Link>
                     <button
                       type="button"
                       className="link-button"
-                      style={{fontSize: '0.85rem', color: 'var(--muted, #666)'}}
+                      style={{ fontSize: '0.85rem', color: 'var(--muted, #666)' }}
                       onClick={async () => {
                         await refreshMasterData();
                         notify('Templates refreshed.');
@@ -1342,7 +1345,7 @@ export function DocumentComposer({
                     <Field key={k} label={label}>
                       <input
                         value={(shipTo as any)[k]}
-                        onChange={(e) => setShipTo({...shipTo, [k]: e.target.value})}
+                        onChange={(e) => setShipTo({ ...shipTo, [k]: e.target.value })}
                       />
                     </Field>
                   ))}
@@ -1370,7 +1373,7 @@ export function DocumentComposer({
                 aria-label="Select product to add"
                 value={product}
                 onChange={(e) => setProduct(e.target.value)}
-                style={{flex: 1}}
+                style={{ flex: 1 }}
               >
                 <option value="">Choose a product</option>
                 {(purchase && isLive ? productChoices : state.products)
@@ -1485,10 +1488,10 @@ export function DocumentComposer({
                             {purchase
                               ? 'Enter serials'
                               : quotation
-                              ? 'Serials at sale'
-                              : (l as any).stockAllocations?.length
-                              ? `${(l as any).stockAllocations.reduce((s: number, a: any) => s + (a.quantity || 0), 0)} allocated`
-                              : 'Select stock / serial numbers'}
+                                ? 'Serials at sale'
+                                : (l as any).stockAllocations?.length
+                                  ? `${(l as any).stockAllocations.reduce((s: number, a: any) => s + (a.quantity || 0), 0)} allocated`
+                                  : 'Select stock / serial numbers'}
                           </button>
                         )}
                         {l.lineType === 'Charge' && <Badge>Charge</Badge>}
@@ -1547,7 +1550,7 @@ export function DocumentComposer({
                         aria-label={`Item ${i + 1} tax treatment`}
                         className="table-input"
                         disabled={isPosted}
-                        style={{marginBottom: 4}}
+                        style={{ marginBottom: 4 }}
                         value={l.taxTreatment || 'Taxable'}
                         onChange={(e) => {
                           const val = e.target.value as 'Taxable' | 'Exempt' | 'NonGST';
@@ -1665,7 +1668,7 @@ export function DocumentComposer({
               Add other charge
             </Btn>
             {!purchase && (
-              <Btn secondary onClick={() => setLines((ls) => [...ls, {...blankLine(), lineType: category === 'Service' ? 'Service' : 'Charge'}])}>
+              <Btn secondary onClick={() => setLines((ls) => [...ls, { ...blankLine(), lineType: category === 'Service' ? 'Service' : 'Charge' }])}>
                 <Plus size={14} />
                 Add {category === 'Service' ? 'service' : 'custom charge'} line
               </Btn>
@@ -1690,10 +1693,10 @@ export function DocumentComposer({
                           rows.map((r, n) =>
                             n === i
                               ? {
-                                  ...r,
-                                  method: e.target.value,
-                                  account: e.target.value === 'Cash' ? 'Cash' : 'Bank account',
-                                }
+                                ...r,
+                                method: e.target.value,
+                                account: e.target.value === 'Cash' ? 'Cash' : 'Bank account',
+                              }
                               : r
                           )
                         )
@@ -1709,7 +1712,7 @@ export function DocumentComposer({
                     <select
                       value={p.account}
                       onChange={(e) =>
-                        setPayRows((rows) => rows.map((r, n) => (n === i ? {...r, account: e.target.value} : r)))
+                        setPayRows((rows) => rows.map((r, n) => (n === i ? { ...r, account: e.target.value } : r)))
                       }
                     >
                       {(p.method === 'Cash' ? ['Cash'] : ['Bank account']).map((a) => (
@@ -1724,7 +1727,7 @@ export function DocumentComposer({
                       step="0.01"
                       value={p.amount}
                       onChange={(e) =>
-                        setPayRows((rows) => rows.map((r, n) => (n === i ? {...r, amount: e.target.value} : r)))
+                        setPayRows((rows) => rows.map((r, n) => (n === i ? { ...r, amount: e.target.value } : r)))
                       }
                     />
                   </Field>
@@ -1734,7 +1737,7 @@ export function DocumentComposer({
                 </div>
               ))}
               <div className="actions">
-                <Btn secondary onClick={() => setPayRows((rows) => [...rows, {account: 'Cash', method: 'Cash', amount: ''}])}>
+                <Btn secondary onClick={() => setPayRows((rows) => [...rows, { account: 'Cash', method: 'Cash', amount: '' }])}>
                   Add payment
                 </Btn>
                 <Btn
@@ -1759,15 +1762,15 @@ export function DocumentComposer({
                     sum.total -
                       payRows.reduce((n, p) => n + (+p.amount || 0), 0) -
                       (existing ? paid(state, id) : 0) <
-                    0
+                      0
                       ? 'error'
                       : ''
                   }
                 >
                   {money(
                     sum.total -
-                      payRows.reduce((n, p) => n + (+p.amount || 0), 0) -
-                      (existing ? paid(state, id) : 0)
+                    payRows.reduce((n, p) => n + (+p.amount || 0), 0) -
+                    (existing ? paid(state, id) : 0)
                   )}
                 </strong>
               </div>
@@ -1881,7 +1884,7 @@ export function DocumentComposer({
               </>
             )
           ) : (
-            <div style={{display: 'flex', gap: '0.5rem', flexWrap: 'wrap'}}>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
               {quotation ? (
                 <Btn disabled={busy} onClick={() => handleSalesAction('save_draft')}>
                   Save quotation
@@ -2079,7 +2082,7 @@ export function DocumentComposer({
 
       {review && !purchase && (
         <PrintDialog
-          bills={[{...bill, previewPaid: payRows.reduce((n, p) => n + (+p.amount || 0), 0)}]}
+          bills={[{ ...bill, previewPaid: payRows.reduce((n, p) => n + (+p.amount || 0), 0) }]}
           onClose={() => setReview(false)}
         />
       )}
@@ -2108,7 +2111,7 @@ export function DocumentComposer({
             setLines((ls) =>
               ls.map((l, i) =>
                 i === allocatingLineIndex
-                  ? {...l, stockAllocations: allocations, serials}
+                  ? { ...l, stockAllocations: allocations, serials }
                   : l
               )
             );
@@ -2361,6 +2364,7 @@ export default function Documents({
     fetchPurchasesPage,
     fetchQuotationsPage,
     fetchQuotationDetailApi,
+    shareQuotationApi,
     convertQuotationApi,
     cancelQuotationApi,
     reopenQuotationApi,
@@ -2386,20 +2390,20 @@ export default function Documents({
   const [categoryFilter, setCategoryFilter] = useState('All categories');
   const [purchasePage, setPurchasePage] = useState(() => Math.max(1, parseInt(searchParams?.get('page') || '1', 10)));
   const [quotationPage, setQuotationPage] = useState(1);
-  const [quotationPageData, setQuotationPageData] = useState<{records: Bill[]; total: number; totalPages: number} | null>(null);
+  const [quotationPageData, setQuotationPageData] = useState<{ records: Bill[]; total: number; totalPages: number } | null>(null);
   const [quotationListLoading, setQuotationListLoading] = useState(false);
 
   const [invoicePage, setInvoicePage] = useState(1);
-  const [invoicePageData, setInvoicePageData] = useState<{records: Bill[]; total: number; totalPages: number} | null>(null);
+  const [invoicePageData, setInvoicePageData] = useState<{ records: Bill[]; total: number; totalPages: number } | null>(null);
   const [invoiceListLoading, setInvoiceListLoading] = useState(false);
 
   const [salesSummary, setSalesSummary] = useState<any>(null);
 
   // Live Modals for Quotation & Invoice
   const [issueModalOpen, setIssueModalOpen] = useState(false);
-  const [issueTargetDraft, setIssueTargetDraft] = useState<{id: string; version: number; totalPaise: number; customerId: string} | null>(null);
+  const [issueTargetDraft, setIssueTargetDraft] = useState<{ id: string; version: number; totalPaise: number; customerId: string } | null>(null);
   const [receiptModalOpen, setReceiptModalOpen] = useState(false);
-  const [receiptTargetInvoice, setReceiptTargetInvoice] = useState<{id: string; customerId: string; dueAmount: number} | null>(null);
+  const [receiptTargetInvoice, setReceiptTargetInvoice] = useState<{ id: string; customerId: string; dueAmount: number } | null>(null);
   const [quoteCancelOpen, setQuoteCancelOpen] = useState(false);
   const [quoteReopenOpen, setQuoteReopenOpen] = useState(false);
   const [invCancelOpen, setInvCancelOpen] = useState(false);
@@ -2422,13 +2426,17 @@ export default function Documents({
   // Detail view state
   const [detailData, setDetailData] = useState<any>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
+  const detailRequestRef = useRef(0);
+  const [quotationSharing, setQuotationSharing] = useState(false);
+  const quotationShareAttempt = useRef<{fingerprint: string; key: string} | null>(null);
   const [detailTab, setDetailTab] = useState<'Overview' | 'Receipts' | 'Payments' | 'Returns' | 'Credit notes'>('Overview');
   const [reversalModal, setReversalModal] = useState<{
     open: boolean;
     type: 'receipt' | 'return' | 'payment' | 'allocation';
     id: string;
     title: string;
-  }>({open: false, type: 'receipt', id: '', title: ''});
+  }>({ open: false, type: 'receipt', id: '', title: '' });
   const [reversalReason, setReversalReason] = useState('');
   const [reversalBusy, setReversalBusy] = useState(false);
 
@@ -2465,7 +2473,7 @@ export default function Documents({
     if (!id || !purchase || !isLive) return;
     setRcptLoading(true);
     setRcptError('');
-    fetchPurchaseReceiptsApi(id, {page: rcptPage, limit: 10})
+    fetchPurchaseReceiptsApi(id, { page: rcptPage, limit: 10 })
       .then((res: any) => {
         setRcptList(res.receipts || res.records || []);
         setRcptTotalPages(res.totalPages || 1);
@@ -2479,7 +2487,7 @@ export default function Documents({
     if (!id || !purchase || !isLive) return;
     setAllocLoading(true);
     setAllocError('');
-    fetchPurchaseAllocationsApi(id, {page: allocPage, limit: 10})
+    fetchPurchaseAllocationsApi(id, { page: allocPage, limit: 10 })
       .then((res: any) => {
         setAllocList(res.allocations || res.records || []);
         setAllocTotalPages(res.totalPages || 1);
@@ -2493,7 +2501,7 @@ export default function Documents({
     if (!id || !purchase || !isLive) return;
     setRetLoading(true);
     setRetError('');
-    fetchPurchaseReturnsApi(id, {page: retPage, limit: 10})
+    fetchPurchaseReturnsApi(id, { page: retPage, limit: 10 })
       .then((res: any) => {
         setRetList(res.returns || res.records || []);
         setRetTotalPages(res.totalPages || 1);
@@ -2507,7 +2515,7 @@ export default function Documents({
     if (!id || !purchase || !isLive) return;
     setCnLoading(true);
     setCnError('');
-    fetchPurchaseCreditNotesApi(id, {page: cnPage, limit: 10})
+    fetchPurchaseCreditNotesApi(id, { page: cnPage, limit: 10 })
       .then((res: any) => {
         setCnList(res.creditNotes || res.records || []);
         setCnTotalPages(res.totalPages || 1);
@@ -2544,20 +2552,26 @@ export default function Documents({
 
   // Summary counters
   const [summary, setSummary] = useState<any>(null);
-  const [purchasePageData, setPurchasePageData] = useState<{records: Purchase[]; total: number; totalPages: number} | null>(null);
+  const [summaryError, setSummaryError] = useState('');
+  const [summaryReload, setSummaryReload] = useState(0);
+  const [purchasePageData, setPurchasePageData] = useState<{ records: Purchase[]; total: number; totalPages: number } | null>(null);
   const [purchaseListLoading, setPurchaseListLoading] = useState(false);
 
   const record = purchase
     ? (detailData?.purchase ? mapPurchaseFromApi(detailData.purchase) : state.purchases.find((b) => b.id === id))
     : quotation
-    ? (detailData?.quotation ? detailData.quotation : state.bills.find((b) => b.id === id && b.kind === 'Quotation'))
-    : (detailData?.invoice ? detailData.invoice : state.bills.find((b) => b.id === id && b.kind !== 'Quotation'));
+      ? (detailData?.quotation ? detailData.quotation : state.bills.find((b) => b.id === id && b.kind === 'Quotation'))
+      : (detailData?.invoice ? detailData.invoice : state.bills.find((b) => b.id === id && b.kind !== 'Quotation'));
 
   const refreshDetail = () => {
     if (id && isLive) {
+      const requestId = ++detailRequestRef.current;
       setDetailLoading(true);
+      setDetailError('');
+      setDetailData(null);
       if (purchase) {
         fetchPurchaseDetailApi(id).then((res) => {
+          if (requestId !== detailRequestRef.current) return;
           if (res?.purchase) {
             setDetailData(res);
             if (res.receipts?.length && !rcptList.length) setRcptList(res.receipts);
@@ -2565,37 +2579,51 @@ export default function Documents({
             if (res.returns?.length && !retList.length) setRetList(res.returns);
             if (res.creditNotes?.length && !cnList.length) setCnList(res.creditNotes);
           }
-        }).catch(() => setDetailData({notFound: true})).finally(() => setDetailLoading(false));
+        }).catch((error) => {
+          if (requestId === detailRequestRef.current) setDetailError(error instanceof Error ? error.message : 'Could not load purchase.');
+        }).finally(() => { if (requestId === detailRequestRef.current) setDetailLoading(false); });
       } else if (quotation) {
         fetchQuotationDetailApi(id).then((res) => {
+          if (requestId !== detailRequestRef.current) return;
           if (res?.quotation) {
-            setDetailData({quotation: mapQuotationFromApi(res.quotation), raw: res.quotation});
+            setDetailData({ quotation: mapQuotationFromApi(res.quotation), raw: res.quotation });
           }
-        }).catch(() => setDetailData({notFound: true})).finally(() => setDetailLoading(false));
+        }).catch((error) => {
+          if (requestId === detailRequestRef.current) setDetailError(error instanceof Error ? error.message : 'Could not load quotation.');
+        }).finally(() => { if (requestId === detailRequestRef.current) setDetailLoading(false); });
       } else {
         fetchInvoiceDetailApi(id).then((res) => {
+          if (requestId !== detailRequestRef.current) return;
           if (res?.invoice) {
-            setDetailData({invoice: mapInvoiceFromApi(res.invoice), raw: res.invoice});
+            setDetailData({ invoice: mapInvoiceFromApi(res.invoice), raw: res.invoice });
           }
-        }).catch(() => setDetailData({notFound: true})).finally(() => setDetailLoading(false));
+        }).catch((error) => {
+          if (requestId === detailRequestRef.current) setDetailError(error instanceof Error ? error.message : 'Could not load invoice.');
+        }).finally(() => { if (requestId === detailRequestRef.current) setDetailLoading(false); });
       }
     }
   };
 
   useEffect(() => {
     refreshDetail();
+    return () => { detailRequestRef.current += 1; };
   }, [id, purchase, quotation, isLive]);
 
   useEffect(() => {
     if (purchase && !id && isLive) {
+      setSummaryError('');
       fetch('/api/purchases/summary')
-        .then((r) => r.json())
+        .then(async (r) => {
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error || 'Could not load purchase summary.');
+          return data;
+        })
         .then((data) => {
           setSummary(data.summary || data);
         })
-        .catch(() => {});
+        .catch((error) => setSummaryError(error instanceof Error ? error.message : 'Could not load purchase summary.'));
     }
-  }, [purchase, id, isLive]);
+  }, [purchase, id, isLive, summaryReload]);
 
   useEffect(() => {
     if (!purchase && !id && isLive) {
@@ -2604,7 +2632,7 @@ export default function Documents({
         .then((data) => {
           setSalesSummary(data.summary || data);
         })
-        .catch(() => {});
+        .catch(() => { });
     }
   }, [purchase, id, isLive]);
 
@@ -2659,10 +2687,10 @@ export default function Documents({
 
   const list = (
     purchase
-      ? (isLive && purchasePageData ? purchasePageData.records : state.purchases)
+      ? (isLive ? (purchasePageData?.records || []) : state.purchases)
       : quotation
-      ? (isLive && quotationPageData ? quotationPageData.records : state.bills.filter((b) => b.kind === 'Quotation'))
-      : (isLive && invoicePageData ? invoicePageData.records : state.bills.filter((b) => b.kind !== 'Quotation'))
+        ? (isLive ? (quotationPageData?.records || []) : state.bills.filter((b) => b.kind === 'Quotation'))
+        : (isLive ? (invoicePageData?.records || []) : state.bills.filter((b) => b.kind !== 'Quotation'))
   ).filter((b) => {
     if (isLive) return true;
     const p = purchase
@@ -2692,7 +2720,7 @@ export default function Documents({
 
   const path = purchase ? '/purchases' : quotation ? '/quotations' : '/sales';
   const purchaseExportUrl = (format: string) => {
-    const query = new URLSearchParams({format});
+    const query = new URLSearchParams({ format });
     if (q.trim()) query.set('search', q.trim());
     if (docStatusFilter !== 'All') query.set('documentStatus', docStatusFilter);
     if (billStatusFilter !== 'All') query.set('billStatus', billStatusFilter);
@@ -2703,7 +2731,7 @@ export default function Documents({
   };
 
   const quotationExportUrl = (format: string) => {
-    const query = new URLSearchParams({format});
+    const query = new URLSearchParams({ format });
     if (q.trim()) query.set('search', q.trim());
     if (status !== 'All') query.set('status', status);
     if (date) { query.set('dateFrom', date); query.set('dateTo', date); }
@@ -2711,7 +2739,7 @@ export default function Documents({
   };
 
   const invoiceExportUrl = (format: string) => {
-    const query = new URLSearchParams({format});
+    const query = new URLSearchParams({ format });
     if (q.trim()) query.set('search', q.trim());
     if (status !== 'All') query.set('status', status);
     if (status === 'Unpaid') query.set('hasDue', 'true');
@@ -2719,7 +2747,20 @@ export default function Documents({
     return `/api/sales/invoices/export?${query.toString()}`;
   };
 
-  if (id && purchase && isLive && (detailLoading || !detailData)) return <Empty title="Loading purchase…" text="Loading the live purchase record." />;
+  if (id && isLive && (detailLoading || (!detailData && !detailError))) {
+    const documentName = purchase ? 'purchase' : quotation ? 'quotation' : 'invoice';
+    return <Empty title={`Loading ${documentName}…`} text={`Loading the live ${documentName} details. A newly created document may take a moment to appear.`} />;
+  }
+  if (id && isLive && detailError) {
+    const missing = /not found/i.test(detailError);
+    return (
+      <Empty
+        title={missing ? 'Document not found' : 'Could not load document'}
+        text={missing ? 'This document does not exist or is unavailable to this company.' : detailError}
+        action={<div className="form-actions"><Btn secondary onClick={refreshDetail}>Retry</Btn><Link href={path}>Back to list</Link></div>}
+      />
+    );
+  }
   if (id && !record) {
     return (
       <Empty
@@ -2741,7 +2782,7 @@ export default function Documents({
     if (!reversalReason.trim()) return notify('Reason for reversal is required.');
     setReversalBusy(true);
     try {
-      let res: {success: boolean; error?: string} = {success: false};
+      let res: { success: boolean; error?: string } = { success: false };
       if (reversalModal.type === 'receipt') {
         res = await reversePurchaseReceiptApi(reversalModal.id, reversalReason.trim());
       } else if (reversalModal.type === 'return') {
@@ -2754,7 +2795,7 @@ export default function Documents({
 
       if (res.success) {
         notify('Reversal recorded successfully.');
-        setReversalModal({open: false, type: 'receipt', id: '', title: ''});
+        setReversalModal({ open: false, type: 'receipt', id: '', title: '' });
         setReversalReason('');
         refreshDetail();
       } else {
@@ -2780,10 +2821,10 @@ export default function Documents({
           record
             ? `${customer?.name || 'Unknown'} · ${dateLabel(record.date)}`
             : purchase
-            ? 'Complete procurement lifecycle: purchase orders, stock receipts, supplier bills, and settlements.'
-            : quotation
-            ? 'Create clear estimates for products, PC builds and services.'
-            : 'Every sale and service invoice, with payment status at a glance.'
+              ? 'Purchase orders, stock receipts, supplier bills, and settlements.'
+              : quotation
+                ? 'Create clear estimates for products, PC builds and services.'
+                : 'Every sale and service invoice, with payment status at a glance.'
         }
         actions={
           record ? (
@@ -2796,21 +2837,33 @@ export default function Documents({
               )}
               {quotation && record.status !== 'Converted' && record.status !== 'Cancelled' && (
                 <>
-                  <Btn
+                  {record.status === 'Draft' && <Btn
                     secondary
-                    onClick={() => {
-                      setState((s) => ({
-                        ...s,
-                        bills: s.bills.map((b) => (b.id === id ? {...b, status: 'Shared'} : b)),
-                      }));
-                      notify('Marked as shared. No message was sent.');
+                    disabled={quotationSharing}
+                    onClick={async () => {
+                      if (!id || quotationSharing) return;
+                      const version = detailData?.raw?.version ?? record.version ?? 1;
+                      const fingerprint = `${id}:${version}`;
+                      if (quotationShareAttempt.current?.fingerprint !== fingerprint) {
+                        quotationShareAttempt.current = {fingerprint, key: `quote-share-${id}-${version}-${Date.now()}`};
+                      }
+                      setQuotationSharing(true);
+                      try {
+                        const result = await shareQuotationApi(id, version, quotationShareAttempt.current.key);
+                        if (!result.success) return notify(result.error || 'Could not mark quotation as shared.');
+                        quotationShareAttempt.current = null;
+                        notify('Quotation marked as shared. No message was sent automatically.');
+                        refreshDetail();
+                      } finally {
+                        setQuotationSharing(false);
+                      }
                     }}
                   >
-                    Mark shared
-                  </Btn>
-                  <Link className="btn secondary" href={`/quotations/new?edit=${id}`}>
+                    {quotationSharing ? 'Updating…' : 'Mark shared'}
+                  </Btn>}
+                  {record.status === 'Draft' && <Link className="btn secondary" href={`/quotations/new?edit=${id}`}>
                     Edit quotation
-                  </Link>
+                  </Link>}
                   <Link href={`/sales/new?from=${id}`} className="btn">
                     Convert to invoice
                   </Link>
@@ -2888,7 +2941,7 @@ export default function Documents({
                 Reports / Excel / PDF
               </Link>
               {purchase ? (
-                <div style={{display: 'flex', gap: '0.5rem'}}>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <Btn secondary onClick={() => window.open(purchaseExportUrl('csv'), '_blank')}>
                     <Download size={14} />
                     CSV
@@ -2903,7 +2956,7 @@ export default function Documents({
                   </Btn>
                 </div>
               ) : quotation ? (
-                <div style={{display: 'flex', gap: '0.5rem'}}>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <Btn secondary onClick={() => window.open(quotationExportUrl('csv'), '_blank')}>
                     <Download size={14} />
                     CSV
@@ -2918,7 +2971,7 @@ export default function Documents({
                   </Btn>
                 </div>
               ) : (
-                <div style={{display: 'flex', gap: '0.5rem'}}>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <Btn secondary onClick={() => window.open(invoiceExportUrl('csv'), '_blank')}>
                     <Download size={14} />
                     CSV
@@ -2956,75 +3009,76 @@ export default function Documents({
       {/* Summary Cards */}
       {!record && (
         purchase ? (
-          <div className="summary-dashboard" style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginBottom: '1.5rem'}}>
-            <Card title="Draft orders">
-              <div className="body-pad" role="button" tabIndex={0} onClick={() => setDocStatusFilter('Draft')}>
-                <h2>{summary?.draftCount ?? state.purchases.filter((p) => p.documentStatus === 'Draft').length}</h2>
-                <p>Awaiting confirmation</p>
+          <>
+            {summaryError && (
+              <div className="notice" role="alert" style={{ marginBottom: '1rem' }}>
+                {summaryError} <Btn secondary onClick={() => setSummaryReload((value) => value + 1)}>Retry</Btn>
               </div>
-            </Card>
-            <Card title="Confirmed orders">
-              <div className="body-pad" role="button" tabIndex={0} onClick={() => setDocStatusFilter('Confirmed')}>
-                <h2>{summary?.confirmedOrderCount ?? state.purchases.filter((p) => p.documentStatus === 'Confirmed').length}</h2>
-                <p>Pending receipt or bill</p>
-              </div>
-            </Card>
-            <Card title="Posted bill value">
-              <div className="body-pad">
-                <h2>{money(summary?.postedValuePaise != null ? summary.postedValuePaise / 100 : state.purchases.filter((p) => p.billStatus === 'Posted').reduce((n, p) => n + roundedTotal(p), 0))}</h2>
-                <p>Total posted supplier liability</p>
-              </div>
-            </Card>
-            <Card title="Unpaid dues">
-              <div className="body-pad" role="button" tabIndex={0} onClick={() => { setBillStatusFilter('Posted'); setPaymentStatusFilter('Unpaid'); }}>
-                <h2 style={{color: 'var(--error, #e53935)'}}>
-                  {money(summary?.unpaidDuePaise != null ? summary.unpaidDuePaise / 100 : state.purchases.reduce((n, p) => n + balance(state, p), 0))}
-                </h2>
-                <p>Due to suppliers</p>
-              </div>
-            </Card>
-            <Card title="Awaiting receipt">
-              <div className="body-pad" role="button" tabIndex={0} onClick={() => setReceiptStatusFilter('NotReceived')}>
-                <h2>{summary?.awaitingReceiptCount ?? state.purchases.filter((p) => p.receiptStatus === 'NotReceived' && p.billStatus === 'Posted').length}</h2>
-                <p>Bills posted, 0 stock received</p>
-              </div>
-            </Card>
-            <Card title="Partly received">
-              <div className="body-pad" role="button" tabIndex={0} onClick={() => setReceiptStatusFilter('PartlyReceived')}>
-                <h2>{summary?.partlyReceivedCount ?? state.purchases.filter((p) => p.receiptStatus === 'PartlyReceived').length}</h2>
-                <p>Orders with remaining balance</p>
-              </div>
-            </Card>
-            <Card title="Available advance">
-              <div className="body-pad">
-                <h2>{money(summary?.availableAdvancePaise != null ? summary.availableAdvancePaise / 100 : 0)}</h2>
-                <p>Supplier prepayments available</p>
-              </div>
-            </Card>
-          </div>
+            )}
+            <div className="summary-dashboard" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+              <Card title="Draft orders">
+                <div className="body-pad" role="button" tabIndex={0} onClick={() => setDocStatusFilter('Draft')}>
+                  <h2>{isLive ? (summary ? summary.draftCount : '…') : state.purchases.filter((p) => p.documentStatus === 'Draft').length}</h2>
+                  <p>Awaiting confirmation</p>
+                </div>
+              </Card>
+              <Card title="Posted bill value">
+                <div className="body-pad">
+                  <h2>{isLive ? (summary ? money(summary.postedValuePaise / 100) : '…') : money(state.purchases.filter((p) => p.billStatus === 'Posted').reduce((n, p) => n + roundedTotal(p), 0))}</h2>
+                  <p>Original value of posted supplier bills</p>
+                </div>
+              </Card>
+              <Card title="Unpaid dues">
+                <div className="body-pad" role="button" tabIndex={0} onClick={() => { setBillStatusFilter('Posted'); setPaymentStatusFilter('Unpaid'); }}>
+                  <h2 style={{ color: 'var(--error, #e53935)' }}>
+                    {isLive ? (summary ? money(summary.unpaidDuePaise / 100) : '…') : money(state.purchases.reduce((n, p) => n + balance(state, p), 0))}
+                  </h2>
+                  <p>Due to suppliers</p>
+                </div>
+              </Card>
+              <Card title="Awaiting receipt">
+                <div className="body-pad" role="button" tabIndex={0} onClick={() => setReceiptStatusFilter('NotReceived')}>
+                  <h2>{isLive ? (summary ? summary.awaitingReceiptCount : '…') : state.purchases.filter((p) => p.receiptStatus === 'NotReceived' && p.billStatus === 'Posted').length}</h2>
+                  <p>Bills posted, 0 stock received</p>
+                </div>
+              </Card>
+              <Card title="Partly received">
+                <div className="body-pad" role="button" tabIndex={0} onClick={() => setReceiptStatusFilter('PartlyReceived')}>
+                  <h2>{isLive ? (summary ? summary.partlyReceivedCount : '…') : state.purchases.filter((p) => p.receiptStatus === 'PartlyReceived').length}</h2>
+                  <p>Orders with remaining balance</p>
+                </div>
+              </Card>
+              <Card title="Available advance">
+                <div className="body-pad">
+                  <h2>{isLive ? (summary ? money(summary.availableAdvancePaise / 100) : '…') : money(0)}</h2>
+                  <p>Supplier prepayments available</p>
+                </div>
+              </Card>
+            </div>
+          </>
         ) : quotation ? (
-          <div className="summary-dashboard" style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginBottom: '1.5rem'}}>
+          <div className="summary-dashboard" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
             <Card title="Draft quotations">
               <div className="body-pad" role="button" tabIndex={0} onClick={() => setStatus('Draft')}>
-                <h2>{salesSummary?.quotations?.draft ?? list.filter((q) => q.status === 'Draft').length}</h2>
+                <h2>{salesSummary?.quotations?.draftCount ?? list.filter((q) => q.status === 'Draft').length}</h2>
                 <p>Pending review</p>
               </div>
             </Card>
             <Card title="Shared quotations">
               <div className="body-pad" role="button" tabIndex={0} onClick={() => setStatus('Shared')}>
-                <h2>{salesSummary?.quotations?.shared ?? list.filter((q) => q.status === 'Shared').length}</h2>
+                <h2>{salesSummary?.quotations?.sentCount ?? list.filter((q) => q.status === 'Shared').length}</h2>
                 <p>Sent to customers</p>
               </div>
             </Card>
             <Card title="Converted to invoice">
               <div className="body-pad" role="button" tabIndex={0} onClick={() => setStatus('Converted')}>
-                <h2>{salesSummary?.quotations?.converted ?? list.filter((q) => q.status === 'Converted').length}</h2>
+                <h2>{salesSummary?.quotations?.convertedCount ?? list.filter((q) => q.status === 'Converted').length}</h2>
                 <p>Accepted and billed</p>
               </div>
             </Card>
             <Card title="Expired">
               <div className="body-pad" role="button" tabIndex={0} onClick={() => setStatus('Expired')}>
-                <h2>{salesSummary?.quotations?.expired ?? list.filter((q) => q.status === 'Expired').length}</h2>
+                <h2>{salesSummary?.quotations?.expiredCount ?? list.filter((q) => q.status === 'Expired').length}</h2>
                 <p>Past valid-until date</p>
               </div>
             </Card>
@@ -3036,7 +3090,7 @@ export default function Documents({
             </Card>
           </div>
         ) : (
-          <div className="summary-dashboard" style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginBottom: '1.5rem'}}>
+          <div className="summary-dashboard" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
             <Card title="Draft invoices">
               <div className="body-pad" role="button" tabIndex={0} onClick={() => setStatus('Draft')}>
                 <h2>{salesSummary?.invoices?.draftCount ?? list.filter((b) => b.status === 'Draft').length}</h2>
@@ -3057,7 +3111,7 @@ export default function Documents({
             </Card>
             <Card title="Payments collected">
               <div className="body-pad">
-                <h2 style={{color: 'var(--success, #2e7d32)'}}>
+                <h2 style={{ color: 'var(--success, #2e7d32)' }}>
                   {money(salesSummary?.invoices?.paidPaise != null ? salesSummary.invoices.paidPaise / 100 : list.reduce((n, b) => n + paid(state, b.id), 0))}
                 </h2>
                 <p>Settled receipts</p>
@@ -3065,7 +3119,7 @@ export default function Documents({
             </Card>
             <Card title="Outstanding dues">
               <div className="body-pad" role="button" tabIndex={0} onClick={() => setStatus('Unpaid')}>
-                <h2 style={{color: 'var(--error, #e53935)'}}>
+                <h2 style={{ color: 'var(--error, #e53935)' }}>
                   {money(salesSummary?.invoices?.duePaise != null ? salesSummary.invoices.duePaise / 100 : list.reduce((n, b) => n + balance(state, b), 0))}
                 </h2>
                 <p>Pending customer collections</p>
@@ -3109,8 +3163,8 @@ export default function Documents({
                   {balance(state, record) === 0
                     ? 'Paid'
                     : paid(state, record.id) > 0
-                    ? 'Partly paid'
-                    : 'Unpaid'}
+                      ? 'Partly paid'
+                      : 'Unpaid'}
                 </Badge>
               </>
             )}
@@ -3171,6 +3225,11 @@ export default function Documents({
 
               {detailTab === 'Receipts' && (
                 <Card title="Linked Stock Receipts">
+                  <div className="body-pad notice" style={{ margin: 12 }}>
+                    <strong>Undo receipt is for correcting a mistaken stock entry.</strong> It removes this receipt's untouched
+                    stock but does not cancel the supplier bill or reduce the amount payable. To physically send goods back to
+                    the supplier, use <b>Record supplier return</b> in the Returns tab.
+                  </div>
                   {rcptError ? (
                     <div className="body-pad stack">
                       <p className="error">{rcptError}</p>
@@ -3214,11 +3273,11 @@ export default function Documents({
                                             open: true,
                                             type: 'receipt',
                                             id: rcpt._id || rcpt.id,
-                                            title: `Reverse Receipt ${rcpt.receiptNumber}`,
+                                            title: `Undo Stock Receipt ${rcpt.receiptNumber}`,
                                           })
                                         }
                                       >
-                                        <RotateCcw size={14} /> Reverse receipt
+                                        <RotateCcw size={14} /> Undo receipt error
                                       </Btn>
                                     ) : (
                                       <small className="muted" title={rcpt.reverseBlockReason}>
@@ -3240,9 +3299,9 @@ export default function Documents({
                         </table>
                       </div>
                       {rcptTotalPages > 1 && (
-                        <div className="table-footer" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                        <div className="table-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span>Page {rcptPage} of {rcptTotalPages} ({rcptTotal} receipts)</span>
-                          <div style={{display: 'flex', gap: '0.5rem'}}>
+                          <div style={{ display: 'flex', gap: '0.5rem' }}>
                             <Btn secondary disabled={rcptPage <= 1 || rcptLoading} onClick={() => setRcptPage((p) => p - 1)}>Previous</Btn>
                             <Btn secondary disabled={rcptPage >= rcptTotalPages || rcptLoading} onClick={() => setRcptPage((p) => p + 1)}>Next</Btn>
                           </div>
@@ -3316,9 +3375,9 @@ export default function Documents({
                         </table>
                       </div>
                       {allocTotalPages > 1 && (
-                        <div className="table-footer" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                        <div className="table-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span>Page {allocPage} of {allocTotalPages} ({allocTotal} allocations)</span>
-                          <div style={{display: 'flex', gap: '0.5rem'}}>
+                          <div style={{ display: 'flex', gap: '0.5rem' }}>
                             <Btn secondary disabled={allocPage <= 1 || allocLoading} onClick={() => setAllocPage((p) => p - 1)}>Previous</Btn>
                             <Btn secondary disabled={allocPage >= allocTotalPages || allocLoading} onClick={() => setAllocPage((p) => p + 1)}>Next</Btn>
                           </div>
@@ -3331,6 +3390,10 @@ export default function Documents({
 
               {detailTab === 'Returns' && (
                 <Card title="Linked Supplier Returns">
+                  <div className="body-pad" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+                    <p className="muted" style={{ margin: 0 }}>Physical goods sent back to the supplier appear here. The bill due changes only after the supplier credit note is accepted.</p>
+                    <Link className="btn secondary" href={`/returns?reference=${id}`}>Record supplier return</Link>
+                  </div>
                   {retError ? (
                     <div className="body-pad stack">
                       <p className="error">{retError}</p>
@@ -3357,13 +3420,10 @@ export default function Documents({
                                 <td>{dateLabel(ret.date)}</td>
                                 <td>{ret.reason}</td>
                                 <td>
-                                  {(ret.lines || []).map((l: any, idx: number) => (
-                                    <div key={idx}>
-                                      {l.productName}: {l.quantity} unit(s)
-                                    </div>
-                                  ))}
+                                  {ret.productName || detailData?.purchase?.lines?.find((line: any) => line.lineId === ret.purchaseLineId)?.productSnapshot?.name || ret.productId || 'Product'}: {ret.quantity || 0} unit(s)
+                                  {ret.serials?.length > 0 && <div className="muted">Serials: {ret.serials.join(', ')}</div>}
                                 </td>
-                                <td><Badge>{ret.isReversed ? 'Reversed' : 'Completed'}</Badge></td>
+                                <td><Badge>{ret.isReversed ? 'Reversed' : ret.status === 'PendingCreditAcceptance' ? 'Awaiting supplier credit' : ret.status === 'CreditAccepted' ? 'Credit accepted' : ret.status || 'Recorded'}</Badge></td>
                                 <td>
                                   {!ret.isReversed && (
                                     ret.canReverse ? (
@@ -3398,9 +3458,9 @@ export default function Documents({
                         </table>
                       </div>
                       {retTotalPages > 1 && (
-                        <div className="table-footer" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                        <div className="table-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span>Page {retPage} of {retTotalPages} ({retTotal} returns)</span>
-                          <div style={{display: 'flex', gap: '0.5rem'}}>
+                          <div style={{ display: 'flex', gap: '0.5rem' }}>
                             <Btn secondary disabled={retPage <= 1 || retLoading} onClick={() => setRetPage((p) => p - 1)}>Previous</Btn>
                             <Btn secondary disabled={retPage >= retTotalPages || retLoading} onClick={() => setRetPage((p) => p + 1)}>Next</Btn>
                           </div>
@@ -3451,9 +3511,9 @@ export default function Documents({
                         </table>
                       </div>
                       {cnTotalPages > 1 && (
-                        <div className="table-footer" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                        <div className="table-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span>Page {cnPage} of {cnTotalPages} ({cnTotal} credit notes)</span>
-                          <div style={{display: 'flex', gap: '0.5rem'}}>
+                          <div style={{ display: 'flex', gap: '0.5rem' }}>
                             <Btn secondary disabled={cnPage <= 1 || cnLoading} onClick={() => setCnPage((p) => p - 1)}>Previous</Btn>
                             <Btn secondary disabled={cnPage >= cnTotalPages || cnLoading} onClick={() => setCnPage((p) => p + 1)}>Next</Btn>
                           </div>
@@ -3553,7 +3613,7 @@ export default function Documents({
         </>
       ) : (
         <Card>
-          <div className="toolbar" style={{flexWrap: 'wrap', gap: '0.75rem'}}>
+          <div className="toolbar" style={{ flexWrap: 'wrap', gap: '0.75rem' }}>
             <SearchBox value={q} onChange={setQ} placeholder="Search document or customer…" />
 
             {purchase ? (
@@ -3665,8 +3725,8 @@ export default function Documents({
                         {purchase
                           ? ((b as Purchase).purchaseNumber || b.id)
                           : quotation
-                          ? ((b as any).quotationNumber || b.id)
-                          : ((b as any).invoiceNumber || b.id)}
+                            ? ((b as any).quotationNumber || b.id)
+                            : ((b as any).invoiceNumber || b.id)}
                       </Link>
                       <small>
                         {purchase
@@ -3684,12 +3744,12 @@ export default function Documents({
                     {!quotation && <td>{money(purchase && isLive ? (b as Purchase).dueAmount || 0 : isLive && (b as any).dueAmount != null ? (b as any).dueAmount : balance(state, b))}</td>}
                     <td>
                       {purchase ? (
-                        <div style={{display: 'flex', flexDirection: 'column', gap: '0.25rem', alignItems: 'flex-start'}}>
-                          <div style={{display: 'flex', gap: '0.25rem', flexWrap: 'wrap'}}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', alignItems: 'flex-start' }}>
+                          <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
                             <span title="Document lifecycle state"><Badge>{(b as Purchase).documentStatus || 'Confirmed'}</Badge></span>
                             <span title="Supplier bill status"><Badge>{(b as Purchase).billStatus || 'Posted'}</Badge></span>
                           </div>
-                          <div style={{display: 'flex', gap: '0.25rem', flexWrap: 'wrap'}}>
+                          <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
                             <span title="Physical stock receipt"><Badge>{(b as Purchase).receiptStatus || 'Received'}</Badge></span>
                             <span title="Supplier payment settlement">
                               <Badge>
@@ -3697,8 +3757,8 @@ export default function Documents({
                                   (b as Purchase).dueAmount === 0 || balance(state, b) === 0
                                     ? 'Paid'
                                     : ((b as any).paidAmount || paid(state, b.id)) > 0
-                                    ? 'PartlyPaid'
-                                    : 'Unpaid'
+                                      ? 'PartlyPaid'
+                                      : 'Unpaid'
                                 )}
                               </Badge>
                             </span>
@@ -3709,12 +3769,12 @@ export default function Documents({
                           {quotation
                             ? b.status
                             : b.status === 'Draft'
-                            ? 'Draft'
-                            : (isLive && (b as any).dueAmount != null ? (b as any).dueAmount === 0 : balance(state, b) === 0)
-                            ? 'Paid'
-                            : (isLive && (b as any).paidAmount != null ? (b as any).paidAmount > 0 : paid(state, b.id) > 0)
-                            ? 'Partly paid'
-                            : 'Unpaid'}
+                              ? 'Draft'
+                              : (isLive && (b as any).dueAmount != null ? (b as any).dueAmount === 0 : balance(state, b) === 0)
+                                ? 'Paid'
+                                : (isLive && (b as any).paidAmount != null ? (b as any).paidAmount > 0 : paid(state, b.id) > 0)
+                                  ? 'Partly paid'
+                                  : 'Unpaid'}
                         </Badge>
                       )}
                     </td>
@@ -3729,7 +3789,20 @@ export default function Documents({
             </table>
           </div>
 
-          {!list.length && <Empty />}
+          {!list.length && (
+            <Empty
+              title={
+                (purchase && purchaseListLoading) || (quotation && quotationListLoading) || (!purchase && !quotation && invoiceListLoading)
+                  ? 'Loading live records…'
+                  : 'No matching records'
+              }
+              text={
+                (purchase && purchaseListLoading) || (quotation && quotationListLoading) || (!purchase && !quotation && invoiceListLoading)
+                  ? 'Records are being loaded from your company account.'
+                  : 'No records match the selected filters.'
+              }
+            />
+          )}
           <div className="table-footer">
             {purchase && isLive && purchasePageData ? (
               <>
@@ -3764,11 +3837,15 @@ export default function Documents({
 
       {/* Reversal Reason Modal */}
       {reversalModal.open && (
-        <Modal title={reversalModal.title} onClose={() => setReversalModal((m) => ({...m, open: false}))}>
+        <Modal title={reversalModal.title} onClose={() => setReversalModal((m) => ({ ...m, open: false }))}>
           <form onSubmit={handleExecuteReversal}>
             <div className="form-body">
               <p>
-                Reversal restores the prior accounting and stock condition. A clear reason is required for the audit log.
+                {reversalModal.type === 'receipt'
+                  ? 'This only undoes an incorrect stock receipt. The supplier bill and amount payable remain unchanged. It is allowed only while every received unit is untouched. Use a supplier return for goods physically sent back.'
+                  : reversalModal.type === 'return'
+                    ? 'This cancels the recorded supplier return and restores its stock. It is blocked after the linked supplier credit has downstream use.'
+                    : 'Reversal restores the prior accounting state. A clear reason is required for the audit log.'}
               </p>
               <Field label="Reason for reversal *">
                 <input
@@ -3781,7 +3858,7 @@ export default function Documents({
               </Field>
             </div>
             <div className="form-actions">
-              <Btn secondary onClick={() => setReversalModal((m) => ({...m, open: false}))}>
+              <Btn secondary onClick={() => setReversalModal((m) => ({ ...m, open: false }))}>
                 Cancel
               </Btn>
               <Btn danger type="submit" disabled={reversalBusy}>
@@ -3827,7 +3904,7 @@ export default function Documents({
               onClick={() => {
                 setState((s) => ({
                   ...s,
-                  bills: s.bills.map((b) => (b.id === id ? {...b, status: 'Cancelled'} : b)),
+                  bills: s.bills.map((b) => (b.id === id ? { ...b, status: 'Cancelled' } : b)),
                 }));
                 setCancel(false);
                 notify('Quotation cancelled.');

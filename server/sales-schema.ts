@@ -155,6 +155,11 @@ export const ConvertQuotationSchema = z.object({quotationId: Id, expectedVersion
 export const UpdateQuotationSchema = z.object({expectedVersion: z.number().int().min(1), quotation: CreateQuotationSchema});
 export const CancelQuotationSchema = z.object({expectedVersion: z.number().int().min(1), idempotencyKey: IdempotencyKey, reason: z.string().trim().min(1).max(500)});
 export const ReopenQuotationSchema = z.object({expectedVersion: z.number().int().min(1), idempotencyKey: IdempotencyKey, validUntil: CalendarDate});
+export const ShareQuotationSchema = z.object({
+  expectedVersion: z.number().int().min(1),
+  idempotencyKey: IdempotencyKey,
+  channel: z.enum(['Manual', 'WhatsApp', 'Email', 'Print']).default('Manual'),
+});
 
 export const ReservationListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).max(100000).default(1),

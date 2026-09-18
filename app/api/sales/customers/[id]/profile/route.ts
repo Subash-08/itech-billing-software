@@ -34,6 +34,7 @@ export async function GET(
     ] = await Promise.all([
       col(db, 'invoices')
         .find({tenantId, customerId, status: 'Issued'})
+        .sort({createdAt: -1, _id: -1})
         .toArray(),
       col(db, 'customerReturns')
         .find({tenantId, customerId})
@@ -62,22 +63,35 @@ export async function GET(
     let serviceTotalPaise = 0;
     let totalSalesPaise = 0;
     let outstandingInvoiceDuePaise = 0;
+    let newGoodsInvoiceCount = 0;
+    let usedGoodsInvoiceCount = 0;
+    let serviceInvoiceCount = 0;
+
+    const returnCreditsByInvoice = new Map<string, number>();
+    for (const ret of returns) {
+      const credit = ret.refundPaise ?? ret.totalRefundPaise ?? 0;
+      returnCreditsByInvoice.set(ret.invoiceId, (returnCreditsByInvoice.get(ret.invoiceId) || 0) + credit);
+    }
 
     for (const inv of invoices) {
       const t = inv.totalPaise || 0;
+      const net = Math.max(0, t - (returnCreditsByInvoice.get(inv._id) || 0));
       totalSalesPaise += t;
       outstandingInvoiceDuePaise += inv.duePaise || 0;
 
       if (inv.businessCategory === 'UsedGoods') {
-        usedGoodsTotalPaise += t;
+        usedGoodsTotalPaise += net;
+        usedGoodsInvoiceCount += 1;
       } else if (inv.businessCategory === 'Service' || inv.invoiceKind === 'Service') {
-        serviceTotalPaise += t;
+        serviceTotalPaise += net;
+        serviceInvoiceCount += 1;
       } else {
-        newGoodsTotalPaise += t;
+        newGoodsTotalPaise += net;
+        newGoodsInvoiceCount += 1;
       }
     }
 
-    const totalReturnsPaise = returns.reduce((s, r) => s + (r.refundPaise || 0), 0);
+    const totalReturnsPaise = returns.reduce((s, r) => s + (r.refundPaise ?? r.totalRefundPaise ?? 0), 0);
     const totalCollectionsPaise = receipts.reduce((s, r) => s + (r.totalAmountPaise || 0), 0);
     const availableAdvancesPaise = advances.reduce((s, a) => s + (a.remainingAmountPaise || 0), 0);
     const openingDuePaise = openingDue?.remainingDuePaise ?? openingDue?.originalAmountPaise ?? 0;
@@ -187,6 +201,9 @@ export async function GET(
         newGoodsTotalPaise,
         usedGoodsTotalPaise,
         serviceTotalPaise,
+        newGoodsInvoiceCount,
+        usedGoodsInvoiceCount,
+        serviceInvoiceCount,
       },
       summary: {
         totalSalesPaise,
@@ -195,6 +212,23 @@ export async function GET(
         outstandingDuePaise: totalOutstandingDuePaise,
         availableAdvancesPaise,
       },
+      invoices: invoices.slice(0, 25).map(inv => {
+        const returnCreditPaise = returnCreditsByInvoice.get(inv._id) || 0;
+        return {
+          _id: inv._id,
+          invoiceNumber: inv.invoiceNumber || inv._id,
+          invoiceDate: inv.invoiceDate,
+          invoiceKind: inv.invoiceKind || 'Sale',
+          businessCategory: inv.businessCategory || 'NewGoods',
+          status: inv.status,
+          paymentStatus: inv.paymentStatus || ((inv.duePaise || 0) > 0 ? 'Unpaid' : 'Paid'),
+          totalPaise: inv.totalPaise || 0,
+          returnCreditPaise,
+          netInvoicePaise: Math.max(0, (inv.totalPaise || 0) - returnCreditPaise),
+          duePaise: inv.duePaise || 0,
+        };
+      }),
+      invoiceCount: invoices.length,
       timeline: paginatedTimeline,
       pagination: {
         page,

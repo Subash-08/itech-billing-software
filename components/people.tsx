@@ -266,6 +266,8 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
   const [detailRecord, setDetailRecord] = useState<Customer | Supplier | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [customerProfile, setCustomerProfile] = useState<any>(null);
+  const [customerProfileLoading, setCustomerProfileLoading] = useState(false);
+  const [customerProfileError, setCustomerProfileError] = useState('');
 
   const isDetailRoute = Boolean(id && id !== 'new');
 
@@ -274,6 +276,7 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
     setDetailRecord(null);
     setDetailLoading(false);
     setCustomerProfile(null);
+    setCustomerProfileError('');
   }, [id, supplier]);
 
   useEffect(() => {
@@ -338,13 +341,19 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
   useEffect(() => {
     if (!isLive || !isDetailRoute || !id || supplier) return;
     let active = true;
+    setCustomerProfileLoading(true);
+    setCustomerProfileError('');
     fetchCustomerProfileApi(id)
       .then((data) => {
         if (active) setCustomerProfile(data);
       })
-      .catch(() => {
-        if (active) setCustomerProfile(null);
-      });
+      .catch((error) => {
+        if (active) {
+          setCustomerProfile(null);
+          setCustomerProfileError(error instanceof Error ? error.message : 'Failed to load customer activity.');
+        }
+      })
+      .finally(() => { if (active) setCustomerProfileLoading(false); });
     return () => {
       active = false;
     };
@@ -367,10 +376,29 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
     );
   }
 
-  const bills = person
+  const liveCustomerBills = (customerProfile?.invoices || []).map((invoice: any) => ({
+    id: invoice._id,
+    invoiceNumber: invoice.invoiceNumber,
+    customerId: id || '',
+    date: invoice.invoiceDate,
+    due: invoice.invoiceDate,
+    kind: invoice.invoiceKind === 'Service' ? 'Service' : 'Sale',
+    category: invoice.businessCategory === 'UsedGoods' ? 'Used goods' : invoice.businessCategory === 'Service' ? 'Service' : 'New goods',
+    status: invoice.status,
+    lines: [],
+    inclusive: true,
+    notes: '',
+    profit: null,
+    total: (invoice.totalPaise || 0) / 100,
+    dueAmount: (invoice.duePaise || 0) / 100,
+    returnCredit: (invoice.returnCreditPaise || 0) / 100,
+  }));
+  const bills: any[] = person
     ? supplier
       ? state.purchases.filter((b) => b.supplierId === id)
-      : state.bills.filter((b) => b.customerId === id && b.kind !== 'Quotation')
+      : isLive
+        ? liveCustomerBills
+        : state.bills.filter((b) => b.customerId === id && b.kind !== 'Quotation')
     : [];
 
   return (
@@ -401,7 +429,7 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
 
       {person ? (
         <>
-          <AccountHistory id={person.id} supplier={supplier} />
+          <AccountHistory id={person.id} supplier={supplier} profile={!supplier ? customerProfile : undefined} />
           <div className="detail-grid spaced">
             <div className="stack">
               <Card
@@ -415,7 +443,11 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
                   </Link>
                 }
               >
-                {bills.length ? (
+                {isLive && !supplier && customerProfileLoading ? (
+                  <Empty title="Loading invoices…" text="Loading this customer’s live invoice history." />
+                ) : isLive && !supplier && customerProfileError ? (
+                  <Empty title="Could not load invoices" text={customerProfileError} action={<Btn secondary onClick={() => setRefreshIndex((n) => n + 1)}>Retry</Btn>} />
+                ) : bills.length ? (
                   <div className="table-wrap">
                     <table>
                       <thead>
@@ -432,7 +464,7 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
                           <tr key={b.id}>
                             <td>
                               <Link className="record-link" href={`${supplier ? '/purchases' : '/sales'}/${b.id}`}>
-                                {b.id}
+                                {(b as any).invoiceNumber || b.id}
                               </Link>
                             </td>
                             <td>{dateLabel(b.date)}</td>
@@ -449,7 +481,7 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
                     </table>
                   </div>
                 ) : (
-                  <Empty title="No bills yet" text="New bills will appear here once billing is activated in Phase 3/4." />
+                  <Empty title="No invoices yet" text="Issued invoices for this customer will appear here." />
                 )}
               </Card>
 
