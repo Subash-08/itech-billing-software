@@ -180,6 +180,16 @@ type Store = {
   fetchCustomerProfileApi: (customerId: string, query?: {page?: number; limit?: number}) => Promise<any>;
 };
 
+function emptyLiveState(): State {
+  const clean = structuredClone(seed);
+  for (const key of Object.keys(clean) as (keyof State)[]) {
+    if (Array.isArray(clean[key])) (clean as any)[key] = [];
+  }
+  clean.defaultTemplateId = '';
+  clean.settings = {name: '', phone: '', email: '', address: '', gst: '', bank: '', account: '', ifsc: '', declaration: '', logo: ''};
+  return clean;
+}
+
 const Context = createContext<Store | null>(null);
 
 export function StoreProvider({children}: {children: ReactNode}) {
@@ -229,6 +239,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
       const meRes = await fetch('/api/auth/me', {cache: 'no-store'});
       if (!meRes.ok) {
         setIsLive(false);
+        setState(structuredClone(seed));
         setBusinessDataMode('demo-only');
         setCompanySession(null);
         setOpeningStatus(null);
@@ -240,6 +251,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
       setCompanySession(meData);
       setBusinessDataMode(meData.businessDataMode || 'live');
       setIsLive(true);
+      setState(emptyLiveState());
       if (!meData.profitUnlocked) {
         setRole('Staff');
       }
@@ -272,8 +284,8 @@ export function StoreProvider({children}: {children: ReactNode}) {
         suppliers: (boot.firstSuppliers || []).map(mapSupplierFromApi),
         products: (boot.firstProducts || []).map(mapProductFromApi),
         serviceCatalog: (boot.services || []).map(mapServiceFromApi),
-        templates: (boot.templates && boot.templates.length > 0) ? boot.templates.map(mapTemplateFromApi) : prev.templates,
-        defaultTemplateId: boot.defaultTemplateId || prev.defaultTemplateId,
+        templates: (boot.templates || []).map(mapTemplateFromApi),
+        defaultTemplateId: boot.defaultTemplateId || '',
         audit: (boot.recentAudit || []).map((a: any) => ({
           id: a._id || a.id,
           action: a.action,

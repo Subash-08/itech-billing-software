@@ -61,7 +61,7 @@ export type PendingUploadDocument = {
   name: string;
   requestedSize: number;
   requestedType: string;
-  status: 'Pending' | 'Completed' | 'Expired';
+  status: 'Pending' | 'Completed' | 'Expired' | 'CleanupPending' | 'Cleaned';
   signatureTimestamp: number;
   expiresAt: Date;
   createdAt: Date;
@@ -112,7 +112,7 @@ export async function resolveStorageConnection(
 } | null> {
   if (connectionId === 'local') return null;
 
-  if (connectionId === 'platform-v1' || connectionId.startsWith('platform-')) {
+  if (connectionId === 'platform-v1') {
     const platform = getPlatformCloudinaryConfig();
     if (!platform) {
       return {
@@ -157,6 +157,11 @@ export async function resolveStorageConnection(
     };
   }
 
+  const currentPlatform = getPlatformCloudinaryConfig();
+  if (doc.isPlatformDefault && currentPlatform?.cloudName === doc.cloudName) {
+    return {...currentPlatform, connectionId: doc._id, status: doc.status};
+  }
+
   try {
     const apiSecret = decryptStorageSecret(doc.encryptedApiSecret, {
       tenantId,
@@ -168,7 +173,7 @@ export async function resolveStorageConnection(
       cloudName: doc.cloudName,
       apiKey: doc.apiKey,
       apiSecret,
-      isCustom: true,
+      isCustom: !doc.isPlatformDefault,
       available: true,
       status: doc.status,
     };
@@ -199,7 +204,23 @@ export async function getTenantActiveStorageConnection(tenantId: string) {
   }
 
   const platform = getPlatformCloudinaryConfig();
-  if (platform) return platform;
+  if (platform) {
+    // Pin each new platform credential generation; changing the platform account
+    // must not redirect historical files to the new account.
+    const generation = createHash('sha256').update(JSON.stringify([tenantId, platform.cloudName, platform.apiKey, platform.apiSecret])).digest('hex');
+    const connectionId = `PLATFORM-${generation}`;
+    const now = new Date();
+    const doc: StorageConnectionDocument = {
+      _id: connectionId, tenantId, provider: 'cloudinary', status: 'ReadOnlyRetained',
+      cloudName: platform.cloudName, apiKey: platform.apiKey,
+      encryptedApiSecret: encryptStorageSecret(platform.apiSecret, {tenantId, connectionId, version: 1}),
+      isPlatformDefault: true, version: 1, createdAt: now, updatedAt: now,
+    };
+    try {
+      await db.collection<StorageConnectionDocument>('storageConnections').updateOne({_id: connectionId, tenantId}, {$setOnInsert: doc}, {upsert: true});
+    } catch (error: any) { if (error?.code !== 11000) throw error; }
+    return {...platform, connectionId};
+  }
 
   return null;
 }
@@ -765,6 +786,7 @@ export async function deleteFromCloudinary(
 
   try {
     const res = await fetch(`https://api.cloudinary.com/v1_1/${conn.cloudName}/${resourceType}/destroy`, {
+      signal: AbortSignal.timeout(8000),
       method: 'POST',
       body: new URLSearchParams({
         public_id: publicId,
@@ -785,10 +807,48 @@ export async function deleteFromCloudinary(
   }
 }
 
-export async function cleanupOrphanFiles(_identity: Identity) {
-  // The prior scanner omitted device.photos, invoice snapshots and warranty evidence.
-  // Do not delete assets until reference claims and attachment races are covered.
-  throw new AppError(409, 'Automatic file cleanup is temporarily disabled to protect saved attachments. Reference-safe cleanup must be completed before deleting unused assets.');
+export async function cleanupOrphanFiles(identity: Identity) {
+  // Only never-completed upload reservations are eligible. Saved files are not
+  // garbage-collected here, even if no current document references them.
+  const db = await database();
+  const tenantId = identity.tenantId;
+  const before = new Date(Date.now() - 72 * 60 * 60 * 1000);
+  const candidates = await db.collection<any>('pendingUploads').find({tenantId,
+    status: {$in: ['Pending', 'Expired', 'CleanupPending']}, expiresAt: {$lt: before},
+    $or: [{cleanupLeaseUntil: {$exists: false}}, {cleanupLeaseUntil: {$lt: new Date()}}],
+  }).sort({expiresAt: 1, _id: 1}).limit(5).toArray();
+  let deletedCount = 0, failedCount = 0, skippedCount = 0;
+  for (const candidate of candidates) {
+    const session = (await mongo()).startSession();
+    const lease = randomUUID();
+    let claimed: any = null;
+    try {
+      claimed = await session.withTransaction(async () => {
+        if (await db.collection('files').findOne({tenantId, $or: [{_id: candidate._id}, {publicId: candidate.publicId}]}, {session})) return null;
+        return db.collection<any>('pendingUploads').findOneAndUpdate({_id: candidate._id, tenantId,
+          status: {$in: ['Pending', 'Expired', 'CleanupPending']}, expiresAt: {$lt: before},
+          $or: [{cleanupLeaseUntil: {$exists: false}}, {cleanupLeaseUntil: {$lt: new Date()}}],
+        }, {$set: {status: 'CleanupPending', cleanupLease: lease, cleanupLeaseUntil: new Date(Date.now() + 5 * 60 * 1000)}}, {session, returnDocument: 'after'});
+      });
+    } finally { await session.endSession(); }
+    if (!claimed) { skippedCount++; continue; }
+    const conn = await resolveStorageConnection(tenantId, claimed.storageConnectionId);
+    const ownsPath = idPattern.test(claimed._id) && claimed.publicId === `itech/${tenantId}/${claimed._id}`;
+    let success = false;
+    if (ownsPath && conn?.available && conn.cloudName === claimed.cloudName) {
+      // Auto upload can store PDFs as raw or image; both owned namespaces are
+      // checked. The reservation cannot become Completed after the claim.
+      const image = await deleteFromCloudinary(tenantId, claimed.storageConnectionId, claimed.publicId, 'image');
+      const raw = await deleteFromCloudinary(tenantId, claimed.storageConnectionId, claimed.publicId, 'raw');
+      success = image.success && raw.success;
+    }
+    await db.collection('pendingUploads').updateOne({_id: claimed._id, tenantId, cleanupLease: lease}, {
+      $set: {status: success ? 'Cleaned' : 'CleanupPending', cleanupCheckedAt: new Date(), ...(success ? {cleanedAt: new Date()} : {})},
+      $unset: {cleanupLease: '', cleanupLeaseUntil: ''},
+    });
+    if (success) deletedCount++; else failedCount++;
+  }
+  return {deletedCount, failedCount, skippedCount, scope: 'Expired uploads only; saved files retained'};
 }
 
 export async function testCloudinaryStorage(input: {

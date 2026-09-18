@@ -210,7 +210,8 @@ export async function ensureIndexes() {
         safeCreateIndex(db.collection('storageConnections'), {tenantId: 1, _id: 1}),
         safeCreateIndex(db.collection('storageConnections'), {tenantId: 1, status: 1}),
         safeCreateIndex(db.collection('pendingUploads'), {tenantId: 1, userId: 1, status: 1}),
-        safeCreateIndex(db.collection('pendingUploads'), {expiresAt: 1}, {expireAfterSeconds: 0}),
+        // Keep expired upload evidence until provider cleanup is confirmed.
+        safeCreateIndex(db.collection('pendingUploads'), {tenantId: 1, expiresAt: 1}),
         safeCreateIndex(db.collection('pendingUploads'), {tenantId: 1, publicId: 1}, {unique: true}),
         safeCreateIndex(db.collection('authUsers'), {tenantId: 1}),
         safeCreateIndex(db.collection('authSessions'), {userId: 1}),
