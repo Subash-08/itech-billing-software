@@ -81,6 +81,8 @@ export async function GET(request: Request) {
 
         const rows = invoices.map((b) => {
           const total = (b.totalPaise || 0) / 100;
+          const returnCredits = (b.creditedReturnPaise || 0) / 100;
+          const netBilled = Math.max(0, total - returnCredits);
           const paid = (b.allocatedPaidPaise ?? ((b.allocatedReceiptPaise || 0) + (b.allocatedAdvancePaise || 0))) / 100;
           const due = (b.duePaise || 0) / 100;
           return [
@@ -89,12 +91,14 @@ export async function GET(request: Request) {
             custMap.get(b.customerId) || 'Customer',
             b.businessCategory || 'Sale',
             total,
+            returnCredits,
+            netBilled,
             paid,
             due,
           ];
         });
         return {
-          headers: ['Invoice', 'Date', 'Customer', 'Category', 'Billed total', 'Paid', 'Due'],
+          headers: ['Invoice', 'Date', 'Customer', 'Category', 'Gross billed', 'Return credits', 'Net billed', 'Collected', 'Due'],
           rows,
         };
       }

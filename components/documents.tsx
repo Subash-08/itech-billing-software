@@ -200,6 +200,11 @@ export function DocumentComposer({
   const [shipTo, setShipTo] = useState(
     source?.shipTo || { name: '', address: '', phone: '', state: 'Tamil Nadu', postalCode: '' }
   );
+  // The address on a document is a snapshot. It may be corrected for this one
+  // invoice without silently changing the customer's master record.
+  const [billTo, setBillTo] = useState(
+    source?.billTo || { name: '', address: '', phone: '', state: '', stateCode: '', postalCode: '' }
+  );
   const [orderRef, setOrderRef] = useState('');
   const [deliveryNote, setDeliveryNote] = useState('');
   const [dispatch, setDispatch] = useState('');
@@ -233,6 +238,20 @@ export function DocumentComposer({
     ? supplierChoices.find((c) => c.id === customerId) || state.suppliers.find((c) => c.id === customerId)
     : customerChoices.find((c) => c.id === customerId) || state.customers.find((c) => c.id === customerId);
 
+  useEffect(() => {
+    if (purchase || !person || billTo.name) return;
+    const next = {
+      name: person.name || '',
+      address: person.address || '',
+      phone: person.phone || '',
+      state: (person as any)?.details?.state || (person as any)?.state || '',
+      stateCode: (person as any)?.stateCode || '',
+      postalCode: (person as any)?.details?.postalCode || (person as any)?.postalCode || '',
+    };
+    setBillTo(next);
+    if (!shipSeparate && next.state) setPlaceOfSupply(next.state);
+  }, [purchase, person?.id, billTo.name, shipSeparate]);
+
   const bill: Bill = {
     id,
     customerId,
@@ -248,6 +267,7 @@ export function DocumentComposer({
     notes,
     profit: null,
     templateId,
+    billTo,
     shipTo: shipSeparate ? shipTo : undefined,
     orderRef,
     deliveryNote,
@@ -342,6 +362,8 @@ export function DocumentComposer({
         if (q.validUntil || q.due) setDue(q.validUntil || q.due);
         if (q.taxMode) setTaxMode(q.taxMode);
         if (q.placeOfSupply) setPlaceOfSupply(q.placeOfSupply);
+        if (q.billTo) setBillTo(q.billTo);
+        if (q.shipTo) { setShipSeparate(true); setShipTo(q.shipTo); } else setShipSeparate(false);
         if (q.inclusive !== undefined) setInclusive(q.inclusive);
         if (q.notes !== undefined) setNotes(q.notes);
         if (q.templateId) setTemplateId(q.templateId);
@@ -375,6 +397,8 @@ export function DocumentComposer({
           if (q.customerId) setCustomerId(q.customerId);
           if (q.taxMode) setTaxMode(q.taxMode);
           if (q.placeOfSupply) setPlaceOfSupply(q.placeOfSupply);
+          if (q.billTo) setBillTo(q.billTo);
+          if (q.shipTo) { setShipSeparate(true); setShipTo(q.shipTo); } else setShipSeparate(false);
           if (q.inclusive !== undefined) setInclusive(q.inclusive);
           if (q.notes !== undefined) setNotes(q.notes);
           if (q.templateId) setTemplateId(q.templateId);
@@ -409,6 +433,8 @@ export function DocumentComposer({
           if (inv.dueDate || inv.due) setDue(inv.dueDate || inv.due);
           if (inv.taxMode) setTaxMode(inv.taxMode);
           if (inv.placeOfSupply) setPlaceOfSupply(inv.placeOfSupply);
+          if (inv.billTo) setBillTo(inv.billTo);
+          if (inv.shipTo) { setShipSeparate(true); setShipTo(inv.shipTo); } else setShipSeparate(false);
           if (inv.inclusive !== undefined) setInclusive(inv.inclusive);
           if (inv.notes !== undefined) setNotes(inv.notes);
           if (inv.templateId) setTemplateId(inv.templateId);
@@ -557,9 +583,29 @@ export function DocumentComposer({
   }
 
   function validateBasic(): boolean {
-    if (shipSeparate && (!shipTo.name.trim() || !shipTo.address.trim())) {
-      notify('Enter the ship-to name and address, or use the billing address.');
+    if (!purchase && (!billTo.name.trim() || !billTo.address.trim() || !billTo.state.trim())) {
+      notify('Enter the bill-to name, address and state for this document.');
       return false;
+    }
+    if (shipSeparate && (!shipTo.name.trim() || !shipTo.address.trim() || !shipTo.state.trim())) {
+      notify('Enter the ship-to name, address and state, or use the billing address.');
+      return false;
+    }
+    if (!purchase) {
+      const sellerState = (state.settings.state || '').trim().toLocaleLowerCase();
+      const destinationState = (shipSeparate ? shipTo.state : billTo.state || placeOfSupply).trim().toLocaleLowerCase();
+      if (!placeOfSupply.trim()) {
+        notify('Enter the place of supply.');
+        return false;
+      }
+      if (sellerState && destinationState && taxMode === 'Inter-state' && sellerState === destinationState) {
+        notify('Interstate supply needs a destination outside the shop state. Choose Within state for CGST + SGST.');
+        return false;
+      }
+      if (sellerState && destinationState && taxMode === 'Intra-state' && sellerState !== destinationState) {
+        notify('A destination outside the shop state needs Interstate / IGST.');
+        return false;
+      }
     }
     if (
       !person ||
@@ -936,6 +982,8 @@ export function DocumentComposer({
           inclusive: !!inclusive,
           taxMode,
           placeOfSupply,
+          billTo,
+          shipTo: shipSeparate ? shipTo : undefined,
           templateId: chosenTemplateId,
           templateRevision: chosenTemplateRev,
           orderReference: orderRef.trim(),
@@ -967,6 +1015,8 @@ export function DocumentComposer({
         inclusive: !!inclusive,
         taxMode,
         placeOfSupply,
+        billTo,
+        shipTo: shipSeparate ? shipTo : undefined,
         templateId: chosenTemplateId,
         templateRevision: chosenTemplateRev,
         orderReference: orderRef.trim(),
@@ -1148,6 +1198,18 @@ export function DocumentComposer({
                     ? (c as any)?.terms
                     : Number((c as any)?.details?.paymentTerms || 0);
                   setDue(nextDate(date, days || 0));
+                  if (!purchase && c) {
+                    const nextBillTo = {
+                      name: c.name || '',
+                      address: c.address || '',
+                      phone: c.phone || '',
+                      state: (c as any)?.details?.state || (c as any)?.state || '',
+                      stateCode: (c as any)?.stateCode || '',
+                      postalCode: (c as any)?.details?.postalCode || (c as any)?.postalCode || '',
+                    };
+                    setBillTo(nextBillTo);
+                    if (!shipSeparate) setPlaceOfSupply(nextBillTo.state || state.settings.state || '');
+                  }
                 }}
               >
                 <option value="">Select {purchase ? 'supplier' : 'customer'}</option>
@@ -1260,7 +1322,11 @@ export function DocumentComposer({
             )}
 
             <Field label="GST supply type">
-              <select value={taxMode} onChange={(e) => setTaxMode(e.target.value as typeof taxMode)}>
+              <select value={taxMode} onChange={(e) => {
+                setTaxMode(e.target.value as typeof taxMode);
+                const destination = shipSeparate ? shipTo.state : billTo.state;
+                if (destination) setPlaceOfSupply(destination);
+              }}>
                 <option value="Intra-state">Within state · CGST + SGST</option>
                 <option value="Inter-state">Interstate · IGST</option>
               </select>
@@ -1314,6 +1380,31 @@ export function DocumentComposer({
 
           {!purchase && (
             <div className="form-body">
+              <div className="form-grid">
+                <div className="full">
+                  <strong>Buyer (Bill to)</strong>
+                  <p className="muted">These details are saved on this document only. Updating them does not change the customer profile.</p>
+                </div>
+                {Object.entries({
+                  name: 'Bill-to name',
+                  address: 'Billing address',
+                  phone: 'Billing phone',
+                  state: 'State / territory',
+                  stateCode: 'State code',
+                  postalCode: 'PIN code',
+                }).map(([k, label]) => (
+                  <Field key={k} label={`${label}${['name', 'address', 'state'].includes(k) ? ' *' : ''}`}>
+                    <input
+                      value={(billTo as any)[k] || ''}
+                      onChange={(e) => {
+                        const next = {...billTo, [k]: e.target.value};
+                        setBillTo(next);
+                        if (k === 'state' && !shipSeparate) setPlaceOfSupply(e.target.value);
+                      }}
+                    />
+                  </Field>
+                ))}
+              </div>
               <label className="checkbox-row">
                 <input
                   type="checkbox"
@@ -1328,6 +1419,7 @@ export function DocumentComposer({
                         state: (person as any)?.details?.state || 'Tamil Nadu',
                         postalCode: (person as any)?.details?.postalCode || '',
                       });
+                      setPlaceOfSupply((person as any)?.details?.shippingState || (person as any)?.details?.state || billTo.state || '');
                     }
                   }}
                 />
@@ -1388,12 +1480,15 @@ export function DocumentComposer({
                 <Plus size={15} />
                 Add item
               </Btn>
-              {purchase && (
-                <Btn secondary onClick={() => setNewProduct(true)}>
-                  Create product
-                </Btn>
-              )}
+              <Btn secondary onClick={() => setNewProduct(true)}>
+                {purchase ? 'Create product' : 'Create inventory product'}
+              </Btn>
             </div>
+          )}
+          {purchase && (
+            <p className="muted body-pad" style={{paddingTop: 0, paddingBottom: '0.5rem'}}>
+              The product’s saved cost is only a starting value. Edit the rate on this purchase when the supplier price changes; the received lot keeps that exact historical cost while the product remains the same item.
+            </p>
           )}
 
           {service && (
@@ -1494,7 +1589,7 @@ export function DocumentComposer({
                                   : 'Select stock / serial numbers'}
                           </button>
                         )}
-                        {l.lineType === 'Charge' && <Badge>Charge</Badge>}
+                        {l.lineType === 'Charge' && <Badge>Non-stock charge</Badge>}
                       </div>
                     </td>
                     <td>
@@ -1673,7 +1768,7 @@ export function DocumentComposer({
                 Add {category === 'Service' ? 'service' : 'custom charge'} line
               </Btn>
             )}
-            <span className="muted">Set a line’s GST to 0% for an illustrative non-GST item.</span>
+            <span className="muted">A custom charge is financial only and never adds or removes inventory. Create an inventory product first when selling a physical item.</span>
           </div>
         </Card>
 

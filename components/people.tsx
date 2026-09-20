@@ -713,8 +713,9 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
                   <tr>
                     <th>{supplier ? 'Supplier' : 'Customer'}</th>
                     <th>Contact</th>
-                    <th>{supplier ? 'Credit period' : 'Type'}</th>
+                    <th>{supplier ? 'Credit period' : 'GSTIN'}</th>
                     <th>Outstanding</th>
+                    {!supplier && <th>Sales activity</th>}
                     <th />
                   </tr>
                 </thead>
@@ -751,8 +752,9 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
                           {p.phone}
                           <small>{p.email}</small>
                         </td>
-                        <td>{supplier ? `${(p as Supplier).terms} days` : (p as Customer).type}</td>
-                        <td className="amount">{money(docs.reduce((a, b) => a + balance(state, b), 0))}</td>
+                        <td>{supplier ? `${(p as Supplier).terms} days` : (p as Customer).gst || 'Not provided'}</td>
+                        <td className="amount">{money(isLive && !supplier ? ((p as Customer).outstandingDue || 0) : docs.reduce((a, b) => a + balance(state, b), 0))}</td>
+                        {!supplier && <td>{isLive ? `${(p as Customer).invoiceCount || 0} invoice(s)` : `${docs.length} invoice(s)`}<small>{(p as Customer).lastActivityDate ? `Last: ${(p as Customer).lastActivityDate}` : 'No completed sales'}</small></td>}
                         <td>
                           <Link className="text-link" href={path + '/' + p.id}>
                             View profile <ArrowUpRight size={15} />

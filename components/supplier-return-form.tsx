@@ -57,25 +57,25 @@ export default function SupplierReturnForm({initialPurchaseId, onClose}: {initia
     read(`/api/purchases?search=${encodeURIComponent(search)}&page=${page}&limit=25`, controller.signal)
       .then(data => { setBills(data.records || []); setPages(data.totalPages || 1); })
       .catch(e => { if (e.name !== 'AbortError') setError(e.message); });
-    return () => controller.abort();
+    return () => { try { if (!controller.signal.aborted) controller.abort('supplier-bill-search-replaced'); } catch {} };
   }, [search, page]);
 
   useEffect(() => {
     const controller = new AbortController();
     setPurchase(null); setLineId(''); setLots([]); setLotId(''); setSerials([]); setError('');
-    if (!purchaseId) return () => controller.abort();
+    if (!purchaseId) return () => { try { if (!controller.signal.aborted) controller.abort('no-purchase-selected'); } catch {} };
     setLoading(true);
     read(`/api/purchases/${encodeURIComponent(purchaseId)}`, controller.signal)
       .then(data => setPurchase(data.purchase))
       .catch(e => { if (e.name !== 'AbortError') setError(e.message); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
+    return () => { try { if (!controller.signal.aborted) controller.abort('purchase-selection-replaced'); } catch {} };
   }, [purchaseId, reload]);
 
   useEffect(() => {
     const controller = new AbortController();
     setLots([]); setLotId(''); setSerials([]); setUnits([]);
-    if (!line?.productId) return () => controller.abort();
+    if (!line?.productId) return () => { try { if (!controller.signal.aborted) controller.abort('no-product-line-selected'); } catch {} };
     readPages(`/api/inventory/lots?productId=${encodeURIComponent(line.productId)}`, controller.signal)
       .then(data => {
         const matched = data.filter(l => l.purchaseId === purchaseId && l.purchaseLineId === lineId);
@@ -83,16 +83,16 @@ export default function SupplierReturnForm({initialPurchaseId, onClose}: {initia
         if (matched.length === 1) setLotId(matched[0]._id);
       })
       .catch(e => { if (e.name !== 'AbortError') setError(e.message); });
-    return () => controller.abort();
+    return () => { try { if (!controller.signal.aborted) controller.abort('purchase-line-replaced'); } catch {} };
   }, [purchaseId, lineId, line?.productId]);
 
   useEffect(() => {
     const controller = new AbortController();
     setUnits([]); setSerials([]);
-    if (!tracked || !lotId) return () => controller.abort();
+    if (!tracked || !lotId) return () => { try { if (!controller.signal.aborted) controller.abort('serial-load-not-required'); } catch {} };
     readPages(`/api/inventory/serials?lotId=${encodeURIComponent(lotId)}&status=${condition === 'Defective' ? 'Defective' : 'InStock'}`, controller.signal)
       .then(setUnits).catch(e => { if (e.name !== 'AbortError') setError(e.message); });
-    return () => controller.abort();
+    return () => { try { if (!controller.signal.aborted) controller.abort('receipt-lot-replaced'); } catch {} };
   }, [lotId, condition, tracked]);
 
   async function submit(e: React.FormEvent) {

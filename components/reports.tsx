@@ -210,6 +210,8 @@ export default function Reports() {
           roundedTotal(b),
           credits(state, b.id),
           roundedTotal(b) - credits(state, b.id),
+          paid(state, b.id),
+          balance(state, b),
         ]);
 
   const demoHeaders =
@@ -229,13 +231,13 @@ export default function Reports() {
       ? ['Job', 'Customer', 'Device', 'Status', 'Estimate', 'Final service amount']
       : report === 'Profit'
       ? ['Invoice', 'Date', 'Category', 'Entered profit']
-      : ['Invoice', 'Date', 'Customer', 'Category', 'Billed total', 'Returns', 'Net billed'];
+      : ['Invoice', 'Date', 'Customer', 'Category', 'Gross billed', 'Return credits', 'Net billed', 'Collected', 'Due'];
 
   const headers = isLive ? (serverReport?.headers || []) : demoHeaders;
   const rows = isLive ? (serverReport?.rows || []) : demoRows;
   // Summaries use the very same filtered rows as the table and exports.
   const summaryColumns: Record<string, number[]> = {
-    Sales: [4,5,6], Purchases: [4,5,6], 'Tax summary': [3,4,5,6,7],
+    Sales: [4,5,6,7,8], Purchases: [4,5,6], 'Tax summary': [3,4,5,6,7],
     Inventory: [3,4], Expenses: [4], 'Customer dues': [3], 'Supplier dues': [3],
     Services: [4,5], Profit: [3], Returns: [4],
   };

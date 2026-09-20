@@ -294,6 +294,36 @@ async function resolveTemplate(db: Db, tenantId: string, templateId: string, tem
   return rev;
 }
 
+/**
+ * GST treatment is derived from the seller's state and the actual delivery
+ * destination, never from a client-side toggle alone. The address snapshots
+ * remain authoritative after a customer profile is later edited.
+ */
+async function assertSupplyTaxTreatment(
+  db: Db,
+  tenantId: string,
+  input: {taxMode: SaleTaxMode; placeOfSupply: string; billTo?: CustomerAddressSnapshot | null; shipTo?: CustomerAddressSnapshot | null},
+  session?: ClientSession,
+) {
+  const normalize = (value: string | undefined) => (value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  const place = normalize(input.placeOfSupply);
+  if (!place) throw new AppError(400, 'Place of supply is required.');
+  const destination = input.shipTo?.state || input.billTo?.state || '';
+  if (destination && normalize(destination) !== place) {
+    throw new AppError(400, 'Place of supply must match the bill-to or ship-to state.');
+  }
+  const settings = await col(db, 'companySettings').findOne({tenantId}, sessionOpt(session));
+  const sellerState = normalize(settings?.state);
+  if (!sellerState || !destination) return;
+  const sameState = sellerState === normalize(destination);
+  if (input.taxMode === 'Inter-state' && sameState) {
+    throw new AppError(400, 'Interstate / IGST cannot be used when the destination is in the shop state.');
+  }
+  if (input.taxMode === 'Intra-state' && !sameState) {
+    throw new AppError(400, 'A destination outside the shop state requires Interstate / IGST.');
+  }
+}
+
 // 1. Create Quotation
 export async function createQuotation(db: Db, identity: Identity, raw: CreateQuotationInput) {
   const input = CreateQuotationSchema.parse(raw);
@@ -307,6 +337,7 @@ async function createQuotationWithinTransaction(db: Db, identity: Identity, inpu
   const session = salesTransaction.getStore();
   const customer = await resolveCustomer(db, tenantId, input.customerId, session);
   await resolveTemplate(db, tenantId, input.templateId, input.templateRevision, session);
+  await assertSupplyTaxTreatment(db, tenantId, input, session);
   const lines = await buildSaleLines(db, tenantId, input.lines, input.inclusive, input.taxMode, session);
   const totals = calculateSaleDocumentTotals(lines, input.roundOffPaise);
   const now = new Date();
@@ -512,6 +543,7 @@ async function prepareInvoiceDraft(db: Db, identity: Identity, input: CreateInvo
   const tenantId = identity.tenantId;
   const customer = await resolveCustomer(db, tenantId, input.customerId, session);
   await resolveTemplate(db, tenantId, input.templateId, input.templateRevision, session);
+  await assertSupplyTaxTreatment(db, tenantId, input, session);
   const lines = await buildSaleLines(db, tenantId, input.lines, input.inclusive, input.taxMode, session);
   const totals = calculateSaleDocumentTotals(lines, input.roundOffPaise);
   const now = new Date();
@@ -601,6 +633,7 @@ export async function issueInvoice(db: Db, identity: Identity, rawInput: IssueIn
     const template = await resolveTemplate(db, tenantId, draft.templateId, draft.templateRevision, session);
     const seller = await col(db, 'companySettings').findOne({tenantId}, {session});
     if (!seller?.name) throw new AppError(409, 'Complete company settings before issuing.');
+    await assertSupplyTaxTreatment(db, tenantId, draft, session);
     if (draft.reservationId) throw new AppError(409, 'Select a stock hold on each relevant lot allocation; the legacy invoice-level hold reference is not supported.');
     let linkedServiceJob: any = null;
     if (draft.serviceJobId) {

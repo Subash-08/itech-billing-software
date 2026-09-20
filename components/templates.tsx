@@ -28,6 +28,8 @@ export function TemplateInvoice({
   const f = t.fields;
   const s = bill.shopSnapshot || state.settings;
   const c = supplier || bill.customerSnapshot || state.customers.find((c) => c.id === bill.customerId);
+  const billTo = supplier ? undefined : bill.billTo || c;
+  const deliveryTo = bill.shipTo || billTo;
   const interstate = bill.taxMode === 'Inter-state';
   const sum = totals(bill),
     cols = t.columns.filter((c) => c.show);
@@ -115,19 +117,20 @@ export function TemplateInvoice({
           </div>
           <div className="invoice-buyer">
             <small>{supplier ? 'Supplier' : 'Buyer (Bill to)'}</small>
-            {f.customerName && <strong>{c?.name || 'Customer not selected'}</strong>}
-            {f.customerAddress && <p>{c?.address}</p>}
-            {f.customerPhone && <p>{c?.phone}</p>}
+            {f.customerName && <strong>{billTo?.name || 'Customer not selected'}</strong>}
+            {f.customerAddress && <p>{billTo?.address}</p>}
+            {f.customerPhone && <p>{billTo?.phone}</p>}
             {f.customerGst && <p>GSTIN/UIN: {c?.gst || 'Not provided'}</p>}
+            {billTo && (billTo as any).state && <p>{(billTo as any).state}{(billTo as any).stateCode ? `, Code: ${(billTo as any).stateCode}` : ''}{(billTo as any).postalCode ? ` · PIN: ${(billTo as any).postalCode}` : ''}</p>}
             {f.shipping && (
               <div className="invoice-shipto">
                 <strong>Ship to (Deliver to)</strong>
-                <p>{bill.shipTo?.name || c?.name}</p>
-                <p>{bill.shipTo?.address || c?.address}</p>
-                <p>{bill.shipTo?.phone || c?.phone}</p>
-                {bill.shipTo && (
+                <p>{bill.shipTo?.name || billTo?.name}</p>
+                <p>{bill.shipTo?.address || billTo?.address}</p>
+                <p>{bill.shipTo?.phone || billTo?.phone}</p>
+                {deliveryTo && (
                   <p>
-                    {bill.shipTo.state} {bill.shipTo.postalCode}
+                    {(deliveryTo as any).state || ''} {(deliveryTo as any).postalCode || ''}
                   </p>
                 )}
               </div>
@@ -218,9 +221,9 @@ export function TemplateInvoice({
           )}
           {f.payments && bill.kind !== 'Quotation' && !supplier && (
             <div className="invoice-payment">
-              <span>Amount received: {money(bill.previewPaid ?? paid(state, bill.id))}</span>
+              <span>Amount received: {money(bill.previewPaid ?? bill.paid ?? paid(state, bill.id))}</span>
               <b>
-                Invoice balance: {money(bill.previewPaid !== undefined ? Math.max(0, sum.total - bill.previewPaid) : balance(state, bill))}
+                Invoice balance: {money(bill.previewPaid !== undefined ? Math.max(0, sum.total - bill.previewPaid) : bill.dueAmount ?? balance(state, bill))}
               </b>
             </div>
           )}

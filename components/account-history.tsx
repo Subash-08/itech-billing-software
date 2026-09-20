@@ -965,7 +965,7 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
                   return (
                     <tr key={adv._id || adv.id || adv.advanceNumber}>
                       <td><strong>{adv.advanceNumber || adv._id || adv.id}</strong></td>
-                      <td>{dateLabel(adv.date)}</td>
+                      <td>{dateLabel(String(adv.date || adv.effectiveDate || adv.createdAt || TODAY).slice(0, 10))}</td>
                       <td>{money((adv.originalAmountPaise || 0) / 100)}</td>
                       <td>{money(((adv.allocatedPaise || 0) + (adv.refundedPaise || 0)) / 100)}</td>
                       <td>
@@ -1036,7 +1036,7 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
                       <td><strong>{cn.creditNoteNumber || cn.supplierCreditNoteNumber || cn._id}</strong></td>
                       <td>{dateLabel(cn.date)}</td>
                       <td>{cn.reason || 'Standalone'}</td>
-                      <td>{money((cn.amountPaise || 0) / 100)}</td>
+                      <td>{money((cn.acceptedCreditPaise ?? cn.totalCreditPaise ?? cn.amountPaise ?? 0) / 100)}</td>
                       <td><Badge>{cn.isReversed ? 'Reversed' : 'Active'}</Badge></td>
                     </tr>
                   ))}

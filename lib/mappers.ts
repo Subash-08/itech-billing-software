@@ -20,6 +20,9 @@ export function mapCustomerFromApi(doc: any): Customer {
     status: doc.status || 'Active',
     notes: doc.notes || '',
     details: doc.details || {},
+    outstandingDue: (doc.outstandingDuePaise || 0) / 100,
+    invoiceCount: doc.invoiceCount || 0,
+    lastActivityDate: doc.lastActivityDate || '',
   };
 }
 
@@ -383,6 +386,7 @@ export function mapInvoiceFromApi(doc: any) {
     customerSnapshot: doc.customerSnapshot ? mapCustomerFromApi(doc.customerSnapshot) : undefined,
     templateId: doc.templateId,
     templateRevision: doc.templateRevision,
+    billTo: doc.billTo,
     shipTo: doc.shipTo,
     sourceId: doc.sourceQuotationId,
     total: (doc.totalPaise || 0) / 100,
@@ -429,6 +433,7 @@ export function mapQuotationFromApi(doc: any) {
     customerSnapshot: doc.customerSnapshot ? mapCustomerFromApi(doc.customerSnapshot) : undefined,
     templateId: doc.templateId,
     templateRevision: doc.templateRevision,
+    billTo: doc.billTo,
     shipTo: doc.shipTo,
     total: (doc.totalPaise || 0) / 100,
     paid: 0,

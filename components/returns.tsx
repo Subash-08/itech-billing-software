@@ -20,6 +20,7 @@ export default function Returns() {
     reverseSupplierReturnApi,
     recordCustomerReturnApi,
     fetchInvoiceDetailApi,
+    fetchInvoicesPage,
   } = useStore();
   const params = useSearchParams();
   const ref = params.get('reference') || '';
@@ -37,6 +38,31 @@ export default function Returns() {
   // Live invoice details for Customer returns
   const [liveInvoiceDetail, setLiveInvoiceDetail] = useState<any>(null);
   const [liveLoading, setLiveLoading] = useState(false);
+  const [liveInvoices, setLiveInvoices] = useState<any[]>([]);
+  const [liveInvoicesLoading, setLiveInvoicesLoading] = useState(false);
+  const [liveInvoicesError, setLiveInvoicesError] = useState('');
+
+  useEffect(() => {
+    if (!isLive || form?.type !== 'Customer') return;
+    let active = true;
+    setLiveInvoicesLoading(true);
+    setLiveInvoicesError('');
+    (async () => {
+      const records: any[] = [];
+      for (let page = 1; page <= 20; page++) {
+        const result = await fetchInvoicesPage({page, limit: 100, status: 'Issued'});
+        records.push(...result.records);
+        if (page >= result.totalPages) break;
+        if (page === 20) throw new Error('More than 2,000 invoices exist. Searchable return invoice lookup is required.');
+      }
+      if (active) setLiveInvoices(records);
+    })().catch((error) => {
+      if (active) setLiveInvoicesError(error instanceof Error ? error.message : 'Could not load issued invoices.');
+    }).finally(() => {
+      if (active) setLiveInvoicesLoading(false);
+    });
+    return () => { active = false; };
+  }, [isLive, form?.type, fetchInvoicesPage]);
 
   // Reversal Modal State
   const [reversalModal, setReversalModal] = useState<{open: boolean; id: string; ref: string}>({
@@ -465,8 +491,10 @@ export default function Returns() {
             <div className="form-body stack">
               <div className="form-grid">
                 <Field label="Original document *">
+                  {form.type === 'Customer' && liveInvoicesError && <div role="alert" className="notice">{liveInvoicesError}</div>}
                   <select
                     required
+                    disabled={form.type === 'Customer' && liveInvoicesLoading}
                     value={form.reference}
                     onChange={(e) => {
                       setForm({
@@ -480,9 +508,9 @@ export default function Returns() {
                       setRefund(0);
                     }}
                   >
-                    <option value="">Select original bill</option>
+                    <option value="">{form.type === 'Customer' && liveInvoicesLoading ? 'Loading issued invoices…' : 'Select original bill'}</option>
                     {(form.type === 'Customer'
-                      ? state.bills.filter((b) => b.kind === 'Sale' && b.status === 'Issued')
+                      ? (isLive ? liveInvoices : state.bills.filter((b) => b.kind !== 'Quotation' && b.status === 'Issued'))
                       : state.purchases.filter(
                           (p) =>
                             p.status === 'Received' ||

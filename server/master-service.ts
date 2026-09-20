@@ -186,6 +186,28 @@ export async function listCustomers(identity: Identity, query: PaginationQuery) 
     col(db, 'customers').countDocuments(filter),
   ]);
 
+  const customerIds = records.map((record: any) => record._id);
+  if (customerIds.length) {
+    const [invoiceDues, openingDues] = await Promise.all([
+      col(db, 'invoices').aggregate([
+        {$match: {tenantId: identity.tenantId, customerId: {$in: customerIds}, status: 'Issued'}},
+        {$group: {_id: '$customerId', outstandingDuePaise: {$sum: '$duePaise'}, invoiceCount: {$sum: 1}, lastActivityDate: {$max: '$invoiceDate'}}},
+      ]).toArray(),
+      col(db, 'openingReceivables').aggregate([
+        {$match: {tenantId: identity.tenantId, customerId: {$in: customerIds}, remainingAmountPaise: {$gt: 0}}},
+        {$group: {_id: '$customerId', outstandingDuePaise: {$sum: '$remainingAmountPaise'}}},
+      ]).toArray(),
+    ]);
+    const invoiceMap = new Map(invoiceDues.map((row: any) => [row._id, row]));
+    const openingMap = new Map(openingDues.map((row: any) => [row._id, row.outstandingDuePaise || 0]));
+    for (const record of records) {
+      const invoice = invoiceMap.get(record._id) as any;
+      record.outstandingDuePaise = (invoice?.outstandingDuePaise || 0) + (openingMap.get(record._id) || 0);
+      record.invoiceCount = invoice?.invoiceCount || 0;
+      record.lastActivityDate = invoice?.lastActivityDate || '';
+    }
+  }
+
   return {records, total, page, limit, totalPages: Math.ceil(total / limit)};
 }
 

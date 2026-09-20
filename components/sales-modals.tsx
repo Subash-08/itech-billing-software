@@ -369,9 +369,39 @@ export function StockAllocationModal({
       pages(api.current.fetchInventorySerialsApi, {productId: line.productId, status: 'InStock'}, 'serials'),
     ]).then(([lotRows, holds, serialRows]) => {
       if (!active) return;
-      setLots(lotRows.filter(l => l.quantitySellable > 0).sort((a, b) =>
-        String(a.receivedDate ?? '').localeCompare(String(b.receivedDate ?? '')) || String(a._id ?? a.id).localeCompare(String(b._id ?? b.id))));
+      const availableLots = lotRows.filter(l => l.quantitySellable > 0).sort((a, b) =>
+        String(a.receivedDate ?? '').localeCompare(String(b.receivedDate ?? '')) || String(a._id ?? a.id).localeCompare(String(b._id ?? b.id)));
+      setLots(availableLots);
       setReservations(holds); setSerialsInStock(serialRows);
+
+      // Open the picker ready for use. Customer-specific holds are consumed
+      // first, followed by the oldest sellable lots. For serial-tracked stock
+      // the rows are prepared but the cashier still chooses the exact serials.
+      if (!((line as any).stockAllocations || []).length) {
+        let remaining = qtyRequired;
+        const suggested: Array<{lotId: string; reservationId?: string; quantity: number; serials: string[]}> = [];
+        for (const hold of holds) {
+          if (remaining <= 0) break;
+          const capacity = hold.remainingQuantity ?? hold.qty ?? 0;
+          const take = Math.min(remaining, capacity);
+          if (take <= 0 || !hold.lotId) continue;
+          suggested.push({
+            lotId: hold.lotId,
+            reservationId: hold._id || hold.id,
+            quantity: take,
+            serials: (hold.serials || []).slice(0, take),
+          });
+          remaining -= take;
+        }
+        for (const lot of availableLots) {
+          if (remaining <= 0) break;
+          const take = Math.min(remaining, lot.quantitySellable || 0);
+          if (take <= 0) continue;
+          suggested.push({lotId: lot._id || lot.id, quantity: take, serials: []});
+          remaining -= take;
+        }
+        setAllocRows(suggested);
+      }
     }).catch(error => { if (active) setLoadError(error instanceof Error ? error.message : 'Unable to load stock.'); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
@@ -484,12 +514,15 @@ export function StockAllocationModal({
           <>
             <div style={{display: 'flex', gap: '0.5rem', justifyContent: 'flex-end'}}>
               <Btn secondary onClick={autoAllocate}>
-                Auto-allocate FIFO
+                Choose oldest stock (FIFO)
               </Btn>
               <Btn secondary onClick={addAllocationRow}>
                 <Plus size={14} /> Add allocation row
               </Btn>
             </div>
+            <p className="muted" style={{margin: 0}}>
+              FIFO suggests the oldest received stock. You may select a different lot or serial before confirming. Active stock holds for this customer are suggested first.
+            </p>
 
             <div className="table-wrap">
               <table>
