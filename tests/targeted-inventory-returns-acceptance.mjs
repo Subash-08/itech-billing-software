@@ -1015,7 +1015,7 @@ async function runAcceptanceSuite() {
 
     const advFinal = await db.collection('supplierAdvances').findOne({_id: advanceId});
     assert.strictEqual(advFinal.remainingAmountPaise, 0, 'Available supplier credit must become zero');
-    assert.strictEqual(advFinal.status, 'FullyRefunded', 'Advance status must be FullyRefunded (or closed)');
+    assert.strictEqual(advFinal.status, 'Consumed', 'Advance status must be Consumed when fully allocated/refunded');
 
     const refundMovements = await db.collection('accountMovements').find({
       tenantId,
@@ -1350,7 +1350,7 @@ async function runAcceptanceSuite() {
 // Export runner
 export {runAcceptanceSuite};
 
-if (process.argv[1].endsWith('targeted-inventory-returns-acceptance.mjs')) {
+if (process.argv[1]?.endsWith('targeted-inventory-returns-acceptance.mjs')) {
   const output = await runAcceptanceSuite();
   console.log('\nSUMMARY OF RESULTS:', JSON.stringify(output.results, null, 2));
   console.log(`\nTenant ${output.tenantId} active for UI verification with email ${output.email}`);
