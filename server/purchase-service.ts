@@ -170,6 +170,60 @@ async function assertTenantFile(db: Db, tenantId: string, fileId?: string) {
   }
 }
 
+export async function attachSupplierBillFile(
+  db: Db,
+  identity: Identity,
+  purchaseId: string,
+  input: {attachmentFileId: string; expectedVersion?: number; idempotencyKey: string}
+) {
+  const tenantId = identity.tenantId;
+  return executeIdempotentTransaction(
+    db,
+    identity,
+    input.idempotencyKey,
+    'AttachSupplierBillFile',
+    purchaseId,
+    input,
+    async (session) => {
+      await assertTenantFile(db, tenantId, input.attachmentFileId);
+      const existing = await col<PurchaseDocument>(db, 'purchases').findOne(
+        {_id: purchaseId, tenantId},
+        {session}
+      );
+      if (!existing) throw new AppError(404, 'Purchase record not found.');
+      if (existing.documentStatus === 'Cancelled') {
+        throw new AppError(400, 'A supplier bill file cannot be added to a cancelled purchase.');
+      }
+      if (existing.attachmentFileId) {
+        throw new AppError(409, 'This purchase already has a supplier bill file. Download the existing file instead.');
+      }
+      if (input.expectedVersion !== undefined && existing.version !== input.expectedVersion) {
+        throw new AppError(409, 'Purchase changed while the file was uploading. Reload and attach it again.');
+      }
+      const updated = await col<PurchaseDocument>(db, 'purchases').findOneAndUpdate(
+        // Older purchase documents persisted an unselected optional file as
+        // null (and a few UI builds used an empty string). MongoDB equality to
+        // null also matches a missing field, so this remains a single atomic
+        // compare-and-set across all historical representations.
+        {_id: purchaseId, tenantId, version: existing.version, attachmentFileId: {$in: [null, '']}},
+        {$set: {attachmentFileId: input.attachmentFileId, updatedAt: new Date(), updatedBy: identity.userId}, $inc: {version: 1}},
+        {returnDocument: 'after', session}
+      );
+      if (!updated) throw new AppError(409, 'Purchase changed while the file was being attached. Reload and retry.');
+      await recordAudit(db, {
+        identity,
+        action: 'purchase.attachSupplierBill',
+        entityType: 'purchase',
+        entityId: purchaseId,
+        before: existing,
+        after: updated,
+        detail: `Attached supplier bill file to ${updated.purchaseNumber}`,
+      }, session);
+      return updated;
+    }
+  );
+}
+
 // Idempotency Runner
 export async function executeIdempotentTransaction<T>(
   db: Db,
@@ -299,6 +353,7 @@ export async function createPurchase(db: Db, identity: Identity, input: CreatePu
         productId: l.productId,
         productSnapshot: {
           name: product.name,
+          description: product.description || '',
           category: product.category || 'General',
           brand: product.brand || '',
           model: product.model || '',
@@ -498,6 +553,7 @@ export async function updatePurchaseDraft(
         productId: l.productId,
         productSnapshot: {
           name: product.name,
+          description: product.description || '',
           category: product.category || 'General',
           brand: product.brand || '',
           model: product.model || '',

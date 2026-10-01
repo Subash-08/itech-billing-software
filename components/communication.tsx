@@ -5,6 +5,7 @@ import {MessageCircle, Copy, Eye, ExternalLink, Send} from 'lucide-react';
 import {useStore} from './store';
 import {money, balance, TODAY} from '@/lib/domain';
 import {PageHead, Card, Btn, Field, Modal, Badge} from './ui';
+import {whatsappUrl} from '@/lib/whatsapp';
 
 export default function Communication() {
   const {state, notify} = useStore();
@@ -43,15 +44,8 @@ export default function Communication() {
 
   const currentMessage = message || defaultTemplates[template] || '';
 
-  function getWhatsAppUrl(phoneStr: string, text: string): string | null {
-    const digits = phoneStr.replace(/\D/g, '');
-    if (!digits) return null;
-    const normalized = digits.length === 10 ? `91${digits}` : digits;
-    return `https://wa.me/${normalized}?text=${encodeURIComponent(text)}`;
-  }
-
   const phone = customer?.phone || '';
-  const waUrl = getWhatsAppUrl(phone, currentMessage);
+  const waUrl = whatsappUrl(phone, currentMessage);
 
   return (
     <>

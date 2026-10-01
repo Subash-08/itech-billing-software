@@ -20,10 +20,12 @@ export function TemplateInvoice({
   template?: InvoiceTemplate;
 }) {
   const {state, isLive} = useStore();
-  const t =
+  const t = (
     template ||
+    bill.templateSnapshot ||
     state.templates.find((t) => t.id === (templateId || bill.templateId || state.defaultTemplateId)) ||
-    state.templates[0];
+    state.templates[0]
+  ) as InvoiceTemplate | undefined;
   if (!t) return <div className="notice">Select a saved invoice template to preview this document.</div>;
   const f = t.fields;
   const s = bill.shopSnapshot || state.settings;
@@ -31,8 +33,17 @@ export function TemplateInvoice({
   const billTo = supplier ? undefined : bill.billTo || c;
   const deliveryTo = bill.shipTo || billTo;
   const interstate = bill.taxMode === 'Inter-state';
+  const isDraft = bill.status === 'Draft';
+  const documentNumber = (bill as any).invoiceNumber || (bill as any).quotationNumber || (bill as any).purchaseNumber || bill.id;
   const sum = totals(bill),
     cols = t.columns.filter((c) => c.show);
+  const itemContentUnits = bill.lines.reduce((total, line) => {
+    const detailLines = (line.description || '').split(/\r?\n/).filter(Boolean).length;
+    return total + 1 + detailLines + (line.serials?.length || 0) + (line.warranty > 0 ? 1 : 0);
+  }, 0);
+  // Keep the goods section visually stable without pushing the signature/footer
+  // onto a nearly-empty second PDF page for ordinary 1-10 line invoices.
+  const fillerHeight = Math.max(14, 224 - itemContentUnits * 15);
   const details = 'details' in (c || {}) ? (c as {details?: Record<string, string>}).details : undefined;
   const hsn = Object.values(
     bill.lines.reduce<
@@ -54,14 +65,16 @@ export function TemplateInvoice({
   return (
     <div className="print-area">
       <article
-        className={`invoice-paper template-paper ${t.borders ? '' : 'no-borders'} ${t.striped ? 'striped' : ''} ${
+        className={`invoice-paper template-paper ${isDraft ? 'draft-document' : ''} ${t.borders ? '' : 'no-borders'} ${t.striped ? 'striped' : ''} ${
           t.orientation
         }`}
         style={{'--invoice-accent': t.accent, '--invoice-font': t.fontSize + 'px'} as React.CSSProperties}
       >
         <div className="invoice-top">
           <h2>
-            {supplier
+            {isDraft && !supplier
+              ? bill.kind === 'Quotation' ? 'Draft Quotation' : 'Draft Invoice'
+              : supplier
               ? 'Purchase record'
               : t.title ||
                 (bill.kind === 'Quotation'
@@ -72,7 +85,7 @@ export function TemplateInvoice({
                   ? 'Tax Invoice'
                   : 'Sales Invoice')}
           </h2>
-          <span>ORIGINAL FOR RECIPIENT</span>
+          <span>{isDraft ? 'DRAFT - NOT A TAX INVOICE' : 'ORIGINAL FOR RECIPIENT'}</span>
         </div>
         <div className="invoice-box">
           <div className="invoice-parties">
@@ -97,7 +110,7 @@ export function TemplateInvoice({
             </div>
             <div className="invoice-meta">
               {Object.entries({
-                number: ['Document No.', bill.id],
+                number: [isDraft ? 'Draft reference' : 'Document No.', documentNumber],
                 date: ['Date', dateLabel(bill.date)],
                 due: [bill.kind === 'Quotation' ? 'Valid until' : 'Due date', dateLabel(bill.due)],
                 reference: ['Reference', bill.jobId || bill.sourceId || '—'],
@@ -149,12 +162,15 @@ export function TemplateInvoice({
             <tbody>
               {bill.lines.map((l, i) => {
                 const calc = lineTotal(l, bill.inclusive, bill.taxMode);
+                const lineInclusive = l.priceEntryMode ? l.priceEntryMode === 'Inclusive' : bill.inclusive;
+                const taxMultiplier = l.taxTreatment === 'Taxable' && l.tax ? 1 + l.tax / 100 : 1;
                 const p = state.products.find((p) => p.id === l.productId);
                 const cells: Record<string, React.ReactNode> = {
                   index: i + 1,
                   description: (
                     <>
                       <b>{l.name}</b>
+                      {l.description && <small className="invoice-line-description">{l.description}</small>}
                       {f.model && p && <small>{p.model}</small>}
                       {f.serials && l.serials.map((n) => <small key={n}>S/N: {n}</small>)}
                       {f.warranty && l.warranty > 0 && <small>Warranty: {l.warranty} month(s)</small>}
@@ -163,8 +179,8 @@ export function TemplateInvoice({
                   hsn: l.hsn,
                   tax: l.taxTreatment === 'Exempt' ? 'Exempt' : l.taxTreatment === 'NonGST' ? 'Non-GST' : l.tax + '%',
                   qty: l.qty + ' Nos',
-                  rateIncl: money(bill.inclusive ? l.rate : l.rate * (1 + l.tax / 100)),
-                  rateExcl: money(bill.inclusive ? l.rate / (1 + l.tax / 100) : l.rate),
+                  rateIncl: money(lineInclusive ? l.rate : l.rate * taxMultiplier),
+                  rateExcl: money(lineInclusive ? l.rate / taxMultiplier : l.rate),
                   discount: l.discountType === 'Amount' ? money(l.discount) : l.discount + '%',
                   warranty: l.warranty ? l.warranty + ' months' : '—',
                   amount: money(calc.base),
@@ -179,6 +195,9 @@ export function TemplateInvoice({
                   </tr>
                 );
               })}
+              <tr className="invoice-item-filler" aria-hidden="true" style={{height: fillerHeight}}>
+                {cols.map((col) => <td key={col.id} />)}
+              </tr>
               {f.subtotal && (
                 <tr className="invoice-tax-row">
                   <td colSpan={Math.max(1, cols.length - 1)}>Taxable value</td>
@@ -331,10 +350,11 @@ export function PrintDialog({bills, onClose}: {bills: Bill[]; onClose: () => voi
         const wrapper = previewRefs.current.get(bill.id);
         const element = wrapper?.querySelector<HTMLElement>('.invoice-paper');
         if (!element) throw new Error(`Preview for ${bill.id} is not ready. Wait for it to appear and try again.`);
-        return {name: bill.id, element, template};
+        return {name: (bill as any).invoiceNumber || (bill as any).quotationNumber || bill.id, element, template};
       });
+      const firstName = (bills[0] as any).invoiceNumber || (bills[0] as any).quotationNumber || bills[0].id;
       e.downloadBytes(
-        bills.length === 1 ? bills[0].id + '.pdf' : 'invoices.zip',
+        bills.length === 1 ? firstName + '.pdf' : 'invoices.zip',
         bills.length === 1
           ? await e.invoicePreviewPdfBytes(entries[0].element, template)
           : await e.invoicePreviewZipBytes(entries),

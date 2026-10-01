@@ -6,6 +6,7 @@ import JSZip from 'jszip';
 import {jsPDF} from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import type {InvoiceDocument} from '@/server/sales-service';
+import {buildSalesFilter} from '@/server/sales-service';
 
 export const runtime = 'nodejs';
 
@@ -33,26 +34,10 @@ export async function GET(request: Request) {
     const db = await database();
     const url = new URL(request.url);
 
-    const customerId = url.searchParams.get('customerId') || undefined;
-    const status = url.searchParams.get('status') || undefined;
-    const dateFrom = url.searchParams.get('dateFrom') || undefined;
-    const dateTo = url.searchParams.get('dateTo') || undefined;
-    const search = (url.searchParams.get('search') || '').trim().slice(0, 200);
-
-    const filter: Record<string, any> = {tenantId: identity.tenantId};
-    if (customerId) filter.customerId = customerId;
-    if (status && status !== 'All') filter.status = status;
-    if (search) {
-      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      filter.$or = [
-        {invoiceNumber: {$regex: escaped, $options: 'i'}},
-        {'customerSnapshot.name': {$regex: escaped, $options: 'i'}},
-      ];
-    }
-    if (dateFrom || dateTo) {
-      filter.invoiceDate = {};
-      if (dateFrom) filter.invoiceDate.$gte = dateFrom;
-      if (dateTo) filter.invoiceDate.$lte = dateTo;
+    const raw = Object.fromEntries(url.searchParams);
+    const {filter} = buildSalesFilter(identity, raw, 'invoices');
+    if (!url.searchParams.has('status') && url.searchParams.get('hasDue') !== 'true') {
+      filter.status = {$in: ['Issued', 'Cancelled']};
     }
 
     const totalCount = await col<InvoiceDocument>(db, 'invoices').countDocuments(filter);
@@ -168,7 +153,7 @@ export async function GET(request: Request) {
       tenantId: identity.tenantId,
       exportedAt: new Date().toISOString(),
       invoiceCount: invoices.length,
-      filters: {customerId, status, dateFrom, dateTo, search: search || undefined},
+      filters: Object.fromEntries(url.searchParams),
       invoices: invoices.map(i => {
         const s = i.issuedSnapshot || i;
         return {

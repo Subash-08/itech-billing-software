@@ -53,6 +53,7 @@ export function ProductForm({product, onClose, page = false}: {product?: Product
     product || {
       id: uid('PRD'),
       name: '',
+      description: '',
       category: 'Laptops',
       brand: '',
       condition: 'New',
@@ -114,6 +115,7 @@ export function ProductForm({product, onClose, page = false}: {product?: Product
             const ok = await saveProductApi(
               {
                 name: f.name,
+                description: f.description || '',
                 category: f.category,
                 brand: f.brand,
                 model: f.model,
@@ -154,6 +156,16 @@ export function ProductForm({product, onClose, page = false}: {product?: Product
             <Field label="Product name">
               <input required value={f.name} onChange={(e) => set('name', e.target.value)} />
             </Field>
+            <div className="full">
+              <Field label="Product description / specifications">
+                <textarea
+                  maxLength={1000}
+                  value={f.description || ''}
+                  onChange={(e) => set('description', e.target.value)}
+                  placeholder="Details to show below the product name on quotations and invoices"
+                />
+              </Field>
+            </div>
             <Field label="Category">
               <select value={f.category} onChange={(e) => set('category', e.target.value)}>
                 {categories.map((c) => (

@@ -7,6 +7,7 @@ import {useStore} from './store';
 import {Customer, Supplier, uid, money, roundedTotal, balance, dateLabel} from '@/lib/domain';
 import {PageHead, Card, SearchBox, Btn, Modal, Field, Empty, Badge} from './ui';
 import {mapCustomerFromApi, mapSupplierFromApi} from '@/lib/mappers';
+import {whatsappUrl} from '@/lib/whatsapp';
 
 export function PersonForm({
   supplier = false,
@@ -17,7 +18,7 @@ export function PersonForm({
   supplier?: boolean;
   existing?: Customer | Supplier;
   onClose: () => void;
-  onSuccess?: () => void;
+  onSuccess?: (person?: Customer | Supplier) => void;
 }) {
   const {
     state,
@@ -91,7 +92,7 @@ export function PersonForm({
         const res = await saveCustomerApi({...form, details}, existing?.id);
         if (res.warning) setWarning(res.warning);
         if (res.success) {
-          onSuccess?.();
+          onSuccess?.(res.customer);
           onClose();
         }
       }
@@ -639,9 +640,15 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
                   )}
                 </dl>
                 <div className="body-pad">
-                  <Link className="btn secondary" href={`/communication?customer=${id}`}>
-                    Preview WhatsApp message
-                  </Link>
+                  {!supplier && whatsappUrl(person.phone || '', `Hello ${person.name}, thank you for visiting ${state.settings.name || 'iTech Computers'}. We appreciate your business and look forward to helping you again.`) ? (
+                    <a className="btn secondary" target="_blank" rel="noopener noreferrer" href={whatsappUrl(person.phone || '', `Hello ${person.name}, thank you for visiting ${state.settings.name || 'iTech Computers'}. We appreciate your business and look forward to helping you again.`)!}>
+                      Send thank-you on WhatsApp
+                    </a>
+                  ) : (
+                    <Link className="btn secondary" href={`/communication?customer=${id}`}>
+                      Preview WhatsApp message
+                    </Link>
+                  )}
                 </div>
               </Card>
 

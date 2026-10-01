@@ -28,7 +28,7 @@ export async function invoicePdfBytes(s:State,b:Bill,templateId?:string){
  const companyText=[f.shopName&&company.name,f.shopAddress&&company.address,f.shopGst&&'GSTIN: '+company.gst,f.shopPhone&&company.phone,f.shopEmail&&company.email].filter(Boolean).join('\n');
  const meta=[f.number&&'Document: '+b.id,f.date&&'Date: '+b.date,f.due&&'Due / valid until: '+b.due,f.reference&&'Reference: '+(b.jobId||b.sourceId||''),f.order&&'Buyer order: '+(b.orderRef||''),f.delivery&&'Delivery note: '+(b.deliveryNote||''),f.dispatch&&'Dispatch: '+(b.dispatch||''),f.destination&&'Place of supply: '+(b.placeOfSupply||'Tamil Nadu')].filter(Boolean).join('\n');table(null,[[companyText,meta]],{columnStyles:{0:{cellWidth:(width-24)/2},1:{cellWidth:(width-24)/2}}});
  const buyer=['Buyer (Bill to)',f.customerName&&customer?.name,f.customerAddress&&customer?.address,f.customerPhone&&customer?.phone,f.customerGst&&'GSTIN: '+(customer?.gst||'Not provided')].filter(Boolean).join('\n');const ship=b.shipTo;table(null,[[buyer,...(f.shipping?[['Ship to (Deliver to)',ship?.name||customer?.name,ship?.address||customer?.address,ship?.phone||customer?.phone,ship?.state,ship?.postalCode].filter(Boolean).join('\n')]:[])]]);
- const columns=t.columns.filter(c=>c.show);const itemRows=b.lines.map((l,i)=>{const tax=lineTotal(l,b.inclusive,b.taxMode);const cells:Record<string,string|number>={index:i+1,description:[l.name,f.serials&&l.serials.join(', '),f.model&&s.products.find(p=>p.id===l.productId)?.model,f.warranty&&l.warranty>0&&'Warranty: '+l.warranty+' months'].filter(Boolean).join('\n'),hsn:l.hsn,tax:l.taxTreatment==='Exempt'?'Exempt':l.taxTreatment==='NonGST'?'Non-GST':l.tax+'%',qty:l.qty,rateIncl:cash(b.inclusive?l.rate:l.rate*(1+l.tax/100)),rateExcl:cash(b.inclusive?l.rate/(1+l.tax/100):l.rate),discount:l.discountType==='Amount'?cash(l.discount):l.discount+'%',warranty:l.warranty+' months',amount:cash(tax.base)};return columns.map(c=>cells[c.id]??'');});table(columns.map(c=>c.label),itemRows,{styles:{fontSize:Math.min(t.fontSize*0.75,9),cellPadding:1.5,overflow:'linebreak'},columnStyles:Object.fromEntries(columns.map((c,i)=>[i,{halign:c.align}]))});
+ const columns=t.columns.filter(c=>c.show);const itemRows=b.lines.map((l,i)=>{const tax=lineTotal(l,b.inclusive,b.taxMode);const lineInclusive=l.priceEntryMode?l.priceEntryMode==='Inclusive':b.inclusive;const multiplier=l.taxTreatment==='Taxable'&&l.tax?1+l.tax/100:1;const cells:Record<string,string|number>={index:i+1,description:[l.name,l.description,f.serials&&l.serials.join(', '),f.model&&s.products.find(p=>p.id===l.productId)?.model,f.warranty&&l.warranty>0&&'Warranty: '+l.warranty+' months'].filter(Boolean).join('\n'),hsn:l.hsn,tax:l.taxTreatment==='Exempt'?'Exempt':l.taxTreatment==='NonGST'?'Non-GST':l.tax+'%',qty:l.qty,rateIncl:cash(lineInclusive?l.rate:l.rate*multiplier),rateExcl:cash(lineInclusive?l.rate/multiplier:l.rate),discount:l.discountType==='Amount'?cash(l.discount):l.discount+'%',warranty:l.warranty+' months',amount:cash(tax.base)};return columns.map(c=>cells[c.id]??'');});table(columns.map(c=>c.label),itemRows,{styles:{fontSize:Math.min(t.fontSize*0.75,9),cellPadding:1.5,overflow:'linebreak'},columnStyles:Object.fromEntries(columns.map((c,i)=>[i,{halign:c.align}]))});
  const summary:(string|number)[][]=[];if(f.subtotal)summary.push(['Taxable value',cash(total.base)]);if(f.taxes)summary.push(...(inter?[['IGST',cash(total.igst)]]:[['CGST',cash(total.cgst)],['SGST',cash(total.sgst)]]));if(f.grandTotal)summary.push(['Total',cash(roundedTotal(b))]);if(f.payments&&b.kind!=='Quotation')summary.push(['Received',cash(b.previewPaid??paid(s,b.id))],['Balance due',cash(b.previewPaid!==undefined?Math.max(0,roundedTotal(b)-b.previewPaid):balance(s,b))]);if(summary.length)table(null,summary,{columnStyles:{0:{fontStyle:'bold'},1:{halign:'right'}}});
  if(f.amountWords)table(null,[['Amount in words',amountWords(roundedTotal(b))]]);
  if(f.taxSummary){const groups=new Map<string,{hsn:string;rate:number;base:number;cgst:number;sgst:number;igst:number;treatment?:string}>();b.lines.forEach(l=>{const treatment=l.taxTreatment||'Taxable';const key=treatment+'-'+l.hsn+'-'+l.tax;const v=lineTotal(l,b.inclusive,b.taxMode);const row=groups.get(key)||{hsn:l.hsn,rate:(treatment==='Exempt'||treatment==='NonGST')?0:l.tax,base:0,cgst:0,sgst:0,igst:0,treatment};row.base+=v.base;row.cgst+=v.cgst;row.sgst+=v.sgst;row.igst+=v.igst;groups.set(key,row);});table(inter?['HSN / SAC','Rate','Taxable','IGST']:['HSN / SAC','GST rate','Taxable','CGST','SGST'],[...groups.values()].map(x=>[x.hsn,x.treatment==='Exempt'?'Exempt':x.treatment==='NonGST'?'Non-GST':x.rate+'%',cash(x.base),...(inter?[cash(x.igst)]:[cash(x.cgst),cash(x.sgst)])]));}
@@ -46,7 +46,8 @@ async function waitForPreviewAssets(element: HTMLElement) {
 /** Render the exact browser invoice preview rather than rebuilding a second PDF layout. */
 export async function invoicePreviewPdfBytes(element:HTMLElement,template:InvoiceTemplate){
  await waitForPreviewAssets(element);
- const [{jsPDF},{default:html2canvas}]=await Promise.all([import('jspdf'),import('html2canvas')]);
+ const [{jsPDF},html2canvasModule]=await Promise.all([import('jspdf'),import('html2canvas')]);
+ const html2canvas: any=(html2canvasModule as any).default||html2canvasModule;
  const doc=new jsPDF({orientation:template.orientation,format:template.paper.toLowerCase() as 'a4'|'letter',unit:'pt'});
  const sourceWidth=Math.max(1,element.scrollWidth);
  // A bounded high-resolution raster preserves the exact approved browser layout
@@ -62,10 +63,33 @@ export async function invoicePreviewPdfBytes(element:HTMLElement,template:Invoic
  const margin=12;
  const availableWidth=pageWidth-margin*2;
  const availableHeight=pageHeight-margin*2;
- const ratio=Math.min(availableWidth/canvas.width,availableHeight/canvas.height);
- const renderWidth=canvas.width*ratio;
- const renderHeight=canvas.height*ratio;
- doc.addImage(canvas.toDataURL('image/png'),'PNG',(pageWidth-renderWidth)/2,margin,renderWidth,renderHeight,undefined,'FAST');
+ const ratio=availableWidth/canvas.width;
+ const renderWidth=availableWidth;
+ const fittedRatio=Math.min(ratio,availableHeight/canvas.height);
+ // A small overflow is normally the signatory/footer slipping over the page,
+ // not a genuinely multi-page invoice. Fit that complete A4 canvas to one page.
+ if(canvas.height*ratio<=availableHeight*1.12){
+  doc.addImage(canvas.toDataURL('image/png'),'PNG',margin,margin,canvas.width*fittedRatio,canvas.height*fittedRatio,undefined,'FAST');
+  return new Uint8Array(doc.output('arraybuffer'));
+ }
+ const pageSlicePixels=Math.max(1,Math.floor(availableHeight/ratio));
+ let sourceY=0;
+ let pageIndex=0;
+ while(sourceY<canvas.height){
+  const sliceHeight=Math.min(pageSlicePixels,canvas.height-sourceY);
+  const slice=document.createElement('canvas');
+  slice.width=canvas.width;
+  slice.height=sliceHeight;
+  const context=slice.getContext('2d');
+  if(!context)throw new Error('Could not prepare invoice PDF page.');
+  context.fillStyle='#ffffff';
+  context.fillRect(0,0,slice.width,slice.height);
+  context.drawImage(canvas,0,sourceY,canvas.width,sliceHeight,0,0,canvas.width,sliceHeight);
+  if(pageIndex>0)doc.addPage();
+  doc.addImage(slice.toDataURL('image/png'),'PNG',margin,margin,renderWidth,sliceHeight*ratio,undefined,'FAST');
+  sourceY+=sliceHeight;
+  pageIndex+=1;
+ }
  return new Uint8Array(doc.output('arraybuffer'));
 }
 

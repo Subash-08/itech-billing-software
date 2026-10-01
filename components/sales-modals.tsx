@@ -323,9 +323,7 @@ export function StockAllocationModal({
   customerId: string;
   onSave: (allocations: any[], serials: string[]) => void;
 }) {
-  const {fetchInventoryLotsApi, fetchReservationsPage, fetchInventorySerialsApi, notify} = useStore();
-  const api = useRef({fetchInventoryLotsApi, fetchReservationsPage, fetchInventorySerialsApi, notify});
-  api.current = {fetchInventoryLotsApi, fetchReservationsPage, fetchInventorySerialsApi, notify};
+  const {notify} = useStore();
   const [loadError, setLoadError] = useState('');
   const [reload, setReload] = useState(0);
   const [lots, setLots] = useState<any[]>([]);
@@ -352,22 +350,18 @@ export function StockAllocationModal({
     if (!isOpen || !line.productId) return;
     let active = true;
     setLoading(true); setLoadError('');
-    // Paginate rather than silently considering only the first inventory page.
-    async function pages(fetcher: (query: any) => Promise<any>, query: any, alias: string) {
-      const rows: any[] = [];
-      for (let page = 1; page <= 20; page++) {
-        const result = await fetcher({...query, page, limit: 100});
-        rows.push(...(result.records ?? result[alias] ?? []));
-        if (page >= (result.totalPages ?? 1)) return rows;
-        if (!active) return [];
-      }
-      throw new Error('This product has more than 2,000 stock records. A paginated stock search is required; no partial selection was loaded.');
-    }
-    Promise.all([
-      pages(api.current.fetchInventoryLotsApi, {productId: line.productId}, 'lots'),
-      customerId ? pages(api.current.fetchReservationsPage, {customerId, productId: line.productId, status: 'Active'}, 'records') : Promise.resolve([]),
-      pages(api.current.fetchInventorySerialsApi, {productId: line.productId, status: 'InStock'}, 'serials'),
-    ]).then(([lotRows, holds, serialRows]) => {
+    const params = new URLSearchParams({productId: line.productId});
+    if (customerId) params.set('customerId', customerId);
+    fetch(`/api/sales/stock-options?${params.toString()}`, {cache: 'no-store'})
+      .then(async response => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || 'Unable to load available stock.');
+        return payload;
+      })
+      .then((payload: any) => {
+      const lotRows: any[] = payload.lots || [];
+      const holds: any[] = payload.reservations || [];
+      const serialRows: any[] = payload.serials || [];
       if (!active) return;
       const availableLots = lotRows.filter(l => l.quantitySellable > 0).sort((a, b) =>
         String(a.receivedDate ?? '').localeCompare(String(b.receivedDate ?? '')) || String(a._id ?? a.id).localeCompare(String(b._id ?? b.id)));
@@ -417,8 +411,16 @@ export function StockAllocationModal({
       notify('No available lots or reservations found for this product.');
       return;
     }
-    const defaultLot = lots[0]?._id || lots[0]?.id || '';
-    const hold = !defaultLot ? reservations.find(r => (r.remainingQuantity ?? r.qty) > 0) : undefined;
+    const usedKeys = new Set(allocRows.map(r => r.reservationId ? `hold:${r.reservationId}` : `lot:${r.lotId}`));
+    const nextLot = lots.find(l => !usedKeys.has(`lot:${l._id || l.id}`));
+    const defaultLot = nextLot?._id || nextLot?.id || '';
+    const hold = !defaultLot
+      ? reservations.find(r => (r.remainingQuantity ?? r.qty) > 0 && !usedKeys.has(`hold:${r._id || r.id}`))
+      : undefined;
+    if (!defaultLot && !hold) {
+      notify('Every available stock source is already listed. Increase a listed quantity or choose another source.');
+      return;
+    }
     setAllocRows((rows) => [...rows, {lotId: defaultLot || hold?.lotId || '',
       reservationId: hold ? hold._id || hold.id : undefined, quantity: 1, serials: []}]);
   };
@@ -455,8 +457,26 @@ export function StockAllocationModal({
       notify(`Allocated quantity (${totalAllocated}) must equal line quantity (${qtyRequired}).`);
       return;
     }
+    // Merge duplicate UI rows before submitting. The server intentionally
+    // rejects repeated allocations for the same lot/hold because otherwise a
+    // retry could consume the same physical stock twice.
+    const mergedBySource = new Map<string, typeof allocRows[number]>();
+    for (const row of allocRows) {
+      const key = row.reservationId ? `hold:${row.reservationId}` : `lot:${row.lotId}`;
+      const previous = mergedBySource.get(key);
+      if (previous) {
+        mergedBySource.set(key, {
+          ...previous,
+          quantity: previous.quantity + row.quantity,
+          serials: [...previous.serials, ...row.serials],
+        });
+      } else {
+        mergedBySource.set(key, {...row, serials: [...row.serials]});
+      }
+    }
+    const normalizedRows = [...mergedBySource.values()];
     const used = new Map<string, number>();
-    for (const r of allocRows) {
+    for (const r of normalizedRows) {
       if (!Number.isInteger(r.quantity) || r.quantity <= 0) { notify('Enter a positive whole quantity.'); return; }
       const source = r.reservationId ? reservations.find(h => (h._id || h.id) === r.reservationId) : lots.find(l => (l._id || l.id) === r.lotId);
       const capacity = r.reservationId ? source?.remainingQuantity ?? source?.qty ?? 0 : source?.quantitySellable ?? 0;
@@ -473,12 +493,12 @@ export function StockAllocationModal({
         return;
       }
     }
-    const allSerials = allocRows.flatMap((r) => r.serials);
+    const allSerials = normalizedRows.flatMap((r) => r.serials);
     const normalized = allSerials.map(s => s.replace(/[^a-zA-Z0-9]/g, '').toLowerCase());
     if (new Set(normalized).size !== normalized.length || normalized.some(s => !s)) {
       notify('Select each serial only once.'); return;
     }
-    onSave(allocRows, allSerials);
+    onSave(normalizedRows, allSerials);
     onClose();
   };
 
@@ -575,7 +595,7 @@ export function StockAllocationModal({
                             <optgroup label="Available Stock Lots">
                               {lots.map((l) => (
                                 <option key={l._id || l.id} value={l._id || l.id}>
-                                  Lot {l.batchNumber || (l._id || l.id).slice(-6)} (Sellable: {l.quantitySellable})
+                                  Lot {l.batchNumber || (l._id || l.id).slice(-6)} · {l.receivedDate || 'Opening'} · Cost {money((l.costPaise || 0) / 100)} · {l.quantitySellable} sellable
                                 </option>
                               ))}
                             </optgroup>
@@ -589,6 +609,11 @@ export function StockAllocationModal({
                               </optgroup>
                             )}
                           </select>
+                          {!row.reservationId && lot && (
+                            <small className="muted">
+                              Source {lot.sourceReference || 'Opening stock'} · received {lot.receivedDate || 'at opening'} · unit cost {money((lot.costPaise || 0) / 100)}
+                            </small>
+                          )}
                         </td>
                         <td>{row.reservationId ? 'From hold' : lot ? lot.quantitySellable : '—'}</td>
                         <td>

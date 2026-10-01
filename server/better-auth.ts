@@ -4,7 +4,7 @@ import {mongodbAdapter} from 'better-auth/adapters/mongodb';
 import {APIError} from 'better-auth/api';
 import {randomUUID} from 'node:crypto';
 import {ObjectId} from 'mongodb';
-import {database,mongo,ensureIndexes,AppError} from './db';
+import {database,mongo,ensureRuntimeIndexes,AppError} from './db';
 import {hashPassword} from './security';
 import {getCanonicalOrigin, getTrustedOrigins} from './origins';
 export const authObjectId=(id:string)=>ObjectId.isValid(id)?new ObjectId(id):id;
@@ -13,7 +13,7 @@ async function initialize(){
   const baseURL = getCanonicalOrigin();
   if(!secret || secret.length < 32 || !baseURL) throw new AppError(503, 'Better Auth URL and secret must be configured.');
   const client = await mongo(), db = await database();
-  await ensureIndexes();
+  await ensureRuntimeIndexes();
   const trustedOrigins = getTrustedOrigins();
   return betterAuth({
     database: mongodbAdapter(db, {client}),

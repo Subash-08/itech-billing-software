@@ -1,5 +1,5 @@
 'use client';
-import {useState, useEffect} from 'react';
+import {useState, useEffect, useRef} from 'react';
 import Analytics from './analytics';
 import LiveSalesChart from './live-sales-chart';
 import Link from 'next/link';
@@ -13,6 +13,10 @@ import {
   ArrowDownLeft,
   ArrowUpRight as ArrowOut,
   CalendarDays,
+  Landmark,
+  ArrowDownCircle,
+  ArrowUpCircle,
+  HandCoins,
 } from 'lucide-react';
 import {useStore} from './store';
 import {Card, Stat, PageHead, Badge} from './ui';
@@ -23,23 +27,37 @@ export default function Dashboard() {
   const [liveData, setLiveData] = useState<any>(null);
   const [loadError, setLoadError] = useState('');
   const [revision, setRevision] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const lastLoadedAt = useRef(0);
 
   useEffect(() => {
     if (!isLive) return;
+    const controller = new AbortController();
     let active = true;
-    setLiveData(null); setLoadError('');
-    fetch('/api/company/dashboard')
+    setLoadError(''); setRefreshing(true);
+    fetch('/api/company/dashboard', {signal: controller.signal, cache: 'no-store'})
       .then(async res => { const data = await res.json(); if (!res.ok || data.error) throw new Error(data.error || 'Dashboard unavailable.'); return data; })
       .then((data) => {
-        if (active && data && !data.error) setLiveData(data);
+        if (active && data && !data.error) {
+          setLiveData(data);
+          lastLoadedAt.current = Date.now();
+        }
       })
-      .catch(error => { if (active) setLoadError(error.message || 'Dashboard unavailable.'); });
+      .catch(error => { if (active && error?.name !== 'AbortError') setLoadError(error.message || 'Dashboard unavailable.'); })
+      .finally(() => { if (active) setRefreshing(false); });
     return () => {
       active = false;
+      controller.abort();
     };
   }, [isLive, revision, companySession?.company?.name]);
 
-  useEffect(() => { const refresh = () => setRevision(v => v + 1); window.addEventListener('focus', refresh); return () => window.removeEventListener('focus', refresh); }, []);
+  useEffect(() => {
+    const refresh = () => {
+      if (Date.now() - lastLoadedAt.current > 30_000) setRevision(value => value + 1);
+    };
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, []);
 
   // Demo fallbacks
   const demoSales = state.bills.filter((b) => b.kind !== 'Quotation' && b.status === 'Issued');
@@ -57,6 +75,12 @@ export default function Dashboard() {
   const cashBalance = isLive && liveData
     ? (liveData.cash?.balancePaise || 0) / 100
     : accountBalance(state, 'Cash');
+
+  const bankBalance = isLive && liveData ? (liveData.bank?.balancePaise || 0) / 100 : accountBalance(state, 'Bank account');
+  const moneyInToday = isLive && liveData ? (liveData.moneyToday?.inPaise || 0) / 100 : 0;
+  const moneyOutToday = isLive && liveData ? (liveData.moneyToday?.outPaise || 0) / 100 : 0;
+  const customerDues = isLive && liveData ? (liveData.dues?.customerOutstandingPaise || 0) / 100 : 0;
+  const supplierDues = isLive && liveData ? (liveData.dues?.supplierOutstandingPaise || 0) / 100 : 0;
 
   const activeJobsCount = isLive && liveData
     ? liveData.serviceJobs?.activeCount ?? 0
@@ -98,7 +122,14 @@ export default function Dashboard() {
   const companyName = companySession?.company?.name || state.settings.name || 'iTech Computers';
   const userName = companySession?.user?.name || 'Store Manager';
 
-  if (isLive && !liveData) return <><PageHead title="Dashboard" description={loadError || 'Loading live company figures…'}/>{loadError && <button className="btn" onClick={() => setRevision(v => v + 1)}>Retry</button>}</>;
+  if (isLive && !liveData) return <>
+    <PageHead title="Dashboard" description={loadError || 'Loading the latest company summary…'}/>
+    {loadError ? <button className="btn" onClick={() => setRevision(v => v + 1)}>Retry</button> : (
+      <div className="dashboard-loading-grid" aria-label="Loading dashboard">
+        {Array.from({length: 8}, (_, index) => <div className="dashboard-skeleton" key={index}/>) }
+      </div>
+    )}
+  </>;
 
   return (
     <>
@@ -124,10 +155,7 @@ export default function Dashboard() {
           <span className="sun-icon">☀</span>
           <div>
             <strong>Welcome, {userName}</strong>
-            <p>
-              Here’s what’s happening at {companyName} today
-              {isLive ? ' (Live Store Account)' : ' (Interactive Demo)'}.
-            </p>
+            <p>Here’s what’s happening at {companyName} today.</p>
           </div>
         </div>
         <Link href="/register">
@@ -135,7 +163,9 @@ export default function Dashboard() {
         </Link>
       </div>
 
-      <div className="stats-grid">
+      {refreshing && <div className="dashboard-refreshing" role="status">Refreshing dashboard…</div>}
+
+      <div className="dashboard-kpi-grid">
         <Stat
           label="Today’s sales"
           value={shortMoney(todaySalesTotal)}
@@ -143,26 +173,34 @@ export default function Dashboard() {
           icon={<IndianRupee size={20} />}
         />
         <Stat
-          label="Cash in drawer"
-          value={shortMoney(cashBalance)}
-          detail="Physical drawer balance"
-          icon={<Wallet size={20} />}
+          label="Money received today"
+          value={shortMoney(moneyInToday)}
+          detail="Cash and bank inflows"
+          icon={<ArrowDownCircle size={20} />}
           accent="green"
         />
         <Stat
-          label="Active service jobs"
-          value={String(activeJobsCount).padStart(2, '0')}
-          detail={`${readyJobsCount} ready for customer collection`}
-          icon={<Wrench size={20} />}
+          label="Money paid today"
+          value={shortMoney(moneyOutToday)}
+          detail="Expenses, suppliers and refunds"
+          icon={<ArrowUpCircle size={20} />}
           accent="orange"
         />
         <Stat
-          label="Low stock items"
-          value={String(lowStockCount).padStart(2, '0')}
-          detail="Review items below reorder level"
-          icon={<Package size={20} />}
+          label="Cash in drawer"
+          value={shortMoney(cashBalance)}
+          detail="Current physical cash balance"
+          icon={<Wallet size={20} />}
           accent="blue"
         />
+        <Stat label="Bank balance" value={shortMoney(bankBalance)} detail="Current account balance" icon={<Landmark size={20}/>} />
+      </div>
+
+      <div className="dashboard-attention-grid">
+        <Link href="/dues" className="attention-card"><HandCoins size={20}/><div><span>Customer dues</span><strong>{shortMoney(customerDues)}</strong><small>Amount still to collect</small></div><ArrowUpRight size={17}/></Link>
+        <Link href="/dues" className="attention-card"><ArrowOut size={20}/><div><span>Supplier dues</span><strong>{shortMoney(supplierDues)}</strong><small>Amount still to pay</small></div><ArrowUpRight size={17}/></Link>
+        <Link href="/services" className="attention-card"><Wrench size={20}/><div><span>Service work</span><strong>{String(activeJobsCount).padStart(2, '0')}</strong><small>{readyJobsCount} ready for collection</small></div><ArrowUpRight size={17}/></Link>
+        <Link href="/inventory" className="attention-card"><Package size={20}/><div><span>Low stock</span><strong>{String(lowStockCount).padStart(2, '0')}</strong><small>Products at reorder level</small></div><ArrowUpRight size={17}/></Link>
       </div>
 
       {isLive ? <LiveSalesChart rows={liveData?.salesTrend || []} today={liveData?.todayDate || TODAY}/> : <Analytics />}

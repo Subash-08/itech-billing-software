@@ -7,7 +7,7 @@ const ALLOWLISTS: Record<string, string[]> = {
   companySettings: ['name', 'phone', 'email', 'address', 'gst', 'bank', 'account', 'ifsc', 'declaration', 'logoFileId'],
   customer: ['name', 'phone', 'email', 'address', 'gst', 'type', 'notes', 'details', 'status'],
   supplier: ['name', 'phone', 'email', 'address', 'gst', 'terms', 'status'],
-  product: ['name', 'category', 'brand', 'condition', 'model', 'hsn', 'costPaise', 'sellingPricePaise', 'priceEntryMode', 'taxBasisPoints', 'low', 'warranty', 'preferredSupplierId', 'isSerialTracked', 'status'],
+  product: ['name', 'description', 'category', 'brand', 'condition', 'model', 'hsn', 'costPaise', 'sellingPricePaise', 'priceEntryMode', 'taxBasisPoints', 'low', 'warranty', 'preferredSupplierId', 'isSerialTracked', 'status'],
   stockAdjustment: ['productId', 'delta', 'serials', 'reason', 'idempotencyKey'],
   serviceCatalog: ['name', 'category', 'description', 'ratePaise', 'taxBasisPoints', 'sac', 'warranty', 'active', 'status'],
   invoiceTemplate: ['name', 'title', 'paper', 'orientation', 'fontSize', 'accent', 'borders', 'striped', 'logoPosition', 'fields', 'columns', 'footer', 'currentRevision', 'isDefault', 'status'],

@@ -270,8 +270,10 @@ export default function Daybook() {
       }
       const idempotencyKey = closeIdemKeyRef.current[date];
       const payload = {
-        cashCountPaise: Math.round(cashNum * 100),
-        bankCountPaise: Math.round(bankNum * 100),
+        ...(holiday ? {} : {
+          cashCountPaise: Math.round(cashNum * 100),
+          bankCountPaise: Math.round(bankNum * 100),
+        }),
         note,
         holiday,
         reviewVersion: liveDashboard?.gateVersion,
@@ -416,7 +418,7 @@ export default function Daybook() {
               </Link>
             ) : (
               <Btn secondary onClick={() => setSchedule(true)}>
-                Shop holidays
+                Plan shop holiday
               </Btn>
             )}
             <Link className="btn secondary" href="/register">
@@ -570,7 +572,7 @@ export default function Daybook() {
                               )}
                             </td>
                             <td>
-                              <Badge>{d.status}</Badge>
+                              <Badge>{d.status === 'ScheduledHoliday' ? 'Planned holiday' : d.status}</Badge>
                             </td>
                             <td>
                               <Link className="text-link" href={'/profit?date=' + d.date}>
@@ -756,6 +758,8 @@ export default function Daybook() {
                                   ? money(inv.manualProfitPaise / 100)
                                   : 'Locked'}
                               </span>
+                            ) : !inv.isProfitPending && (inv.manualProfitPaise === null || inv.manualProfitPaise === undefined) ? (
+                              <span className="muted">Entered · unlock profit to view or edit</span>
                             ) : (
                               <input
                                 aria-label={'Profit ' + inv._id}
@@ -799,6 +803,8 @@ export default function Daybook() {
                                     ? money(adj.signedAdjustmentPaise / 100)
                                     : 'Locked'}
                                 </span>
+                              ) : !adj.isPending && (adj.signedAdjustmentPaise === null || adj.signedAdjustmentPaise === undefined) ? (
+                                <span className="muted">Reviewed · unlock profit to view or edit</span>
                               ) : (
                                 <input
                                   aria-label={'Adjustment ' + adj._id}
@@ -1032,10 +1038,24 @@ export default function Daybook() {
                     <input
                       type="checkbox"
                       checked={holiday}
-                      onChange={e => setHoliday(e.target.checked)}
+                      onChange={e => {
+                        setHoliday(e.target.checked);
+                        if (e.target.checked) {
+                          setCashActual('');
+                          setBankActual('');
+                        }
+                      }}
                     />
                     Close as shop holiday (zero business activity allowed)
                   </label>
+
+                  {holiday && (
+                    <div className="notice">
+                      Cash and Bank counts are not required. The server will allow this only when the day has no sales,
+                      collections, expenses, supplier activity, stock movement, returns, or service activity. Existing
+                      balances carry forward unchanged.
+                    </div>
+                  )}
 
                   <div className="form-actions" style={{display: 'flex', gap: '1rem'}}>
                     <Btn secondary onClick={handleSaveDraft} disabled={isSubmitting}>
@@ -1059,11 +1079,12 @@ export default function Daybook() {
       )}
 
       {schedule && (
-        <Modal title="Shop Holidays Schedule" onClose={() => setSchedule(false)}>
+        <Modal title="Plan a future shop holiday" onClose={() => setSchedule(false)}>
           <div className="form-body stack">
             <p>
-              Schedule non-working dates. Scheduled holidays cannot contain business activity. If the shop opens,
-              remove the holiday schedule before posting.
+              Optionally plan a future non-working date. The plan blocks sales, purchases, payments, expenses, stock
+              and service activity for that date. If the shop opens, remove the plan before posting. To finish a past
+              day with zero activity, use Review & close and choose Close as shop holiday.
             </p>
 
             <div className="stack" style={{gap: '0.5rem'}}>
@@ -1092,7 +1113,7 @@ export default function Daybook() {
                   </Btn>
                 </div>
               ))}
-              {!liveHolidays.length && <p style={{color: '#64748b'}}>No scheduled holidays.</p>}
+              {!liveHolidays.length && <p style={{color: '#64748b'}}>No planned holidays.</p>}
             </div>
 
             <hr />
@@ -1112,7 +1133,7 @@ export default function Daybook() {
                 placeholder="Weekly holiday, festival, etc."
               />
             </Field>
-            <Btn onClick={handleScheduleHoliday}>Add Scheduled Holiday</Btn>
+            <Btn onClick={handleScheduleHoliday}>Plan shop holiday</Btn>
           </div>
         </Modal>
       )}

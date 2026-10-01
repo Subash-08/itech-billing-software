@@ -21,7 +21,7 @@
     "jszip": "^3.10.2",
     "lucide-react": "latest",
     "mongodb": "^7.6.0",
-    "next": "latest",
+    "next": "16.3.8",
     "react": "latest",
     "react-dom": "latest",
     "server-only": "^0.0.1",

@@ -801,6 +801,9 @@ export async function closeBusinessDay(
       }
 
       // Normal trading day closing:
+      if (input.cashCountPaise === undefined || input.bankCountPaise === undefined) {
+        throw new AppError(400, 'Cash and Bank closing balances are required for a trading day.');
+      }
       // 1. Check all invoices and adjustments have profit entered
       const pendingInvoices = await col(db, 'invoices')
         .find(

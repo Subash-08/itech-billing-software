@@ -22,12 +22,19 @@ export const SaveReconciliationDraftSchema = z.object({
 export type SaveReconciliationDraftInput = z.infer<typeof SaveReconciliationDraftSchema>;
 
 export const CloseBusinessDaySchema = z.object({
-  cashCountPaise: z.number().int().nonnegative(),
-  bankCountPaise: z.number().int().nonnegative(),
+  cashCountPaise: z.number().int().nonnegative().nullish().transform(value => value ?? undefined),
+  bankCountPaise: z.number().int().nonnegative().nullish().transform(value => value ?? undefined),
   note: z.string().max(1000).optional(),
   reviewVersion: z.number().int().optional(),
   holiday: z.boolean().optional().default(false),
   idempotencyKey: z.string().min(8).max(128),
+}).superRefine((value, context) => {
+  if (!value.holiday && value.cashCountPaise === undefined) {
+    context.addIssue({code: z.ZodIssueCode.custom, path: ['cashCountPaise'], message: 'Physical cash count is required for a trading day.'});
+  }
+  if (!value.holiday && value.bankCountPaise === undefined) {
+    context.addIssue({code: z.ZodIssueCode.custom, path: ['bankCountPaise'], message: 'Bank balance is required for a trading day.'});
+  }
 });
 export type CloseBusinessDayInput = z.infer<typeof CloseBusinessDaySchema>;
 
@@ -62,4 +69,3 @@ export const BulkHolidayCloseSchema = z.object({
   idempotencyKey: z.string().min(8).max(128),
 });
 export type BulkHolidayCloseInput = z.infer<typeof BulkHolidayCloseSchema>;
-

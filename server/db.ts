@@ -28,7 +28,11 @@ const globalDb = globalThis as typeof globalThis & {
   itechIndexes?: Promise<void>;
   indexIntegrityVerified?: boolean;
   indexIntegrityErrors?: string[];
+  itechIndexCatalog?: Map<string, Promise<any[]>>;
+  itechRuntimeIndexCheck?: Promise<void>;
 };
+
+const REQUIRED_INDEX_MANIFEST_VERSION = 3;
 
 function isDnsDiscoveryError(err: any): boolean {
   if (!err) return false;
@@ -125,7 +129,14 @@ async function safeCreateIndex(
   keys: Record<string, 1 | -1 | string>,
   options?: any
 ) {
-  const existing = await col.listIndexes().toArray().catch(() => []);
+  const collectionName = String(col.collectionName);
+  let catalog = globalDb.itechIndexCatalog?.get(collectionName);
+  if (!catalog) {
+    const loadedCatalog: Promise<any[]> = col.listIndexes().toArray().catch(() => []);
+    globalDb.itechIndexCatalog?.set(collectionName, loadedCatalog);
+    catalog = loadedCatalog;
+  }
+  const existing = await catalog;
   const keyJson = canonicalStringify(keys);
   const matched = existing.find((idx: any) => canonicalStringify(idx.key) === keyJson);
 
@@ -201,6 +212,9 @@ export async function ensureIndexes() {
     globalDb.indexIntegrityErrors = [];
     globalDb.itechIndexes = (async () => {
       const db = await database();
+      // One catalog lookup per collection replaces one lookup per index while
+      // preserving the same integrity checks and index-creation behaviour.
+      globalDb.itechIndexCatalog = new Map();
       await Promise.all([
         safeCreateIndex(db.collection('authUsers'), {email: 1}, {unique: true}),
         safeCreateIndex(db.collection('authSessions'), {expiresAt: 1}, {expireAfterSeconds: 0}),
@@ -351,6 +365,17 @@ export async function ensureIndexes() {
         safeCreateIndex(db.collection('invoices'), {tenantId: 1, status: 1, invoiceDate: -1}),
         safeCreateIndex(db.collection('invoices'), {tenantId: 1, customerId: 1, status: 1, invoiceDate: -1}),
         safeCreateIndex(db.collection('invoices'), {tenantId: 1, duePaise: 1, status: 1}),
+        safeCreateIndex(db.collection('invoices'), {tenantId: 1, paymentStatus: 1, invoiceDate: -1, _id: -1}),
+        safeCreateIndex(db.collection('invoices'), {tenantId: 1, businessCategory: 1, invoiceDate: -1, _id: -1}),
+        safeCreateIndex(db.collection('invoices'), {tenantId: 1, taxMode: 1, invoiceDate: -1, _id: -1}),
+
+        // Daily closing reads are on every profit/daybook visit. These indexes
+        // also protect chronological and one-record-per-day invariants.
+        safeCreateIndex(db.collection('dailyClosings'), {tenantId: 1, date: 1}, {unique: true}),
+        safeCreateIndex(db.collection('dailyClosings'), {tenantId: 1, date: -1}),
+        safeCreateIndex(db.collection('dailyClosingDrafts'), {tenantId: 1, date: 1}, {unique: true}),
+        safeCreateIndex(db.collection('manualProfitAdjustments'), {tenantId: 1, date: 1}),
+        safeCreateIndex(db.collection('businessHolidays'), {tenantId: 1, date: 1}, {unique: true}),
 
         safeCreateIndex(db.collection('customerReceipts'), {tenantId: 1, receiptNumber: 1}, {unique: true}),
         safeCreateIndex(db.collection('customerReceipts'), {tenantId: 1, customerId: 1, date: -1}),
@@ -375,9 +400,11 @@ export async function ensureIndexes() {
         safeCreateIndex(db.collection('stockReservations'), {tenantId: 1, customerId: 1, status: 1}),
         safeCreateIndex(db.collection('stockReservations'), {tenantId: 1, productId: 1, status: 1}),
         safeCreateIndex(db.collection('stockReservations'), {tenantId: 1, expiresAt: 1, status: 1}),
+        safeCreateIndex(db.collection('stockReservations'), {tenantId: 1, customerId: 1, productId: 1, status: 1, expiresAt: 1}),
         safeCreateIndex(db.collection('stockMovements'), {tenantId: 1, reservationId: 1}),
         safeCreateIndex(db.collection('serialUnits'), {tenantId: 1, reservationId: 1}),
         safeCreateIndex(db.collection('tenantSerialGates'), {tenantId: 1}, {unique: true}),
+        safeCreateIndex(db.collection('serviceJobs'), {tenantId: 1, status: 1}),
 
         // Storage & uploads indexes
         safeCreateIndex(db.collection('storageConnections'), {tenantId: 1, status: 1}),
@@ -385,12 +412,44 @@ export async function ensureIndexes() {
         safeCreateIndex(db.collection('pendingUploads'), {tenantId: 1, userId: 1, createdAt: -1}),
         safeCreateIndex(db.collection('files'), {tenantId: 1, _id: 1, storageConnectionId: 1, status: 1}),
       ]);
+      await db.collection<any>('schemaMetadata').updateOne(
+        {_id: 'required-indexes'},
+        {$set: {version: REQUIRED_INDEX_MANIFEST_VERSION, verifiedAt: new Date()}},
+        {upsert: true}
+      );
       globalDb.indexIntegrityVerified = true;
+      globalDb.itechIndexCatalog = undefined;
     })().catch(e => {
       globalDb.itechIndexes = undefined;
       globalDb.indexIntegrityVerified = false;
+      globalDb.itechIndexCatalog = undefined;
       throw e;
     });
   }
   return globalDb.itechIndexes;
+}
+
+/**
+ * Request-time index gate. Index creation and full catalogue verification are
+ * migrations, not work that every serverless cold start should repeat. A
+ * versioned marker makes normal starts one indexed lookup; a missing/stale
+ * marker performs the full fail-closed verification once and records success.
+ */
+export async function ensureRuntimeIndexes() {
+  if (globalDb.indexIntegrityVerified) return;
+  if (!globalDb.itechRuntimeIndexCheck) {
+    globalDb.itechRuntimeIndexCheck = (async () => {
+      const db = await database();
+      const marker = await db.collection<any>('schemaMetadata').findOne({_id: 'required-indexes'});
+      if (marker?.version === REQUIRED_INDEX_MANIFEST_VERSION) {
+        globalDb.indexIntegrityVerified = true;
+        return;
+      }
+      await ensureIndexes();
+    })().catch(error => {
+      globalDb.itechRuntimeIndexCheck = undefined;
+      throw error;
+    });
+  }
+  await globalDb.itechRuntimeIndexCheck;
 }

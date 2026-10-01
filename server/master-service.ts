@@ -783,6 +783,7 @@ export async function listProducts(identity: Identity, query: PaginationQuery) {
       {brand: {$regex: escaped, $options: 'i'}},
       {model: {$regex: escaped, $options: 'i'}},
       {hsn: {$regex: escaped, $options: 'i'}},
+      {description: {$regex: escaped, $options: 'i'}},
     ];
   }
 
@@ -882,6 +883,7 @@ export async function createProduct(identity: Identity, input: ProductInput) {
         _id: id,
         tenantId: identity.tenantId,
         name: input.name,
+        description: input.description || '',
         category: input.category,
         brand: input.brand,
         condition: input.condition,
@@ -959,6 +961,7 @@ export async function updateProduct(identity: Identity, id: string, input: Produ
 
       const update = {
         name: input.name,
+        description: input.description || '',
         category: input.category,
         brand: input.brand,
         condition: input.condition,

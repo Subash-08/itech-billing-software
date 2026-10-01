@@ -73,21 +73,6 @@ const groups = [
   },
 ];
 
-type ModuleMode = 'live' | 'mixed' | 'preview';
-const previewPaths = new Set<string>([]);
-const mixedPaths = new Set<string>([]);
-
-function moduleMode(url: string): ModuleMode {
-  if (previewPaths.has(url)) return 'preview';
-  if (mixedPaths.has(url)) return 'mixed';
-  return 'live';
-}
-
-function currentModuleMode(path: string): ModuleMode {
-  const root = `/${path.split('/').filter(Boolean)[0] || ''}`;
-  return moduleMode(root);
-}
-
 export default function Shell({children}: {children: ReactNode}) {
   const path = usePathname();
   const router = useRouter();
@@ -150,8 +135,6 @@ export default function Shell({children}: {children: ReactNode}) {
     ? state.products.filter((p) => (p.name + (p.model || '')).toLowerCase().includes(query.toLowerCase())).slice(0, 3)
     : [];
 
-  const pageMode = isLive ? currentModuleMode(path) : null;
-
   return (
     <div className="app">
       <aside className={`sidebar ${mobile ? 'open' : ''}`}>
@@ -183,10 +166,7 @@ export default function Shell({children}: {children: ReactNode}) {
                     key={url as string}
                   >
                     <I size={18} />
-                     <span>{label as string}</span>
-                    <em className={`module-badge ${moduleMode(url as string)}`}>
-                      {moduleMode(url as string) === 'mixed' ? 'Partly live' : moduleMode(url as string) === 'live' ? 'Live' : 'Preview'}
-                    </em>
+                    <span>{label as string}</span>
                     {url === '/services' && (
                       <small>{state.jobs.filter((j) => j.status !== 'Delivered').length}</small>
                     )}
@@ -257,13 +237,9 @@ export default function Shell({children}: {children: ReactNode}) {
           </div>
           {isLoading ? (
             <span className="session-pill loading">Checking account…</span>
-          ) : isLive ? (
-            <span className="live-pill" title="Connected to multi-tenant live company account">
-              Live data · {companyName}
-            </span>
-          ) : (
+          ) : !isLive ? (
             <span className="demo-pill">Demo workspace</span>
-          )}
+          ) : null}
           <ProfitAccess />
           <div className="notification-wrap">
             <button
@@ -317,7 +293,7 @@ export default function Shell({children}: {children: ReactNode}) {
                 <div className={`account-data-status ${isLive ? 'live' : 'demo'}`}>
                   <span className="online-dot" />
                   <div>
-                    <strong>{isLive ? 'Live company data' : 'Demo workspace'}</strong>
+                    <strong>{isLive ? 'Company account' : 'Demo workspace'}</strong>
                     <small>{isLive ? companyName : 'Changes reset when the page reloads'}</small>
                   </div>
                 </div>
@@ -343,7 +319,7 @@ export default function Shell({children}: {children: ReactNode}) {
           </div>
         </header>
 
-        <main className={pageMode === 'preview' ? 'preview-live-view' : pageMode === 'mixed' ? 'mixed-live-view' : ''}>
+        <main>
           {!isLive && (
             <div className="module-migration-notice preview" role="status" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem'}}>
               <div>
@@ -364,29 +340,12 @@ export default function Shell({children}: {children: ReactNode}) {
               </button>
             </div>
           )}
-          {pageMode === 'preview' && (
-            <div className="module-migration-notice preview" role="status">
-              <strong>Preview data:</strong> This workflow currently uses sample browser data. It is not read from or saved to your
-              company database; live persistence is added in the transaction phases.
-            </div>
-          )}
-          {pageMode === 'mixed' && (
-            <div className="module-migration-notice mixed" role="status">
-              <strong>Partly live:</strong> Connected actions save to your company account. Some related workflows are still
-              incomplete or under review. A saved record does not mean every linked payment, report or preview is complete.
-            </div>
-          )}
-          {pageMode === 'live' && (
-            <div className="module-migration-notice live" role="status">
-              <strong>Live data:</strong> Changes on this page are saved to the current company account.
-            </div>
-          )}
           {children}
         </main>
 
         <footer className="app-footer">
           <span>{isLive ? companySession?.company?.name || 'iTech Computers' : 'iTech Computers · Salem'}</span>
-          <span>{isLive ? `${pageMode === 'preview' ? 'Preview' : pageMode === 'mixed' ? 'Partly live' : 'Live'} module · Multi-tenant account` : 'Demo data · Changes reset on refresh'}</span>
+          <span>{isLive ? 'Multi-tenant company account' : 'Demo data · Changes reset on refresh'}</span>
         </footer>
       </div>
     </div>

@@ -500,6 +500,7 @@ export interface PurchaseProductLine {
   productId: string;
   productSnapshot: {
     name: string;
+    description: string;
     category: string;
     brand: string;
     model: string;

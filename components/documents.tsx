@@ -17,6 +17,7 @@ import {
   AlertCircle,
   RotateCcw,
   Archive,
+  MessageCircle,
 } from 'lucide-react';
 import { uploadFile } from '@/lib/upload';
 import {
@@ -43,6 +44,7 @@ import { issueBill, receivePurchase, addPayment } from '@/lib/operations';
 import { useStore } from './store';
 import { PageHead, Card, Btn, Field, Modal, SearchBox, Empty, Badge, csvDownload } from './ui';
 import { PaymentDialog } from './payments';
+import {invoiceWhatsAppMessage, whatsappUrl} from '@/lib/whatsapp';
 import { PersonForm } from './people';
 import { InvoiceTemplate } from '@/lib/extensions';
 import { TemplateInvoice as InvoicePaper, PrintDialog } from './templates';
@@ -71,6 +73,22 @@ const blankLine = (): Line => ({
   warranty: 0,
   clientLineKey: uid('CLK'),
 });
+
+const taxableMultiplier = (line: Line) =>
+  line.taxTreatment === 'Exempt' || line.taxTreatment === 'NonGST' || !line.tax ? 1 : 1 + line.tax / 100;
+const moneyRate = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+const lineUsesInclusiveRate = (line: Line, documentInclusive: boolean) =>
+  line.priceEntryMode ? line.priceEntryMode === 'Inclusive' : documentInclusive;
+const inclusiveRate = (line: Line, documentInclusive: boolean) =>
+  moneyRate(lineUsesInclusiveRate(line, documentInclusive) ? line.rate : line.rate * taxableMultiplier(line));
+const exclusiveRate = (line: Line, documentInclusive: boolean) =>
+  moneyRate(lineUsesInclusiveRate(line, documentInclusive) ? line.rate / taxableMultiplier(line) : line.rate);
+
+const PC_COMPONENT_CATEGORIES = [
+  'Processor', 'Motherboard', 'RAM', 'GPU', 'SSD', 'HDD', 'Cooler', 'SMPS', 'Cabinet',
+  'Printer', 'Monitor', 'Keyboard & Mouse', 'UPS', 'Speaker', 'Gaming Pad', 'Headphones',
+  'Wi-Fi Dongle', 'CPU Fan', 'External HDD', 'Antivirus', 'Operating System',
+] as const;
 
 export function DocumentComposer({
   purchase = false,
@@ -115,6 +133,7 @@ export function DocumentComposer({
   const job = state.jobs.find((j) => j.id === (params.get('job') || source?.jobId));
   const enquiry = state.enquiries.find((e) => e.id === params.get('enquiry'));
   const initialService = !!params.get('job') || !!job || source?.category === 'Service' || params.get('kind') === 'Service';
+  const pcBuildMode = quotation && params.get('mode') === 'pc-build';
 
   const [loadedVersion, setLoadedVersion] = useState<number | undefined>((existing as any)?.version);
   const [loadedBillStatus, setLoadedBillStatus] = useState<string | undefined>((existing as any)?.billStatus);
@@ -152,7 +171,7 @@ export function DocumentComposer({
         },
         ...job.parts.map((part) => {
           const p = state.products.find((p) => p.id === part.productId)!;
-          return { ...blankLine(), productId: p.id, name: p.name, qty: part.qty, rate: p.price, tax: p.tax, hsn: p.hsn };
+          return { ...blankLine(), productId: p.id, name: p.name, description: p.description || '', qty: part.qty, rate: p.price, tax: p.tax, hsn: p.hsn };
         }),
       ];
     }
@@ -168,7 +187,7 @@ export function DocumentComposer({
     existing?.placeOfSupply || source?.placeOfSupply || 'Tamil Nadu'
   );
   const [inclusive, setInclusive] = useState(existing?.inclusive ?? source?.inclusive ?? true);
-  const [notes, setNotes] = useState(existing?.notes || source?.notes || '');
+  const [notes, setNotes] = useState(existing?.notes || source?.notes || (pcBuildMode ? 'Pre-built PC configuration quotation.' : ''));
   const [category, setCategory] = useState<Bill['category']>(initialService ? 'Service' : source?.category || 'New goods');
   const service = !purchase && category === 'Service';
   const [ref, setRef] = useState(existing?.reference || '');
@@ -179,6 +198,9 @@ export function DocumentComposer({
   const [customerSearch, setCustomerSearch] = useState('');
   const [customerChoices, setCustomerChoices] = useState(state.customers);
   const [productChoices, setProductChoices] = useState(state.products);
+  const supplierSearchRequestRef = useRef(0);
+  const customerSearchRequestRef = useRef(0);
+  const productSearchRequestRef = useRef(0);
   const [serialIndex, setSerialIndex] = useState<number | null>(null);
   const [serialText, setSerialText] = useState('');
   const [allocatingLineIndex, setAllocatingLineIndex] = useState<number | null>(null);
@@ -186,6 +208,86 @@ export function DocumentComposer({
   const [review, setReview] = useState(false);
   const [newProduct, setNewProduct] = useState(false);
   const [serviceId, setServiceId] = useState('');
+  const [pcCustom, setPcCustom] = useState({label: '', category: '', description: '', price: '', qty: '1'});
+
+  const addPcComponent = (categoryName: string) => {
+    setLines(current => [
+      ...current,
+      {
+        ...blankLine(),
+        lineType: 'Charge',
+        name: categoryName,
+        description: `PC build component: ${categoryName}`,
+        hsn: '847330',
+        qty: 1,
+        rate: 0,
+      } as Line,
+    ]);
+  };
+
+  const addPcCustomItem = () => {
+    const name = pcCustom.label.trim() || pcCustom.category.trim();
+    const quantity = Number(pcCustom.qty);
+    const enteredPrice = Number(pcCustom.price);
+    if (!name) return notify('Enter a label or category for the custom PC item.');
+    if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isInteger(quantity)) return notify('Quantity must be a positive whole number.');
+    if (!Number.isFinite(enteredPrice) || enteredPrice < 0) return notify('Price must be zero or greater.');
+    setLines(current => [
+      ...current,
+      {
+        ...blankLine(),
+        lineType: 'Charge',
+        name,
+        description: pcCustom.description.trim() || (pcCustom.category.trim() ? `PC build component: ${pcCustom.category.trim()}` : ''),
+        hsn: '847330',
+        qty: quantity,
+        rate: enteredPrice,
+      } as Line,
+    ]);
+    setPcCustom({label: '', category: '', description: '', price: '', qty: '1'});
+  };
+
+  const changePriceEntryMode = (nextInclusive: boolean) => {
+    if (nextInclusive === inclusive) return;
+    setLines(current => current.map(line => ({
+      ...line,
+      rate: line.taxTreatment === 'Taxable' && lineUsesInclusiveRate(line, inclusive) !== nextInclusive
+        ? nextInclusive ? line.rate * taxableMultiplier(line) : line.rate / taxableMultiplier(line)
+        : line.rate,
+      priceEntryMode: nextInclusive ? 'Inclusive' : 'Exclusive',
+    })));
+    setInclusive(nextInclusive);
+  };
+
+  const changeLinePriceAndTaxMode = (index: number, next: 'Inclusive' | 'Exclusive' | 'NonGST' | 'Exempt') => {
+    setLines(current => current.map((line, lineIndex) => {
+      if (lineIndex !== index) return line;
+      const wasInclusive = lineUsesInclusiveRate(line, inclusive);
+      if (next === 'NonGST' || next === 'Exempt') {
+        const currentTotalRate = inclusiveRate(line, inclusive);
+        return {
+          ...line,
+          rate: currentTotalRate,
+          priceEntryMode: 'Inclusive',
+          taxTreatment: next,
+          tax: 0,
+        };
+      }
+      const nextInclusive = next === 'Inclusive';
+      const restoredTax = line.tax > 0
+        ? line.tax
+        : (state.products.find(product => product.id === line.productId)?.tax || 18);
+      const sourceMultiplier = line.taxTreatment === 'Taxable' && line.tax > 0 ? taxableMultiplier(line) : 1;
+      const oldInclusiveRate = wasInclusive ? line.rate : line.rate * sourceMultiplier;
+      return {
+        ...line,
+        taxTreatment: 'Taxable',
+        tax: restoredTax,
+        priceEntryMode: next,
+        rate: nextInclusive ? oldInclusiveRate : oldInclusiveRate / (1 + restoredTax / 100),
+      };
+    }));
+  };
   const [payRows, setPayRows] = useState<{ account: string; amount: string; method: string }[]>([]);
   const [templateId, setTemplateId] = useState(source?.templateId || state.defaultTemplateId);
   const templateChosenByUser = useRef(false);
@@ -299,24 +401,33 @@ export function DocumentComposer({
 
   useEffect(() => {
     if (!purchase || !isLive) return;
+    const requestId = ++supplierSearchRequestRef.current;
     const timer = window.setTimeout(() => {
-      fetchSuppliersPage({ limit: 50, q: supplierSearch.trim() || undefined }).then(result => setSupplierChoices(result.records)).catch(() => { });
+      fetchSuppliersPage({ limit: 50, q: supplierSearch.trim() || undefined }).then(result => {
+        if (requestId === supplierSearchRequestRef.current) setSupplierChoices(result.records);
+      }).catch(() => { });
     }, 250);
     return () => window.clearTimeout(timer);
   }, [purchase, isLive, supplierSearch, fetchSuppliersPage]);
 
   useEffect(() => {
     if (purchase || !isLive) return;
+    const requestId = ++customerSearchRequestRef.current;
     const timer = window.setTimeout(() => {
-      fetchCustomersPage({ limit: 50, q: customerSearch.trim() || undefined, status: 'Active' }).then(result => setCustomerChoices(result.records)).catch(() => { });
+      fetchCustomersPage({ limit: 50, q: customerSearch.trim() || undefined, status: 'Active' }).then(result => {
+        if (requestId === customerSearchRequestRef.current) setCustomerChoices(result.records);
+      }).catch(() => { });
     }, 250);
     return () => window.clearTimeout(timer);
   }, [purchase, isLive, customerSearch, fetchCustomersPage]);
 
   useEffect(() => {
     if (!isLive) return;
+    const requestId = ++productSearchRequestRef.current;
     const timer = window.setTimeout(() => {
-      fetchProductsPage({ limit: 50, q: search.trim() || undefined, status: 'Active' }).then(result => setProductChoices(result.records)).catch(() => { });
+      fetchProductsPage({ limit: 50, q: search.trim() || undefined, status: 'Active' }).then(result => {
+        if (requestId === productSearchRequestRef.current) setProductChoices(result.records);
+      }).catch(() => { });
     }, 250);
     return () => window.clearTimeout(timer);
   }, [isLive, search, fetchProductsPage]);
@@ -379,6 +490,7 @@ export function DocumentComposer({
             discountType: l.discountType || 'Percentage',
             tax: l.tax ?? (l.taxBasisPoints ? l.taxBasisPoints / 100 : 0),
             taxTreatment: l.taxTreatment || 'Taxable',
+            priceEntryMode: l.priceEntryMode || (l.inclusive === false ? 'Exclusive' : l.inclusive === true ? 'Inclusive' : undefined),
             hsn: l.hsn || '',
             sac: l.sac || '',
             warranty: l.warranty ?? l.warrantyMonths ?? 0,
@@ -413,6 +525,7 @@ export function DocumentComposer({
               discountType: l.discountType || 'Percentage',
               tax: l.tax ?? (l.taxBasisPoints ? l.taxBasisPoints / 100 : 0),
               taxTreatment: l.taxTreatment || 'Taxable',
+              priceEntryMode: l.priceEntryMode || (l.inclusive === false ? 'Exclusive' : l.inclusive === true ? 'Inclusive' : undefined),
               hsn: l.hsn || '',
               sac: l.sac || '',
               warranty: l.warranty ?? l.warrantyMonths ?? 0,
@@ -452,6 +565,7 @@ export function DocumentComposer({
               discountType: l.discountType || 'Percentage',
               tax: l.tax ?? (l.taxBasisPoints ? l.taxBasisPoints / 100 : 0),
               taxTreatment: l.taxTreatment || 'Taxable',
+              priceEntryMode: l.priceEntryMode || (l.inclusive === false ? 'Exclusive' : l.inclusive === true ? 'Inclusive' : undefined),
               hsn: l.hsn || '',
               sac: l.sac || '',
               warranty: l.warranty ?? l.warrantyMonths ?? 0,
@@ -555,6 +669,7 @@ export function DocumentComposer({
         productId: p.id,
         lineType: 'Product',
         name: p.name,
+        description: p.description || '',
         qty: 1,
         rate: purchase
           ? inclusive
@@ -565,6 +680,7 @@ export function DocumentComposer({
             : Math.round((p.price / (1 + p.tax / 100)) * 100) / 100,
         discount: 0,
         tax: p.tax,
+        priceEntryMode: inclusive ? 'Inclusive' : 'Exclusive',
         serials: [],
         isSerialTracked: p.isSerialTracked,
         hsn: p.hsn,
@@ -582,9 +698,9 @@ export function DocumentComposer({
     setLines(next);
   }
 
-  function validateBasic(): boolean {
+  function validateBasic(forIssue = false): boolean {
     if (!purchase && (!billTo.name.trim() || !billTo.address.trim() || !billTo.state.trim())) {
-      notify('Enter the bill-to name, address and state for this document.');
+      notify('Enter the bill-to name, billing address and state for this document.');
       return false;
     }
     if (shipSeparate && (!shipTo.name.trim() || !shipTo.address.trim() || !shipTo.state.trim())) {
@@ -842,7 +958,7 @@ export function DocumentComposer({
       notify('Enter a positive payment amount with up to two decimal places, or remove the unused payment row for credit.');
       return;
     }
-    if (!validateBasic()) return;
+    if (!validateBasic(action === 'issue')) return;
 
     if (!isLive) {
       return saveSales();
@@ -915,12 +1031,14 @@ export function DocumentComposer({
         const common = {
           clientLineKey: l.clientLineKey || uid('CLK'),
           description: (l.name || 'Item').trim(),
+          details: (l.description || '').trim(),
           quantity: Math.max(1, Math.round(l.qty || 1)),
           unitRatePaise: Math.round((l.rate || 0) * 100),
           discountType: (l.discountType || 'Percentage') as 'Percentage' | 'Amount',
           discountValue: Math.round((l.discount || 0) * 100),
           taxBasisPoints: isZeroTax ? 0 : Math.round((l.tax || 0) * 100),
           taxTreatment: treatment,
+          priceEntryMode: (l.priceEntryMode || (inclusive ? 'Inclusive' : 'Exclusive')) as 'Inclusive' | 'Exclusive',
         };
 
         if (isChg) {
@@ -1107,7 +1225,7 @@ export function DocumentComposer({
             : purchase
               ? 'New purchase'
               : quotation
-                ? 'New quotation'
+                ? pcBuildMode ? 'New pre-built PC quotation' : 'New quotation'
                 : service
                   ? 'New service invoice'
                   : 'New sales invoice'
@@ -1116,7 +1234,9 @@ export function DocumentComposer({
           purchase
             ? (isReceiptMode ? 'Receive delivered goods into inventory. No money leaves Cash or Bank. Pay the supplier later from this purchase or the supplier profile.' : 'Record a supplier bill and receive goods without payment, or choose Record + Receive + Pay to pay now.')
             : quotation
-              ? 'Prepare an estimate. Stock and money stay unchanged until a sale is confirmed.'
+              ? pcBuildMode
+                ? 'Build a clear PC configuration estimate. Add catalogue products for stock-linked parts and placeholders for options still being decided.'
+                : 'Prepare an estimate. Stock and money stay unchanged until a sale is confirmed.'
               : 'Add items, check the totals and issue the customer’s invoice.'
         }
         actions={
@@ -1136,19 +1256,24 @@ export function DocumentComposer({
                   <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('draft')}>
                     Save draft
                   </Btn>
-                  <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('confirm')}>
-                    Confirm purchase order
-                  </Btn>
-                  <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('post')}>
-                    Post supplier bill
-                  </Btn>
                   <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('receive')}>
-                    Record + Receive
+                    Receive items · pay later
                   </Btn>
                   <Btn disabled={busy} onClick={() => handlePurchaseAction('receive_pay')}>
                     <Check size={16} />
-                    Record + Receive + Pay
+                    Receive items & pay now
                   </Btn>
+                  <details className="optional-fields">
+                    <summary>More purchase options</summary>
+                    <div style={{display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem'}}>
+                      <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('confirm')}>
+                        Create order only
+                      </Btn>
+                      <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('post')}>
+                        Record supplier bill only
+                      </Btn>
+                    </div>
+                  </details>
                 </div>
               )
             ) : (
@@ -1343,7 +1468,7 @@ export function DocumentComposer({
             <Field label="Price entry mode">
               <select
                 value={inclusive ? 'inclusive' : 'exclusive'}
-                onChange={(e) => setInclusive(e.target.value === 'inclusive')}
+                onChange={(e) => changePriceEntryMode(e.target.value === 'inclusive')}
               >
                 <option value="inclusive">GST inclusive · entered rate includes tax</option>
                 <option value="exclusive">GST exclusive · add tax to entered rate</option>
@@ -1404,6 +1529,7 @@ export function DocumentComposer({
                     />
                   </Field>
                 ))}
+                <p className="muted full">Bill-to name, billing address and state are required so saved and printed documents contain a complete buyer address.</p>
               </div>
               <label className="checkbox-row">
                 <input
@@ -1450,14 +1576,42 @@ export function DocumentComposer({
         </Card>
 
         <Card
-          title={purchase ? 'Purchase items' : service ? 'Service and parts' : 'Invoice items'}
+          title={purchase ? 'Purchase items' : service ? 'Service and parts' : pcBuildMode ? 'PC build configuration' : 'Invoice items'}
           sub={
             inclusive
               ? 'Rates include GST. Discounts apply before tax; charges use their own editable GST rate.'
-              : 'GST is added after discount. Changing the price mode reinterprets the entered rates.'
+              : 'GST is added after discount. Each line can override inclusive, exclusive or non-GST entry without changing inventory cost.'
           }
           actions={<span className="muted">{lines.length} lines</span>}
         >
+          {pcBuildMode && (
+            <div className="pc-build-picker">
+              <div className="pc-build-heading">
+                <div>
+                  <strong>Quick-add PC components</strong>
+                  <p className="muted">Choose catalogue products below when the exact stocked item is known. These quick rows are non-stock quotation placeholders and never create or reduce inventory.</p>
+                </div>
+              </div>
+              <div className="pc-component-grid">
+                {PC_COMPONENT_CATEGORIES.map(component => (
+                  <button type="button" className="btn secondary" key={component} onClick={() => addPcComponent(component)}>
+                    <span>{component}</span><Plus size={14} />
+                  </button>
+                ))}
+              </div>
+              <details className="pc-custom-item">
+                <summary>Add custom PC item</summary>
+                <div className="form-grid" style={{marginTop: '0.75rem'}}>
+                  <Field label="Label *"><input value={pcCustom.label} onChange={e => setPcCustom(value => ({...value, label: e.target.value}))} placeholder="e.g. Assembly charge" /></Field>
+                  <Field label="Category"><input value={pcCustom.category} onChange={e => setPcCustom(value => ({...value, category: e.target.value}))} placeholder="e.g. Accessories" /></Field>
+                  <Field label="Description"><input value={pcCustom.description} onChange={e => setPcCustom(value => ({...value, description: e.target.value}))} placeholder="Specification or model" /></Field>
+                  <Field label="Price"><input type="number" min="0" step="0.01" value={pcCustom.price} onChange={e => setPcCustom(value => ({...value, price: e.target.value}))} /></Field>
+                  <Field label="Qty"><input type="number" min="1" step="1" value={pcCustom.qty} onChange={e => setPcCustom(value => ({...value, qty: e.target.value}))} /></Field>
+                  <div className="field"><span>&nbsp;</span><Btn secondary onClick={addPcCustomItem}><Plus size={14} /> Add custom item</Btn></div>
+                </div>
+              </details>
+            </div>
+          )}
           {!service && (
             <div className="toolbar">
               <SearchBox value={search} onChange={setSearch} placeholder="Find a product…" />
@@ -1468,7 +1622,7 @@ export function DocumentComposer({
                 style={{ flex: 1 }}
               >
                 <option value="">Choose a product</option>
-                {(purchase && isLive ? productChoices : state.products)
+                {(isLive ? productChoices : state.products)
                   .filter((p) => (p.name + p.model).toLowerCase().includes(search.toLowerCase()))
                   .map((p) => (
                     <option value={p.id} key={p.id}>
@@ -1519,6 +1673,7 @@ export function DocumentComposer({
                         lineType: 'Service',
                         serviceId: x.id,
                         name: x.name,
+                        description: x.description || '',
                         rate: inclusive ? x.rate : x.rate / (1 + x.tax / 100),
                         tax: x.tax,
                         hsn: x.sac,
@@ -1544,9 +1699,10 @@ export function DocumentComposer({
                 <tr>
                   <th>Item / HSN</th>
                   <th>Qty</th>
-                  <th>Rate {inclusive ? 'incl. GST' : 'excl. GST'}</th>
+                  <th>Rate incl. GST</th>
+                  <th>Rate excl. GST</th>
                   <th>Discount</th>
-                  <th>GST %</th>
+                  <th>Price mode / GST</th>
                   <th>Total</th>
                   <th />
                 </tr>
@@ -1560,6 +1716,15 @@ export function DocumentComposer({
                         className="table-input wide-input"
                         value={l.name}
                         onChange={(e) => update(i, 'name', e.target.value)}
+                      />
+                      <textarea
+                        aria-label={`Item ${i + 1} additional details`}
+                        className="line-description-input"
+                        maxLength={1000}
+                        rows={2}
+                        placeholder="Optional product / service details printed below the item name"
+                        value={l.description || ''}
+                        onChange={(e) => update(i, 'description', e.target.value)}
                       />
                       <div className="line-meta">
                         <input
@@ -1599,22 +1764,36 @@ export function DocumentComposer({
                         type="number"
                         min={isReceiptMode ? 0 : 1}
                         max={isReceiptMode ? Math.max(0, (l as any).quantityOrdered - (l as any).quantityReceived - (l as any).quantityCancelled) : undefined}
-                        disabled={(isPosted && !isReceiptMode) || l.lineType === 'Charge'}
+                        disabled={isPosted && !isReceiptMode}
                         value={l.qty}
                         onChange={(e) => update(i, 'qty', +e.target.value)}
                       />
                     </td>
                     <td>
                       <input
-                        aria-label={`Item ${i + 1} rate`}
+                        aria-label={`Item ${i + 1} rate including GST`}
                         className="table-input"
                         type="number"
                         min="0"
                         step="0.01"
-                        disabled={isPosted}
-                        value={l.rate}
+                        disabled={isPosted || (l.taxTreatment === 'Taxable' && !lineUsesInclusiveRate(l, inclusive))}
+                        value={inclusiveRate(l, inclusive)}
                         onChange={(e) => update(i, 'rate', +e.target.value)}
                       />
+                      {(lineUsesInclusiveRate(l, inclusive) || l.taxTreatment !== 'Taxable') && <small className="muted">Entry</small>}
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`Item ${i + 1} rate excluding GST`}
+                        className="table-input"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        disabled={isPosted || lineUsesInclusiveRate(l, inclusive) || l.taxTreatment !== 'Taxable'}
+                        value={exclusiveRate(l, inclusive)}
+                        onChange={(e) => update(i, 'rate', +e.target.value)}
+                      />
+                      {!lineUsesInclusiveRate(l, inclusive) && l.taxTreatment === 'Taxable' && <small className="muted">Entry</small>}
                     </td>
                     <td>
                       <input
@@ -1642,22 +1821,19 @@ export function DocumentComposer({
                     </td>
                     <td>
                       <select
-                        aria-label={`Item ${i + 1} tax treatment`}
+                        aria-label={`Item ${i + 1} price and tax mode`}
                         className="table-input"
                         disabled={isPosted}
                         style={{ marginBottom: 4 }}
-                        value={l.taxTreatment || 'Taxable'}
-                        onChange={(e) => {
-                          const val = e.target.value as 'Taxable' | 'Exempt' | 'NonGST';
-                          update(i, 'taxTreatment', val);
-                          if (val === 'Exempt' || val === 'NonGST') {
-                            update(i, 'tax', 0);
-                          }
-                        }}
+                        value={l.taxTreatment === 'NonGST' || l.taxTreatment === 'Exempt'
+                          ? l.taxTreatment
+                          : lineUsesInclusiveRate(l, inclusive) ? 'Inclusive' : 'Exclusive'}
+                        onChange={(e) => changeLinePriceAndTaxMode(i, e.target.value as 'Inclusive' | 'Exclusive' | 'NonGST' | 'Exempt')}
                       >
-                        <option value="Taxable">Taxable</option>
-                        <option value="Exempt">Exempt</option>
+                        <option value="Inclusive">GST inclusive</option>
+                        <option value="Exclusive">GST exclusive</option>
                         <option value="NonGST">Non-GST</option>
+                        <option value="Exempt">GST exempt</option>
                       </select>
                       <select
                         aria-label={`Item ${i + 1} GST`}
@@ -1878,20 +2054,25 @@ export function DocumentComposer({
             <div className="body-pad">
               {purchase && isLive && (
                 <Field label="Supplier bill / purchase attachment">
-                  <input
-                    type="file"
-                    accept="application/pdf,image/png,image/jpeg"
-                    disabled={uploadingAttachment}
-                    onChange={(e) => void uploadPurchaseAttachment(e.target.files?.[0])}
-                  />
+                  {!isReceiptMode && <input
+                      type="file"
+                      accept="application/pdf,image/png,image/jpeg"
+                      disabled={uploadingAttachment}
+                      onChange={(e) => void uploadPurchaseAttachment(e.target.files?.[0])}
+                    />}
                   <small>
                     {uploadingAttachment
                       ? 'Uploading…'
                       : attachmentFileId
                         ? `${attachmentName || 'Attachment'} is linked to this purchase.`
-                        : 'PDF, JPG or PNG up to 5 MB. Files are private to this company.'}
+                        : isReceiptMode
+                          ? 'No bill file is linked. Finish receiving, then attach it from the purchase overview.'
+                          : 'PDF, JPG or PNG up to 5 MB. Files are private to this company.'}
                   </small>
-                  {attachmentFileId && (
+                  {isReceiptMode && attachmentFileId && (
+                    <a className="btn secondary" href={`/api/files/${attachmentFileId}`} target="_blank" rel="noopener noreferrer">Download attached bill</a>
+                  )}
+                  {!isReceiptMode && attachmentFileId && (
                     <Btn secondary onClick={() => { setAttachmentFileId(''); setAttachmentName(''); }}>
                       Remove attachment
                     </Btn>
@@ -1964,17 +2145,11 @@ export function DocumentComposer({
                 <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('draft')}>
                   Save draft
                 </Btn>
-                <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('confirm')}>
-                  Confirm order
-                </Btn>
-                <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('post')}>
-                  Post supplier bill
-                </Btn>
                 <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('receive')}>
-                  Record + Receive
+                  Receive items · pay later
                 </Btn>
                 <Btn disabled={busy} onClick={() => handlePurchaseAction('receive_pay')}>
-                  Record + Receive + Pay
+                  Receive items & pay now
                 </Btn>
               </>
             )
@@ -2000,10 +2175,10 @@ export function DocumentComposer({
       </div>
 
       {postModalOpen && (
-        <Modal title="Post supplier bill" onClose={() => setPostModalOpen(false)}>
+        <Modal title="Record supplier bill (amount payable)" onClose={() => setPostModalOpen(false)}>
           <form onSubmit={submitPostModal}>
             <div className="form-body form-grid">
-              <Field label="Supplier invoice number *">
+              <Field label="Supplier invoice number *" hint="Enter the number printed on the supplier's bill. It is used to detect duplicate bills and appears in supplier statements.">
                 <input
                   required
                   maxLength={100}
@@ -2022,7 +2197,7 @@ export function DocumentComposer({
                 />
               </Field>
               <p className="notice full">
-                Posting creates the official supplier payable. Payment can be recorded now or later.
+                This saves the supplier's bill number and creates the amount you owe. It does not receive stock or move Cash/Bank. The attached supplier PDF/photo remains the original bill document.
               </p>
             </div>
             <div className="form-actions">
@@ -2030,7 +2205,7 @@ export function DocumentComposer({
                 Cancel
               </Btn>
               <Btn type="submit" disabled={busy}>
-                {busy ? 'Posting…' : 'Post bill'}
+                {busy ? 'Saving…' : 'Save amount payable'}
               </Btn>
             </div>
           </form>
@@ -2041,7 +2216,7 @@ export function DocumentComposer({
         <Modal title="Record, Receive & Pay supplier" onClose={() => setPayModalOpen(false)}>
           <form onSubmit={submitReceiveAndPay}>
             <div className="form-body form-grid">
-              <Field label="Supplier invoice number *">
+              <Field label="Supplier invoice number *" hint="Enter the number printed on the supplier's bill. If no formal bill was supplied, use its delivery-note or supplier reference number.">
                 <input
                   required
                   value={postInvoiceNumber}
@@ -2101,7 +2276,30 @@ export function DocumentComposer({
       )}
 
       {newProduct && <ProductForm onClose={() => setNewProduct(false)} />}
-      {newPerson && <PersonForm supplier={purchase} onClose={() => setNewPerson(false)} />}
+      {newPerson && (
+        <PersonForm
+          supplier={purchase}
+          onClose={() => setNewPerson(false)}
+          onSuccess={(created) => {
+            if (purchase) {
+              void fetchSuppliersPage({limit: 50, q: supplierSearch.trim() || undefined})
+                .then((result) => setSupplierChoices(result.records))
+                .catch(() => {});
+            } else {
+              void fetchCustomersPage({limit: 50, q: created?.name || customerSearch.trim() || undefined, status: 'Active'})
+                .then((result) => {
+                  setCustomerChoices(result.records);
+                  const createdCustomer = created && 'type' in created ? created : result.records[0];
+                  if (createdCustomer?.id) {
+                    setCustomerId(createdCustomer.id);
+                    setCustomerSearch(createdCustomer.name);
+                  }
+                })
+                .catch(() => {});
+            }
+          }}
+        />
+      )}
 
       {serialIndex !== null && (
         <Modal
@@ -2284,11 +2482,11 @@ function LivePurchaseLifecycle({
         </Btn>
       )}
 
-      {canPost && <Btn onClick={() => setPostOpen(true)}>Post supplier bill</Btn>}
+      {canPost && <Btn onClick={() => setPostOpen(true)}>Record supplier bill</Btn>}
 
       {canReceive && (
         <Link className="btn" href={`/purchases/${record.id}/receive`}>
-          Receive stock
+          Add received stock
         </Link>
       )}
 
@@ -2305,7 +2503,7 @@ function LivePurchaseLifecycle({
       )}
 
       {postOpen && (
-        <Modal title="Post supplier bill" onClose={() => setPostOpen(false)}>
+        <Modal title="Record supplier bill (amount payable)" onClose={() => setPostOpen(false)}>
           <form
             onSubmit={async (event) => {
               event.preventDefault();
@@ -2327,7 +2525,7 @@ function LivePurchaseLifecycle({
             }}
           >
             <div className="form-body form-grid">
-              <Field label="Supplier invoice number *">
+              <Field label="Supplier invoice number *" hint="Enter the supplier's printed bill number. This records their document reference; it does not create one of your sales invoices.">
                 <input
                   required
                   maxLength={100}
@@ -2345,7 +2543,7 @@ function LivePurchaseLifecycle({
                 />
               </Field>
               <p className="notice full">
-                Posting creates the supplier payable. Cash or bank changes only when a supplier payment is recorded.
+                This records the supplier's bill number and amount due. It does not create one of your customer invoices, receive stock, or move Cash/Bank.
               </p>
             </div>
             <div className="form-actions">
@@ -2353,7 +2551,7 @@ function LivePurchaseLifecycle({
                 Cancel
               </Btn>
               <Btn type="submit" disabled={busy}>
-                {busy ? 'Posting…' : 'Post bill'}
+                {busy ? 'Saving…' : 'Save amount payable'}
               </Btn>
             </div>
           </form>
@@ -2473,6 +2671,7 @@ export default function Documents({
   const searchParams = useSearchParams();
 
   const [q, setQ] = useState(() => searchParams?.get('search') || searchParams?.get('q') || '');
+  const [debouncedQ, setDebouncedQ] = useState(q);
   const [status, setStatus] = useState('All');
   const [docStatusFilter, setDocStatusFilter] = useState(() => searchParams?.get('docStatus') || 'All');
   const [billStatusFilter, setBillStatusFilter] = useState(() => searchParams?.get('billStatus') || 'All');
@@ -2482,7 +2681,13 @@ export default function Documents({
   const [date, setDate] = useState(() => searchParams?.get('date') || '');
   const [cancel, setCancel] = useState(false);
   const [print, setPrint] = useState(false);
-  const [categoryFilter, setCategoryFilter] = useState('All categories');
+  const [batchPrintBills, setBatchPrintBills] = useState<Bill[]>([]);
+  const [batchPreparing, setBatchPreparing] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState(() => searchParams?.get('category') || 'All categories');
+  const [invoicePaymentFilter, setInvoicePaymentFilter] = useState(() => searchParams?.get('paymentStatus') || 'All');
+  const [invoiceTaxFilter, setInvoiceTaxFilter] = useState(() => searchParams?.get('taxMode') || 'All');
+  const [invoiceDateFrom, setInvoiceDateFrom] = useState(() => searchParams?.get('dateFrom') || '');
+  const [invoiceDateTo, setInvoiceDateTo] = useState(() => searchParams?.get('dateTo') || '');
   const [purchasePage, setPurchasePage] = useState(() => Math.max(1, parseInt(searchParams?.get('page') || '1', 10)));
   const [quotationPage, setQuotationPage] = useState(1);
   const [quotationPageData, setQuotationPageData] = useState<{ records: Bill[]; total: number; totalPages: number } | null>(null);
@@ -2491,6 +2696,7 @@ export default function Documents({
   const [invoicePage, setInvoicePage] = useState(1);
   const [invoicePageData, setInvoicePageData] = useState<{ records: Bill[]; total: number; totalPages: number } | null>(null);
   const [invoiceListLoading, setInvoiceListLoading] = useState(false);
+  const invoiceListRequestRef = useRef(0);
 
   const [salesSummary, setSalesSummary] = useState<any>(null);
 
@@ -2503,6 +2709,11 @@ export default function Documents({
   const [quoteReopenOpen, setQuoteReopenOpen] = useState(false);
   const [invCancelOpen, setInvCancelOpen] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQ(q.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [q]);
 
   // Sync active purchase list filters to URL
   useEffect(() => {
@@ -2518,6 +2729,20 @@ export default function Documents({
     window.history.replaceState(null, '', url.pathname + url.search);
   }, [purchase, id, q, docStatusFilter, billStatusFilter, receiptStatusFilter, paymentStatusFilter, date, purchasePage]);
 
+  useEffect(() => {
+    if (purchase || quotation || id) return;
+    const url = new URL(window.location.href);
+    if (q.trim()) url.searchParams.set('search', q.trim()); else url.searchParams.delete('search');
+    if (status !== 'All') url.searchParams.set('status', status); else url.searchParams.delete('status');
+    if (invoicePaymentFilter !== 'All') url.searchParams.set('paymentStatus', invoicePaymentFilter); else url.searchParams.delete('paymentStatus');
+    if (categoryFilter !== 'All categories') url.searchParams.set('category', categoryFilter); else url.searchParams.delete('category');
+    if (invoiceTaxFilter !== 'All') url.searchParams.set('taxMode', invoiceTaxFilter); else url.searchParams.delete('taxMode');
+    if (invoiceDateFrom) url.searchParams.set('dateFrom', invoiceDateFrom); else url.searchParams.delete('dateFrom');
+    if (invoiceDateTo) url.searchParams.set('dateTo', invoiceDateTo); else url.searchParams.delete('dateTo');
+    if (invoicePage > 1) url.searchParams.set('page', String(invoicePage)); else url.searchParams.delete('page');
+    window.history.replaceState(null, '', url.pathname + url.search);
+  }, [purchase, quotation, id, q, status, invoicePaymentFilter, categoryFilter, invoiceTaxFilter, invoiceDateFrom, invoiceDateTo, invoicePage]);
+
   // Detail view state
   const [detailData, setDetailData] = useState<any>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -2526,6 +2751,7 @@ export default function Documents({
   const [quotationSharing, setQuotationSharing] = useState(false);
   const quotationShareAttempt = useRef<{fingerprint: string; key: string} | null>(null);
   const [detailTab, setDetailTab] = useState<'Overview' | 'Receipts' | 'Payments' | 'Returns' | 'Credit notes'>('Overview');
+  const [purchaseAttachmentBusy, setPurchaseAttachmentBusy] = useState(false);
   const [reversalModal, setReversalModal] = useState<{
     open: boolean;
     type: 'receipt' | 'return' | 'payment' | 'allocation';
@@ -2721,15 +2947,23 @@ export default function Documents({
   }, [purchase, id, isLive, summaryReload]);
 
   useEffect(() => {
-    if (!purchase && !id && isLive) {
-      fetch('/api/sales/summary')
+    if (!purchase && !quotation && !id && isLive) {
+      const params = new URLSearchParams();
+      if (debouncedQ) params.set('search', debouncedQ);
+      if (status !== 'All') params.set('status', status);
+      if (invoicePaymentFilter !== 'All') params.set('paymentStatus', invoicePaymentFilter);
+      if (categoryFilter !== 'All categories') params.set('businessCategory', categoryFilter === 'New goods' ? 'NewGoods' : categoryFilter === 'Used goods' ? 'UsedGoods' : 'Service');
+      if (invoiceTaxFilter !== 'All') params.set('taxMode', invoiceTaxFilter);
+      if (invoiceDateFrom) params.set('dateFrom', invoiceDateFrom);
+      if (invoiceDateTo) params.set('dateTo', invoiceDateTo);
+      fetch(`/api/sales/summary?${params.toString()}`)
         .then((r) => r.json())
         .then((data) => {
           setSalesSummary(data.summary || data);
         })
         .catch(() => { });
     }
-  }, [purchase, id, isLive]);
+  }, [purchase, quotation, id, isLive, debouncedQ, status, invoicePaymentFilter, categoryFilter, invoiceTaxFilter, invoiceDateFrom, invoiceDateTo]);
 
   useEffect(() => {
     if (!purchase || id || !isLive) return;
@@ -2737,7 +2971,7 @@ export default function Documents({
     fetchPurchasesPage({
       page: purchasePage,
       limit: 20,
-      search: q.trim() || undefined,
+      search: debouncedQ || undefined,
       documentStatus: docStatusFilter === 'All' ? undefined : docStatusFilter,
       billStatus: billStatusFilter === 'All' ? undefined : billStatusFilter,
       receiptStatus: receiptStatusFilter === 'All' ? undefined : receiptStatusFilter,
@@ -2766,19 +3000,25 @@ export default function Documents({
 
   useEffect(() => {
     if (quotation || purchase || id || !isLive) return;
+    const requestId = ++invoiceListRequestRef.current;
     setInvoiceListLoading(true);
     fetchInvoicesPage({
       page: invoicePage,
       limit: 20,
       search: q.trim() || undefined,
-      status: status === 'All' ? undefined : status,
-      hasDue: status === 'Unpaid' ? true : undefined,
-      dateFrom: date || undefined,
-      dateTo: date || undefined,
-    }).then(setInvoicePageData).catch(() => notify('Could not load invoices.')).finally(() => setInvoiceListLoading(false));
-  }, [quotation, purchase, id, isLive, invoicePage, q, status, date, fetchInvoicesPage, notify]);
+      status: ['Draft', 'Issued', 'Cancelled'].includes(status) ? status : undefined,
+      hasDue: invoicePaymentFilter === 'Unpaid' ? true : undefined,
+      paymentStatus: invoicePaymentFilter === 'All' ? undefined : invoicePaymentFilter,
+      businessCategory: categoryFilter === 'All categories' ? undefined : categoryFilter === 'New goods' ? 'NewGoods' : categoryFilter === 'Used goods' ? 'UsedGoods' : 'Service',
+      taxMode: invoiceTaxFilter === 'All' ? undefined : invoiceTaxFilter,
+      dateFrom: invoiceDateFrom || undefined,
+      dateTo: invoiceDateTo || undefined,
+    }).then((data) => { if (requestId === invoiceListRequestRef.current) setInvoicePageData(data); })
+      .catch(() => { if (requestId === invoiceListRequestRef.current) notify('Could not load invoices.'); })
+      .finally(() => { if (requestId === invoiceListRequestRef.current) setInvoiceListLoading(false); });
+  }, [quotation, purchase, id, isLive, invoicePage, debouncedQ, status, invoicePaymentFilter, categoryFilter, invoiceTaxFilter, invoiceDateFrom, invoiceDateTo, fetchInvoicesPage, notify]);
 
-  useEffect(() => { setInvoicePage(1); }, [q, status, date]);
+  useEffect(() => { setInvoicePage(1); }, [q, status, invoicePaymentFilter, categoryFilter, invoiceTaxFilter, invoiceDateFrom, invoiceDateTo]);
 
   const list = (
     purchase
@@ -2836,10 +3076,40 @@ export default function Documents({
   const invoiceExportUrl = (format: string) => {
     const query = new URLSearchParams({ format });
     if (q.trim()) query.set('search', q.trim());
-    if (status !== 'All') query.set('status', status);
-    if (status === 'Unpaid') query.set('hasDue', 'true');
-    if (date) { query.set('dateFrom', date); query.set('dateTo', date); }
+    if (['Draft', 'Issued', 'Cancelled'].includes(status)) query.set('status', status);
+    if (invoicePaymentFilter === 'Unpaid') query.set('hasDue', 'true');
+    if (invoicePaymentFilter !== 'All') query.set('paymentStatus', invoicePaymentFilter);
+    if (categoryFilter !== 'All categories') query.set('businessCategory', categoryFilter === 'New goods' ? 'NewGoods' : categoryFilter === 'Used goods' ? 'UsedGoods' : 'Service');
+    if (invoiceTaxFilter !== 'All') query.set('taxMode', invoiceTaxFilter);
+    if (invoiceDateFrom) query.set('dateFrom', invoiceDateFrom);
+    if (invoiceDateTo) query.set('dateTo', invoiceDateTo);
     return `/api/sales/invoices/export?${query.toString()}`;
+  };
+
+  const prepareFilteredInvoiceBatch = async () => {
+    if (batchPreparing) return;
+    setBatchPreparing(true);
+    try {
+      const query = new URLSearchParams({page: '1', limit: '100'});
+      if (q.trim()) query.set('search', q.trim());
+      query.set('status', ['Draft', 'Issued', 'Cancelled'].includes(status) ? status : 'Issued');
+      if (invoicePaymentFilter !== 'All') query.set('paymentStatus', invoicePaymentFilter);
+      if (categoryFilter !== 'All categories') query.set('businessCategory', categoryFilter === 'New goods' ? 'NewGoods' : categoryFilter === 'Used goods' ? 'UsedGoods' : 'Service');
+      if (invoiceTaxFilter !== 'All') query.set('taxMode', invoiceTaxFilter);
+      if (invoiceDateFrom) query.set('dateFrom', invoiceDateFrom);
+      if (invoiceDateTo) query.set('dateTo', invoiceDateTo);
+      const response = await fetch(`/api/sales/invoices?${query.toString()}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not prepare invoice PDFs.');
+      if ((data.total || 0) > 100) throw new Error('More than 100 invoices match. Narrow the period or customer search before creating the ZIP.');
+      const bills = (data.items || []).map(mapInvoiceFromApi);
+      if (!bills.length) throw new Error('No invoices match the selected filters.');
+      setBatchPrintBills(bills);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Could not prepare invoice PDFs.');
+    } finally {
+      setBatchPreparing(false);
+    }
   };
 
   if (id && isLive && (detailLoading || (!detailData && !detailError))) {
@@ -2930,6 +3200,29 @@ export default function Documents({
                   Print / PDF
                 </Btn>
               )}
+              {!purchase && !quotation && record.status !== 'Draft' && (() => {
+                const snapshot = detailData?.raw?.customerSnapshot;
+                const phone = snapshot?.phone || customer?.phone || '';
+                const invoiceNumber = detailData?.raw?.invoiceNumber || (record as any).invoiceNumber || record.id;
+                const totalValue = detailData?.raw?.totalPaise != null ? detailData.raw.totalPaise / 100 : roundedTotal(record);
+                const dueValue = detailData?.raw?.duePaise != null ? detailData.raw.duePaise / 100 : balance(state, record);
+                const url = whatsappUrl(phone, invoiceWhatsAppMessage({
+                  customerName: snapshot?.name || customer?.name || 'Customer',
+                  shopName: state.settings.name || 'iTech Computers',
+                  invoiceNumber,
+                  total: money(totalValue),
+                  due: dueValue > 0 ? money(dueValue) : '',
+                }));
+                return url ? (
+                  <a className="btn secondary" href={url} target="_blank" rel="noopener noreferrer" title="Download the PDF separately, then review and send this message in WhatsApp">
+                    <MessageCircle size={16} /> Send on WhatsApp
+                  </a>
+                ) : (
+                  <span title="Add a valid Indian mobile number to the customer profile">
+                    <Btn secondary disabled><MessageCircle size={16} /> WhatsApp unavailable</Btn>
+                  </span>
+                );
+              })()}
               {quotation && record.status !== 'Converted' && record.status !== 'Cancelled' && (
                 <>
                   {record.status === 'Draft' && <Btn
@@ -3080,9 +3373,9 @@ export default function Documents({
                     PDF
                   </Btn>
                   <span title="Download all invoices as a ZIP archive of PDFs">
-                    <Btn secondary onClick={() => window.open('/api/sales/invoices/export-zip', '_blank')}>
+                    <Btn secondary disabled={batchPreparing} onClick={prepareFilteredInvoiceBatch}>
                       <Archive size={14} />
-                      Batch PDFs ZIP
+                      {batchPreparing ? 'Preparing…' : 'Batch PDFs ZIP'}
                     </Btn>
                   </span>
                 </div>
@@ -3090,6 +3383,12 @@ export default function Documents({
               {!quotation && !purchase && (
                 <Link className="btn secondary" href="/sales/new?kind=Service">
                   Service invoice
+                </Link>
+              )}
+              {quotation && (
+                <Link className="btn secondary" href="/quotations/new?mode=pc-build">
+                  <Plus size={16} />
+                  Pre-built PC quotation
                 </Link>
               )}
               <Link href={path + '/new'} className="btn">
@@ -3213,7 +3512,7 @@ export default function Documents({
               </div>
             </Card>
             <Card title="Outstanding dues">
-              <div className="body-pad" role="button" tabIndex={0} onClick={() => setStatus('Unpaid')}>
+              <div className="body-pad" role="button" tabIndex={0} onClick={() => setInvoicePaymentFilter('Unpaid')}>
                 <h2 style={{ color: 'var(--error, #e53935)' }}>
                   {money(salesSummary?.invoices?.duePaise != null ? salesSummary.invoices.duePaise / 100 : list.reduce((n, b) => n + balance(state, b), 0))}
                 </h2>
@@ -3314,6 +3613,52 @@ export default function Documents({
                     <p>{record.notes || 'No printed notes.'}</p>
                     <p>Supplier reference: {(record as Purchase).reference || '—'}</p>
                     <p>Due date: {dateLabel(record.due)}</p>
+                    <div className="notice">
+                      <strong>Supplier bill file</strong>
+                      {(record as Purchase).attachmentFileId ? (
+                        <p><a className="btn secondary" href={`/api/files/${(record as Purchase).attachmentFileId}`} target="_blank" rel="noopener noreferrer">Download attached bill</a></p>
+                      ) : (
+                        <div className="stack">
+                          <p>No supplier PDF or photo was attached to this purchase.</p>
+                          <label className="btn secondary" style={{width: 'fit-content'}}>
+                            {purchaseAttachmentBusy ? 'Uploading…' : 'Attach supplier bill'}
+                            <input
+                              type="file"
+                              hidden
+                              disabled={purchaseAttachmentBusy}
+                              accept="application/pdf,image/png,image/jpeg"
+                              onChange={async (event) => {
+                                const file = event.target.files?.[0];
+                                event.target.value = '';
+                                if (!file || purchaseAttachmentBusy) return;
+                                setPurchaseAttachmentBusy(true);
+                                try {
+                                  const uploaded = await uploadFile(file);
+                                  const response = await fetch(`/api/purchases/${record.id}/attachment`, {
+                                    method: 'POST',
+                                    headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({
+                                      attachmentFileId: uploaded.id,
+                                      expectedVersion: record.version,
+                                      idempotencyKey: `purchase-attachment-${record.id}-${uploaded.id}`,
+                                    }),
+                                  });
+                                  const data = await response.json().catch(() => ({}));
+                                  if (!response.ok) throw new Error(data.error || 'Could not link the supplier bill file.');
+                                  notify('Supplier bill file attached.');
+                                  await refreshDetail();
+                                } catch (error) {
+                                  notify(error instanceof Error ? error.message : 'Could not attach the supplier bill file.');
+                                } finally {
+                                  setPurchaseAttachmentBusy(false);
+                                }
+                              }}
+                            />
+                          </label>
+                        </div>
+                      )}
+                      <small>Attachments are private and opened through the company-authorized file endpoint.</small>
+                    </div>
                   </div>
                 </Card>
               )}
@@ -3766,7 +4111,7 @@ export default function Documents({
                 <option value="All">All statuses</option>
                 {(quotation
                   ? ['Draft', 'Shared', 'Converted', 'Expired', 'Cancelled']
-                  : ['Draft', 'Issued', 'Paid', 'Unpaid', 'Cancelled']
+                  : ['Draft', 'Issued', 'Cancelled']
                 ).map((s) => (
                   <option key={s} value={s}>{s}</option>
                 ))}
@@ -3774,25 +4119,49 @@ export default function Documents({
             )}
 
             {!purchase && !quotation && (
-              <select
-                aria-label="Business category filter"
-                value={categoryFilter}
-                onChange={(e) => setCategoryFilter(e.target.value)}
-              >
-                <option>All categories</option>
-                <option>New goods</option>
-                <option>Used goods</option>
-                <option>Service</option>
-              </select>
+              <>
+                <select aria-label="Payment status filter" value={invoicePaymentFilter} onChange={(e) => setInvoicePaymentFilter(e.target.value)}>
+                  <option value="All">All payments</option>
+                  <option value="Unpaid">Unpaid</option>
+                  <option value="PartlyPaid">Partly paid</option>
+                  <option value="Paid">Paid</option>
+                </select>
+                <select aria-label="Business category filter" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+                  <option>All categories</option>
+                  <option>New goods</option>
+                  <option>Used goods</option>
+                  <option>Service</option>
+                </select>
+                <select aria-label="GST supply filter" value={invoiceTaxFilter} onChange={(e) => setInvoiceTaxFilter(e.target.value)}>
+                  <option value="All">All GST supplies</option>
+                  <option value="Intra-state">Within state · CGST + SGST</option>
+                  <option value="Inter-state">Interstate · IGST</option>
+                </select>
+                <div className="filter-presets" aria-label="Invoice period presets">
+                  {[
+                    ['1D', 0], ['7D', 6], ['30D', 29],
+                  ].map(([label, days]) => (
+                    <button key={String(label)} type="button" className="link-button" onClick={() => {
+                      const end = new Date(`${TODAY}T12:00:00Z`);
+                      const start = new Date(end);
+                      start.setUTCDate(start.getUTCDate() - Number(days));
+                      setInvoiceDateFrom(start.toISOString().slice(0, 10));
+                      setInvoiceDateTo(TODAY);
+                    }}>{label}</button>
+                  ))}
+                  <button type="button" className="link-button" onClick={() => {
+                    setInvoiceDateFrom(TODAY.slice(0, 8) + '01');
+                    setInvoiceDateTo(TODAY);
+                  }}>This month</button>
+                </div>
+                <input aria-label="Invoice date from" type="date" value={invoiceDateFrom} max={invoiceDateTo || undefined} onChange={(e) => setInvoiceDateFrom(e.target.value)} />
+                <input aria-label="Invoice date to" type="date" value={invoiceDateTo} min={invoiceDateFrom || undefined} onChange={(e) => setInvoiceDateTo(e.target.value)} />
+                {(invoiceDateFrom || invoiceDateTo) && <button type="button" className="link-button" onClick={() => { setInvoiceDateFrom(''); setInvoiceDateTo(''); }}>Clear period</button>}
+              </>
             )}
 
-            <input
-              aria-label="Document date"
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-            />
-            {date && (
+            {(purchase || quotation) && <input aria-label="Document date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />}
+            {(purchase || quotation) && date && (
               <button type="button" className="link-button" onClick={() => setDate('')}>
                 Clear date
               </button>
@@ -3966,6 +4335,9 @@ export default function Documents({
 
       {print && record && !purchase && (
         <PrintDialog bills={[record as Bill]} onClose={() => setPrint(false)} />
+      )}
+      {batchPrintBills.length > 0 && (
+        <PrintDialog bills={batchPrintBills} onClose={() => setBatchPrintBills([])} />
       )}
 
       {payment && record && (

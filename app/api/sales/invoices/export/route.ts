@@ -5,12 +5,13 @@ import {MAX_EXPORT_ROWS} from '@/server/purchase-schema';
 import ExcelJS from 'exceljs';
 import {jsPDF} from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import {buildSalesFilter} from '@/server/sales-service';
 
 export const runtime = 'nodejs';
 
 function sanitizeCell(val: unknown): string {
   const str = String(val ?? '');
-  if (/^[=+\-@]/.test(str)) {
+  if (/^[=+@]/.test(str) || (/^-/.test(str) && !/^-\d+(\.\d+)?$/.test(str.trim()))) {
     return `'${str}`;
   }
   return str;
@@ -24,32 +25,10 @@ export async function GET(request: Request) {
 
     const format = (url.searchParams.get('format') || 'csv').toLowerCase();
     if (!['csv', 'xlsx', 'pdf'].includes(format)) throw new AppError(400, 'Export format must be CSV, XLSX, or PDF.');
-    const hasDue = url.searchParams.get('hasDue') === 'true';
-    const customerId = url.searchParams.get('customerId') || undefined;
-    const status = url.searchParams.get('status') || undefined;
-    const dateFrom = url.searchParams.get('dateFrom') || undefined;
-    const dateTo = url.searchParams.get('dateTo') || undefined;
-    const search = (url.searchParams.get('search') || '').trim().slice(0, 200);
-
-    const filter: Record<string, any> = {tenantId: identity.tenantId};
-    if (hasDue) {
-      filter.status = 'Issued';
-      filter.duePaise = {$gt: 0};
-    }
-    if (customerId) filter.customerId = customerId;
-    if (status && status !== 'All') filter.status = status;
-    if (search) {
-      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      filter.$or = [
-        {invoiceNumber: {$regex: escaped, $options: 'i'}},
-        {'customerSnapshot.name': {$regex: escaped, $options: 'i'}},
-      ];
-    }
-
-    if (dateFrom || dateTo) {
-      filter.invoiceDate = {};
-      if (dateFrom) filter.invoiceDate.$gte = dateFrom;
-      if (dateTo) filter.invoiceDate.$lte = dateTo;
+    const raw = Object.fromEntries(url.searchParams);
+    const {filter} = buildSalesFilter(identity, raw, 'invoices');
+    if (!url.searchParams.has('status') && url.searchParams.get('hasDue') !== 'true') {
+      filter.status = {$in: ['Issued', 'Cancelled']};
     }
 
     const totalCount = await col(db, 'invoices').countDocuments(filter);
@@ -68,7 +47,7 @@ export async function GET(request: Request) {
     ]);
 
     const companyName = company?.name || 'iTech Computers';
-    const filterDesc = `Applied filters: ${hasDue ? 'Has Due, ' : ''}${status ? `Status: ${status}, ` : ''}${dateFrom ? `From: ${dateFrom}, ` : ''}${dateTo ? `To: ${dateTo}` : 'All records'}`;
+    const filterDesc = `Applied filters: ${url.searchParams.toString() || 'Issued and cancelled invoices'}`;
 
     const headers = [
       'Invoice Number',

@@ -24,12 +24,14 @@ export const SaleStockAllocationInputSchema = z.object({
 const CommonLine = z.object({
   clientLineKey: z.string().trim().min(1).max(64),
   description: z.string().trim().min(1).max(300),
+  details: z.string().trim().max(1000).default(''),
   quantity: z.number().int().min(1).max(100000),
   unitRatePaise: Paise,
   discountType: DiscountType.default('Percentage'),
   discountValue: Paise.default(0),
   taxBasisPoints: z.number().int().min(0).max(10000),
   taxTreatment: z.enum(['Taxable', 'Exempt', 'NonGST']).default('Taxable'),
+  priceEntryMode: z.enum(['Inclusive', 'Exclusive']).optional(),
 });
 
 export const SaleLineInputSchema = z.discriminatedUnion('lineType', [
@@ -126,6 +128,9 @@ export const SalesListQuerySchema = z.object({
   customerId: Id.optional(), search: z.string().trim().max(100).optional(),
   dateFrom: CalendarDate.optional(), dateTo: CalendarDate.optional(),
   hasDue: z.enum(['true', 'false']).optional(),
+  paymentStatus: z.enum(['Unpaid', 'PartlyPaid', 'Paid']).optional(),
+  businessCategory: z.enum(['NewGoods', 'UsedGoods', 'Service']).optional(),
+  taxMode: z.enum(['Intra-state', 'Inter-state']).optional(),
 }).refine(v => !v.dateFrom || !v.dateTo || v.dateFrom <= v.dateTo, {message: 'Date range is reversed.'});
 
 export const PaymentComponentSchema = z.object({

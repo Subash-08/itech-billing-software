@@ -8,6 +8,7 @@ import {useStore} from './store';
 import {PageHead, Card, Btn, Modal, Field, Empty, csvDownload} from './ui';
 import {PrintDialog} from './templates';
 import {InvoicePaper} from './documents';
+import {mapInvoiceFromApi} from '@/lib/mappers';
 
 const reportNames = [
   'Sales',
@@ -35,6 +36,7 @@ export default function Reports() {
   const [to, setTo] = useState(TODAY);
   const [category, setCategory] = useState('All categories');
   const [batch, setBatch] = useState(false);
+  const [liveBatchBills, setLiveBatchBills] = useState<any[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [serverReport, setServerReport] = useState<{headers: string[]; rows: (string | number)[][]} | null>(null);
   const [loading, setLoading] = useState(false);
@@ -261,23 +263,28 @@ export default function Reports() {
     try {
       if (isLive) {
         const p = new URLSearchParams({
+          page: '1',
+          limit: '100',
+          status: 'Issued',
           dateFrom: from,
           dateTo: to,
         });
         if (customer !== 'All customers') p.set('customerId', customer);
-        const res = await fetch(`/api/sales/invoices/export-zip?${p.toString()}`);
+        if (paymentStatus === 'Paid') p.set('paymentStatus', 'Paid');
+        if (paymentStatus !== 'All payments' && paymentStatus !== 'Paid') p.set('hasDue', 'true');
+        if (category !== 'All categories') p.set('businessCategory', category === 'New goods' ? 'NewGoods' : category === 'Used goods' ? 'UsedGoods' : 'Service');
+        const res = await fetch(`/api/sales/invoices?${p.toString()}`);
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           throw new Error(err.error || 'Export failed.');
         }
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `invoices-${from}-to-${to}.zip`;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 10000);
-        notify('Downloaded filtered invoice PDFs and manifest ZIP.');
+        const data = await res.json();
+        if ((data.total || 0) > 100) throw new Error('More than 100 invoices match. Narrow the report period before creating the ZIP.');
+        const matching = (data.items || []).map(mapInvoiceFromApi);
+        if (!matching.length) throw new Error('No issued invoices match the selected filters.');
+        setLiveBatchBills(matching);
+        setBatch(true);
+        notify('Prepared the filtered invoices. Review them, then choose Download ZIP.');
       } else {
         const e = await import('@/lib/exports');
         const chosen = bills.filter((b) => selected.includes(b.id));
@@ -597,8 +604,8 @@ export default function Reports() {
       </div>
       {batch && (
         <PrintDialog
-          bills={bills.filter((b) => selected.includes(b.id))}
-          onClose={() => setBatch(false)}
+          bills={isLive ? liveBatchBills : bills.filter((b) => selected.includes(b.id))}
+          onClose={() => {setBatch(false); setLiveBatchBills([]);}}
         />
       )}
     </>

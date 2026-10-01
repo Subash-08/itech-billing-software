@@ -56,16 +56,17 @@ export type SaleLineDocument = {
   serials?: string[];
   productId?: string;
   productSnapshot?: {
-    name: string; hsn: string; category: string;
+    name: string; description?: string; hsn: string; category: string;
     brand: string; model: string; isSerialTracked: boolean; condition: 'New' | 'Used';
   };
   stockAllocations?: Array<{lotId: string; reservationId?: string | null; quantity: number; serials: string[]}>;
   warrantyMonths?: number;
   serviceId?: string;
-  serviceSnapshot?: {name: string; sac: string};
+  serviceSnapshot?: {name: string; description?: string; sac: string};
   serviceJobId?: string | null;
   sac?: string;
   description: string;
+  details: string;
   hsn?: string;
   quantity: number;
   unitRatePaise: number;
@@ -73,6 +74,7 @@ export type SaleLineDocument = {
   discountValue: number;
   taxBasisPoints: number;
   taxTreatment: 'Taxable' | 'Exempt' | 'NonGST';
+  priceEntryMode: 'Inclusive' | 'Exclusive';
   inclusive: boolean;
   grossPaise: number;
   discountPaise: number;
@@ -206,50 +208,81 @@ async function buildSaleLines(
   session?: ClientSession,
   requireStock = false,
 ): Promise<SaleLineDocument[]> {
+  // Resolve line references in bounded batches. The former implementation did
+  // one Atlas round trip per product/service and another per allocation lot,
+  // which made draft saves and invoice issue time grow linearly with item count.
+  // These reads remain inside the caller's transaction snapshot.
+  const productIds = [...new Set(rawLines
+    .filter(line => line.lineType === 'Product' || line.lineType === 'ConsumedPart')
+    .map(line => line.productId)
+    .filter((id): id is string => Boolean(id)))];
+  const serviceIds = [...new Set(rawLines
+    .filter(line => line.lineType === 'Service')
+    .map(line => line.serviceId)
+    .filter((id): id is string => Boolean(id)))];
+  const lotIds = [...new Set(rawLines
+    .filter(line => line.lineType === 'Product')
+    .flatMap(line => line.stockAllocations?.map(allocation => allocation.lotId) || [])
+    .filter((id): id is string => Boolean(id)))];
+  const products = productIds.length
+    ? await col(db, 'products').find({_id: {$in: productIds}, tenantId, status: 'Active'}, sessionOpt(session)).toArray()
+    : [];
+  const services = serviceIds.length
+    ? await col(db, 'serviceCatalog').find({_id: {$in: serviceIds}, tenantId, status: 'Active', active: true}, sessionOpt(session)).toArray()
+    : [];
+  const lots = lotIds.length
+    ? await col(db, 'stockLots').find({_id: {$in: lotIds}, tenantId}, sessionOpt(session)).toArray()
+    : [];
+  const productById = new Map(products.map((product: any) => [product._id, product]));
+  const serviceById = new Map(services.map((service: any) => [service._id, service]));
+  const lotById = new Map(lots.map((lot: any) => [lot._id, lot]));
   const result: SaleLineDocument[] = [];
   for (let idx = 0; idx < rawLines.length; idx++) {
     const l = rawLines[idx];
     const lineId = uid('SLN');
+    const lineInclusive = l.priceEntryMode ? l.priceEntryMode === 'Inclusive' : inclusive;
     const calc = validatedCalculation(() => calculateSaleLinePaise({
-      quantity: l.quantity, unitRatePaise: l.unitRatePaise, inclusive,
+      quantity: l.quantity, unitRatePaise: l.unitRatePaise, inclusive: lineInclusive,
       taxBasisPoints: l.taxBasisPoints, discountType: l.discountType, discountValue: l.discountValue,
     }));
     const tax = splitSaleTax(calc.taxPaise, taxMode);
     const base: Omit<SaleLineDocument, 'lineType' | 'productId' | 'productSnapshot' | 'stockAllocations' | 'serviceId' | 'serviceSnapshot' | 'sac'> = {
-      lineId, clientLineKey: l.clientLineKey, description: l.description, quantity: l.quantity,
+      lineId, clientLineKey: l.clientLineKey, description: l.description, details: l.details || '', quantity: l.quantity,
       unitRatePaise: l.unitRatePaise, discountType: l.discountType, discountValue: l.discountValue,
-      taxBasisPoints: l.taxBasisPoints, taxTreatment: l.taxTreatment, inclusive, ...calc, ...tax,
+      taxBasisPoints: l.taxBasisPoints, taxTreatment: l.taxTreatment,
+      priceEntryMode: lineInclusive ? 'Inclusive' : 'Exclusive', inclusive: lineInclusive, ...calc, ...tax,
       returnedQuantity: 0, creditedReturnPaise: 0,
     };
     if (l.lineType === 'Product') {
-      const product = await col(db, 'products').findOne({_id: l.productId, tenantId, status: 'Active'}, sessionOpt(session));
+      const product = productById.get(l.productId!);
       if (!product) throw new AppError(404, `Line ${idx + 1}: Product not found or archived.`);
       const allocatedQty = l.stockAllocations.reduce((s: number, a: {quantity: number}) => s + a.quantity, 0);
       if ((requireStock || l.stockAllocations.length > 0) && allocatedQty !== l.quantity)
         throw new AppError(400, `Line ${idx + 1}: Stock allocation quantity (${allocatedQty}) must equal line quantity (${l.quantity}).`);
       for (const allocation of l.stockAllocations) {
-        const lot = await col(db, 'stockLots').findOne({_id: allocation.lotId, tenantId, productId: l.productId}, sessionOpt(session));
+        const lot = lotById.get(allocation.lotId);
+        if (lot && lot.productId !== l.productId) throw new AppError(404, `Line ${idx + 1}: Stock lot not found for this product.`);
         if (!lot) throw new AppError(404, `Line ${idx + 1}: Stock lot not found for this product.`);
       }
       result.push({
         ...base, lineType: 'Product', productId: l.productId,
         productSnapshot: {
-          name: product.name, hsn: l.hsn || product.hsn || '', category: product.category || 'General',
+          name: product.name, description: product.description || '', hsn: l.hsn || product.hsn || '', category: product.category || 'General',
           brand: product.brand || '', model: product.model || '', isSerialTracked: !!product.isSerialTracked,
           condition: product.condition === 'Used' ? 'Used' : 'New',
         },
-        stockAllocations: l.stockAllocations, warrantyMonths: l.warrantyMonths ?? 0, hsn: l.hsn || product.hsn || '',
+        details: l.details || product.description || '', stockAllocations: l.stockAllocations, warrantyMonths: l.warrantyMonths ?? 0, hsn: l.hsn || product.hsn || '',
       });
     } else if (l.lineType === 'Service') {
-      let serviceSnap: {name: string; sac: string} | undefined;
+      let serviceSnap: {name: string; description: string; sac: string} | undefined;
       if (l.serviceId) {
-        const svc = await col(db, 'serviceCatalog').findOne({_id: l.serviceId, tenantId, status: 'Active', active: true}, sessionOpt(session));
+        const svc = serviceById.get(l.serviceId);
         if (!svc) throw new AppError(404, `Line ${idx + 1}: Service not found or archived.`);
-        serviceSnap = {name: svc.name, sac: svc.sac || l.sac};
+        serviceSnap = {name: svc.name, description: svc.description || '', sac: svc.sac || l.sac};
       }
-      result.push({...base, lineType: 'Service', ...(l.serviceId ? {serviceId: l.serviceId} : {}), serviceSnapshot: serviceSnap, ...(l.serviceJobId ? {serviceJobId: l.serviceJobId} : {}), sac: l.sac, warrantyMonths: l.warrantyMonths ?? 0});
+      result.push({...base, details: l.details || serviceSnap?.description || '', lineType: 'Service', ...(l.serviceId ? {serviceId: l.serviceId} : {}), serviceSnapshot: serviceSnap, ...(l.serviceJobId ? {serviceJobId: l.serviceJobId} : {}), sac: l.sac, warrantyMonths: l.warrantyMonths ?? 0});
     } else if (l.lineType === 'ConsumedPart') {
-      const product = await col(db, 'products').findOne({_id: l.productId, tenantId, status: 'Active'}, sessionOpt(session));
+      const product = productById.get(l.productId!);
       if (!product) throw new AppError(404, `Line ${idx + 1}: Consumed part product not found or archived.`);
       result.push({
         ...base,
@@ -259,6 +292,7 @@ async function buildSaleLines(
         productId: l.productId,
         productSnapshot: {
           name: product.name,
+          description: product.description || '',
           hsn: l.hsn || product.hsn || '',
           category: product.category || 'General',
           brand: product.brand || '',
@@ -266,6 +300,7 @@ async function buildSaleLines(
           isSerialTracked: !!product.isSerialTracked,
           condition: product.condition === 'Used' ? 'Used' : 'New',
         },
+        details: l.details || product.description || '',
         lotId: l.lotId,
         serials: l.serials || [],
         warrantyMonths: l.warrantyMonths ?? 0,
@@ -304,6 +339,7 @@ async function assertSupplyTaxTreatment(
   tenantId: string,
   input: {taxMode: SaleTaxMode; placeOfSupply: string; billTo?: CustomerAddressSnapshot | null; shipTo?: CustomerAddressSnapshot | null},
   session?: ClientSession,
+  knownCompanySettings?: any,
 ) {
   const normalize = (value: string | undefined) => (value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
   const place = normalize(input.placeOfSupply);
@@ -312,7 +348,7 @@ async function assertSupplyTaxTreatment(
   if (destination && normalize(destination) !== place) {
     throw new AppError(400, 'Place of supply must match the bill-to or ship-to state.');
   }
-  const settings = await col(db, 'companySettings').findOne({tenantId}, sessionOpt(session));
+  const settings = knownCompanySettings ?? await col(db, 'companySettings').findOne({tenantId}, sessionOpt(session));
   const sellerState = normalize(settings?.state);
   if (!sellerState || !destination) return;
   const sameState = sellerState === normalize(destination);
@@ -633,7 +669,7 @@ export async function issueInvoice(db: Db, identity: Identity, rawInput: IssueIn
     const template = await resolveTemplate(db, tenantId, draft.templateId, draft.templateRevision, session);
     const seller = await col(db, 'companySettings').findOne({tenantId}, {session});
     if (!seller?.name) throw new AppError(409, 'Complete company settings before issuing.');
-    await assertSupplyTaxTreatment(db, tenantId, draft, session);
+    await assertSupplyTaxTreatment(db, tenantId, draft, session, seller);
     if (draft.reservationId) throw new AppError(409, 'Select a stock hold on each relevant lot allocation; the legacy invoice-level hold reference is not supported.');
     let linkedServiceJob: any = null;
     if (draft.serviceJobId) {
@@ -662,6 +698,9 @@ export async function issueInvoice(db: Db, identity: Identity, rawInput: IssueIn
     const lines = calculated.map((line, index) => ({...line, lineId: draft.lines[index].lineId}));
     const totals = calculateSaleDocumentTotals(lines, draft.roundOffPaise);
     if (totals.totalPaise !== draft.totalPaise) throw new AppError(409, 'Draft totals are inconsistent. Re-save the draft before issuing.');
+    if (!draft.billTo?.address?.trim()) {
+      throw new AppError(400, 'Billing address is required before issuing an invoice.');
+    }
     const now = new Date();
     const usedSerials = new Set<string>();
     for (const line of lines) {
@@ -801,13 +840,14 @@ export async function issueInvoice(db: Db, identity: Identity, rawInput: IssueIn
       );
     }
 
+    const warrantyDocuments: any[] = [];
     for (const line of lines) {
       if (!line.warrantyMonths) continue;
       if (line.lineType === 'ConsumedPart') {
         const serials = line.serials || [];
         const units = serials.length > 0 ? serials.map(serial => ({serial, quantity: 1})) : [{serial: null, quantity: line.quantity}];
         for (const unit of units) {
-          await col(db, 'warranties').insertOne({
+          warrantyDocuments.push({
             _id: uid('WAR'),
             tenantId,
             invoiceId: draft._id,
@@ -829,21 +869,22 @@ export async function issueInvoice(db: Db, identity: Identity, rawInput: IssueIn
             attachmentIds: [],
             createdAt: now,
             createdBy: identity.userId,
-          }, {session});
+          });
         }
         continue;
       }
       const units = line.lineType === 'Product' && line.productSnapshot?.isSerialTracked
         ? line.stockAllocations!.flatMap(a => a.serials.map(serial => ({serial, quantity: 1})))
         : [{serial: null, quantity: line.quantity}];
-      for (const unit of units) await col(db, 'warranties').insertOne({_id: uid('WAR'), tenantId,
+      for (const unit of units) warrantyDocuments.push({_id: uid('WAR'), tenantId,
         invoiceId: draft._id, invoiceNumber, invoiceLineId: line.lineId, customerId: draft.customerId,
         customerSnapshot: draft.customerSnapshot, productId: line.productId,
         productSnapshot: line.productSnapshot, serviceId: line.serviceId, ...unit,
         serialNumber: unit.serial ?? undefined, startDate: draft.invoiceDate,
         endDate: addWarrantyMonths(draft.invoiceDate, line.warrantyMonths), warrantyMonths: line.warrantyMonths,
-        status: 'Active', version: 1, attachmentIds: [], createdAt: now, createdBy: identity.userId}, {session});
+        status: 'Active', version: 1, attachmentIds: [], createdAt: now, createdBy: identity.userId});
     }
+    if (warrantyDocuments.length) await col(db, 'warranties').insertMany(warrantyDocuments, {session});
     if (draft.sourceQuotationId) {
       const r = await col(db, 'quotations').updateOne({_id: draft.sourceQuotationId, tenantId,
         convertedToInvoiceId: draft._id, status: {$in: ['Draft', 'Sent', 'Accepted']}},
@@ -867,6 +908,9 @@ export function buildSalesFilter(identity: Identity, raw: unknown, kind: 'invoic
   const filter: Record<string, any> = {tenantId: identity.tenantId};
   if (params.status) filter.status = params.status;
   if (params.customerId) filter.customerId = params.customerId;
+  if (kind === 'invoices' && params.paymentStatus) filter.paymentStatus = params.paymentStatus;
+  if (kind === 'invoices' && params.businessCategory) filter.businessCategory = params.businessCategory;
+  if (kind === 'invoices' && params.taxMode) filter.taxMode = params.taxMode;
   if (params.dateFrom || params.dateTo) filter[kind === 'invoices' ? 'invoiceDate' : 'quotationDate'] = {
     ...(params.dateFrom && {$gte: params.dateFrom}), ...(params.dateTo && {$lte: params.dateTo})};
   if (params.hasDue === 'true') {
@@ -874,9 +918,10 @@ export function buildSalesFilter(identity: Identity, raw: unknown, kind: 'invoic
     filter.status = 'Issued'; filter.duePaise = {$gt: 0};
   }
   if (params.search) {
-    const escaped = params.search.replace(/[.*+?^${}()|[]\]/g, '\$&');
+    const escaped = params.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     filter.$or = [{[kind === 'invoices' ? 'invoiceNumber' : 'quotationNumber']: {$regex: escaped, $options: 'i'}},
-      {'customerSnapshot.name': {$regex: escaped, $options: 'i'}}];
+      {'customerSnapshot.name': {$regex: escaped, $options: 'i'}},
+      {'customerSnapshot.phone': {$regex: escaped, $options: 'i'}}];
   }
   return {filter, page: params.page, limit: params.limit};
 }
@@ -884,7 +929,7 @@ export function buildSalesFilter(identity: Identity, raw: unknown, kind: 'invoic
 async function listSalesDocuments(db: Db, identity: Identity, raw: unknown, kind: 'invoices' | 'quotations') {
   const {filter, page, limit} = buildSalesFilter(identity, raw, kind);
   const [items, total] = await Promise.all([
-    col(db, kind).find(filter).sort({createdAt: -1, _id: -1}).skip((page - 1) * limit).limit(limit).toArray(),
+    col(db, kind).find(filter).sort({[kind === 'invoices' ? 'invoiceDate' : 'quotationDate']: -1, createdAt: -1, _id: -1}).skip((page - 1) * limit).limit(limit).toArray(),
     col(db, kind).countDocuments(filter),
   ]);
   return {items, total, page, limit, totalPages: Math.ceil(total / limit)};
@@ -915,14 +960,14 @@ export async function getQuotation(db: Db, identity: Identity, quotationId: stri
 export async function getSalesSummary(
   db: Db,
   identity: Identity,
-  params: {hasDue?: boolean; customerId?: string} = {}
+  raw: unknown = {}
 ) {
   const tenantId = identity.tenantId;
-  const matchInvoices: any = {tenantId};
+  const {filter: matchInvoices} = buildSalesFilter(identity, raw, 'invoices');
   const matchQuotations: any = {tenantId};
-  if (params.customerId) {
-    matchInvoices.customerId = params.customerId;
-    matchQuotations.customerId = params.customerId;
+  const parsed = SalesListQuerySchema.parse(raw);
+  if (parsed.customerId) {
+    matchQuotations.customerId = parsed.customerId;
   }
 
   const [invoicesFacet, quotationsFacet, advancesRes] = await Promise.all([
@@ -976,7 +1021,7 @@ export async function getSalesSummary(
       },
     ]).next(),
     col(db, 'customerAdvances').aggregate([
-      {$match: {tenantId, status: {$in: ['Available', 'PartlyConsumed']}}},
+      {$match: {tenantId, ...(parsed.customerId ? {customerId: parsed.customerId} : {}), status: {$in: ['Available', 'PartlyConsumed']}}},
       {$group: {_id: null, totalRemainingPaise: {$sum: '$remainingAmountPaise'}}},
     ]).next(),
   ]);
@@ -992,6 +1037,9 @@ export async function getSalesSummary(
       totalSalesPaise: invTotals.totalSalesPaise,
       totalPaidPaise: invTotals.totalPaidPaise,
       totalDuePaise: invTotals.totalDuePaise,
+      grossTotalPaise: invTotals.totalSalesPaise,
+      paidPaise: invTotals.totalPaidPaise,
+      duePaise: invTotals.totalDuePaise,
       unpaidCount: unpaidDue.count,
       unpaidDuePaise: unpaidDue.sum,
     },
@@ -1003,5 +1051,6 @@ export async function getSalesSummary(
       totalQuotedPaise: quotationsFacet?.pipelineTotals?.[0]?.totalQuotedPaise ?? 0,
     },
     totalCustomerAdvanceAvailablePaise: advancesRes?.totalRemainingPaise ?? 0,
+    advances: {availablePaise: advancesRes?.totalRemainingPaise ?? 0},
   };
 }

@@ -114,6 +114,7 @@ export const SERIALIZED_CATEGORIES: string[] = ['Laptops', 'Monitors', 'Prebuilt
 
 export const ProductInputSchema = z.object({
   name: z.string().trim().min(1, 'Product name is required').max(150),
+  description: z.string().trim().max(1000).default(''),
   category: ProductCategoryEnum,
   brand: z.string().trim().min(1, 'Brand is required').max(80),
   condition: z.enum(['New', 'Used']).default('New'),

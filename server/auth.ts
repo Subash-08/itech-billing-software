@@ -62,7 +62,46 @@ export async function assertPrepareRateLimit(identity: Identity) {
 }
 export async function jsonBody(request:Request,maxBytes=1048576){const length=Number(request.headers.get('content-length')||0);if(length>maxBytes)throw new AppError(413,'Request is too large.');const raw=await request.text();if(raw.length>maxBytes)throw new AppError(413,'Request is too large.');try{return JSON.parse(raw);}catch{throw new AppError(400,'Invalid JSON.');}}
 export async function forwardAuth(request:Request,path:string){try{checkOrigin(request);const auth=await getAuth();const url=new URL(request.url);url.pathname='/api/auth/'+path;const raw=await request.text();if(raw.length>1048576)throw new AppError(413,'Request is too large.');if(raw.trim()){try{JSON.parse(raw);}catch{throw new AppError(400,'Invalid JSON.');}}return auth.handler(new Request(url,{method:request.method,headers:request.headers,body:raw||undefined}));}catch(e){return endpoint(async()=>{throw e;});}}
-export async function requireIdentity():Promise<Identity>{const requestHeaders=await headers();if(!requestHeaders.get('cookie'))throw new AppError(401,'Login required.');const value=await (await getAuth()).api.getSession({headers:requestHeaders});if(!value)throw new AppError(401,'Session expired.');const db=await database(),user=await db.collection<any>('authUsers').findOne({_id:authObjectId(value.user.id),verified:true,disabled:false});if(!user?.tenantId)throw new AppError(403,'Account approval required.');const tenant=await db.collection<any>('tenants').findOne({_id:user.tenantId,verified:true,disabled:false});if(!tenant)throw new AppError(403,'Company approval required.');const session=await db.collection<any>('authSessions').findOne({_id:authObjectId(value.session.id),userId:authObjectId(value.user.id),expiresAt:{$gt:new Date()}});if(!session)throw new AppError(401,'Session expired.');return {userId:value.user.id,tenantId:user.tenantId,sessionId:value.session.id,profitUntil:session.profitUntil};}
+export async function requireIdentity(): Promise<Identity> {
+  const requestHeaders = await headers();
+  if (!requestHeaders.get('cookie')) throw new AppError(401, 'Login required.');
+
+  const value = await (await getAuth()).api.getSession({headers: requestHeaders});
+  if (!value) throw new AppError(401, 'Session expired.');
+
+  const db = await database();
+  const userId = authObjectId(value.user.id);
+  const sessionId = authObjectId(value.session.id);
+
+  // These records are independent after Better Auth validates the cookie. Fetching
+  // them together removes one Atlas round-trip from every authenticated API call.
+  const [user, session] = await Promise.all([
+    db.collection<any>('authUsers').findOne(
+      {_id: userId, verified: true, disabled: false},
+      {projection: {tenantId: 1}}
+    ),
+    db.collection<any>('authSessions').findOne(
+      {_id: sessionId, userId, expiresAt: {$gt: new Date()}},
+      {projection: {profitUntil: 1}}
+    ),
+  ]);
+
+  if (!session) throw new AppError(401, 'Session expired.');
+  if (!user?.tenantId) throw new AppError(403, 'Account approval required.');
+
+  const tenant = await db.collection<any>('tenants').findOne(
+    {_id: user.tenantId, verified: true, disabled: false},
+    {projection: {_id: 1}}
+  );
+  if (!tenant) throw new AppError(403, 'Company approval required.');
+
+  return {
+    userId: value.user.id,
+    tenantId: user.tenantId,
+    sessionId: value.session.id,
+    profitUntil: session.profitUntil,
+  };
+}
 export async function profile(){const identity=await requireIdentity(),db=await database();const [user,tenant,settings]=await Promise.all([db.collection<any>('authUsers').findOne({_id:authObjectId(identity.userId)},{projection:{name:1,email:1}}),db.collection<any>('tenants').findOne({_id:identity.tenantId},{projection:{companyName:1}}),db.collection<any>('companySettings').findOne({tenantId:identity.tenantId})]);return {user:{name:user?.name,email:user?.email},company:{name:tenant?.companyName},profitUnlocked:!!identity.profitUntil&&identity.profitUntil>new Date(),businessDataMode:settings?.demoImported?'demo-imported':'live'};}
 export async function unlockProfit(value:unknown){const identity=await requireIdentity();const input=z.object({password:z.string().min(1).max(128)}).strict().parse(value);const db=await database(),bucket=Math.floor(Date.now()/900000);const attempt=await db.collection<any>('rateLimits').findOneAndUpdate({_id:digest('profit:'+identity.userId)+':'+bucket},{$inc:{count:1},$setOnInsert:{expiresAt:new Date((bucket+2)*900000)}},{upsert:true,returnDocument:'after'});if(!attempt||attempt.count>5)throw new AppError(429,'Too many attempts. Try again in 15 minutes.');const user=await db.collection<any>('authUsers').findOne({_id:authObjectId(identity.userId),tenantId:identity.tenantId});if(!user?.profitPasswordHash||!await verifyPassword(input.password,user.profitPasswordHash))throw new AppError(403,'Profit password is incorrect.');const until=new Date(Date.now()+600000);await db.collection<any>('authSessions').updateOne({_id:authObjectId(identity.sessionId)},{$set:{profitUntil:until}});return {unlockedUntil:until.toISOString()};}
 export async function requireProfit(){const identity=await requireIdentity();if(!identity.profitUntil||identity.profitUntil<=new Date())throw new AppError(403,'Unlock profit access first.');return identity;}

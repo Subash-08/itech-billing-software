@@ -59,7 +59,7 @@ type Store = {
 
   saveSettingsApi: (f: Partial<State['settings']>, logoFile?: File) => Promise<boolean>;
   updateLogoApi: (file: File | null) => Promise<boolean>;
-  saveCustomerApi: (c: any, id?: string) => Promise<{success: boolean; warning?: string}>;
+  saveCustomerApi: (c: any, id?: string) => Promise<{success: boolean; warning?: string; customer?: Customer}>;
   archiveCustomerApi: (id: string) => Promise<boolean>;
   restoreCustomerApi: (id: string) => Promise<boolean>;
   saveSupplierApi: (s: any, id?: string) => Promise<{success: boolean; warning?: string}>;
@@ -152,7 +152,7 @@ type Store = {
   saveInvoiceDraftApi: (inv: any, existingId?: string, version?: number) => Promise<{success: boolean; draft?: any; error?: string}>;
   cancelInvoiceDraftApi: (id: string, version?: number, reason?: string) => Promise<{success: boolean; error?: string}>;
   issueInvoiceApi: (id: string, payload: any) => Promise<{success: boolean; invoice?: any; error?: string}>;
-  fetchInvoicesPage: (query?: {page?: number; limit?: number; customerId?: string; status?: string; search?: string; dateFrom?: string; dateTo?: string; hasDue?: boolean}) => Promise<PaginationResult<Bill>>;
+  fetchInvoicesPage: (query?: {page?: number; limit?: number; customerId?: string; status?: string; search?: string; dateFrom?: string; dateTo?: string; hasDue?: boolean; paymentStatus?: string; businessCategory?: string; taxMode?: string}) => Promise<PaginationResult<Bill>>;
   fetchInvoiceDetailApi: (id: string) => Promise<{invoice: any}>;
 
   fetchReservationsPage: (query?: {page?: number; limit?: number; customerId?: string; productId?: string; status?: string; search?: string; dateFrom?: string; dateTo?: string}) => Promise<PaginationResult<Reservation>>;
@@ -462,7 +462,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
         customers: id ? s.customers.map((x) => (x.id === id ? value : x)) : [...s.customers, value],
       }));
       notify('Customer saved.');
-      return {success: true};
+      return {success: true, customer: value};
     }
     try {
       const url = id ? `/api/master/customers/${id}` : '/api/master/customers';
@@ -491,7 +491,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
       } else {
         notify('Customer saved.');
       }
-      return {success: true, warning: data.warning};
+      return {success: true, warning: data.warning, customer: mapCustomerFromApi(data.customer || data)};
     } catch (e) {
       notify(e instanceof Error ? e.message : 'Error saving customer.');
       return {success: false};
@@ -591,6 +591,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
       const method = id ? 'PUT' : 'POST';
       const payload = {
         name: p.name,
+        description: p.description || '',
         category: p.category,
         brand: p.brand || '',
         condition: p.condition || 'New',
@@ -1967,6 +1968,9 @@ export function StoreProvider({children}: {children: ReactNode}) {
     dateFrom?: string;
     dateTo?: string;
     hasDue?: boolean;
+    paymentStatus?: string;
+    businessCategory?: string;
+    taxMode?: string;
   } = {}) {
     const p = new URLSearchParams();
     if (query.page) p.set('page', String(query.page));
@@ -1977,6 +1981,9 @@ export function StoreProvider({children}: {children: ReactNode}) {
     if (query.dateFrom) p.set('dateFrom', query.dateFrom);
     if (query.dateTo) p.set('dateTo', query.dateTo);
     if (query.hasDue) p.set('hasDue', 'true');
+    if (query.paymentStatus) p.set('paymentStatus', query.paymentStatus);
+    if (query.businessCategory) p.set('businessCategory', query.businessCategory);
+    if (query.taxMode) p.set('taxMode', query.taxMode);
     const res = await fetch(`/api/sales/invoices?${p.toString()}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to load invoices.');
