@@ -250,6 +250,7 @@ export async function updateServiceJobStatus(
       };
 
       if (input.diagnosticNotes !== undefined) updateFields.diagnosticNotes = input.diagnosticNotes;
+      if (input.accessories !== undefined) updateFields['device.accessories'] = input.accessories;
       if (input.photos !== undefined) {
         await assertJobPhotos(db, tenantId, input.photos, session);
         if ((job.device.photos || []).some((id: string) => !input.photos!.includes(id))) {

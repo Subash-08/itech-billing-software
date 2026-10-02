@@ -48,6 +48,9 @@ th{color:#43516a;font-weight:700}
 @keyframes dashboard-shimmer{to{background-position-x:-220%}}
 
 /* Header account control alignment */
+.topbar-actions{margin-left:auto;height:100%;display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-shrink:0}
+.topbar-actions .session-pill,.topbar-actions .demo-pill{margin-left:0}
+.topbar-actions .notification-wrap,.topbar-actions .account-menu-wrap{display:flex;align-items:center}
 .topbar .account-menu-wrap{display:flex;align-items:center;align-self:stretch}
 .topbar .user-menu{display:grid;grid-template-columns:36px minmax(90px,auto) 18px;align-items:center;column-gap:10px;margin:0;padding:6px 8px;border-radius:9px;line-height:1.2}
 .topbar .user-menu .avatar{width:36px;height:36px;flex:none}
@@ -57,5 +60,36 @@ th{color:#43516a;font-weight:700}
 .topbar .user-menu span{font-size:12px;line-height:1.1;color:#4d5a70}
 .topbar .user-menu>svg{margin:0;align-self:center}
 
+/* Keep the four daily actions visible; place the remaining modules in compact groups. */
+.nav-primary{display:flex;flex-direction:column;gap:2px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.nav-group.collapsible{margin-bottom:6px}
+.nav-group-toggle{width:100%;display:flex;align-items:center;justify-content:space-between;border:0;background:transparent;border-radius:7px;padding:9px 13px;color:#4c596f;font-size:11px;font-weight:800;letter-spacing:.7px;text-transform:uppercase;text-align:left;cursor:pointer}
+.nav-group-toggle:hover,.nav-group-toggle:focus-visible{background:#f5f2ff;color:var(--primary)}
+.nav-group-toggle svg{transition:transform .15s ease}
+.nav-group.collapsible.open .nav-group-toggle svg{transform:rotate(180deg)}
+.nav-group-items{padding:3px 0 6px 8px}
+.nav-group-items .nav-link{padding-left:12px}
+
 @media(max-width:1300px){.dashboard-kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.dashboard-attention-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:700px){.dashboard-kpi-grid,.dashboard-attention-grid,.dashboard-loading-grid{grid-template-columns:1fr}.dashboard-refreshing{right:12px;bottom:12px}.topbar .user-menu{grid-template-columns:34px 16px}.topbar .user-menu>div:nth-child(2){display:none}}
+@media(max-width:900px){.topbar-actions{gap:7px}.topbar-actions .btn{padding-left:10px;padding-right:10px}}
+@media(max-width:700px){.dashboard-kpi-grid,.dashboard-attention-grid,.dashboard-loading-grid{grid-template-columns:1fr}.dashboard-refreshing{right:12px;bottom:12px}.topbar-actions{gap:5px}.topbar .user-menu{grid-template-columns:34px 16px}.topbar .user-menu>div:nth-child(2){display:none}}
+
+/* Compact document period selector */
+.filter-presets{display:inline-flex;align-items:center;border:1px solid #d9ddea;border-radius:8px;overflow:hidden;background:#fff;box-shadow:0 1px 2px #1d294008}
+.period-chip{border:0;border-right:1px solid #e2e5ee;background:#fff;color:#4f5b70;padding:9px 12px;font-size:12px;font-weight:700;line-height:1;white-space:nowrap}
+.period-chip:last-child{border-right:0}
+.period-chip:hover,.period-chip:focus-visible{background:#eeeaff;color:var(--primary)}
+
+/* Service intake controls */
+.inline-field-action{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:stretch}
+.inline-field-action .btn{padding:8px 11px}
+.service-number-note{display:flex;flex-direction:column;justify-content:center;gap:3px;border:1px dashed #cfc7ef;background:#faf8ff;border-radius:8px;padding:10px 12px;color:#3c465a}
+.service-number-note strong{font-size:12px;color:var(--primary)}
+.service-number-note span{font-size:13px;font-weight:700}
+.service-number-note small{font-size:10px}
+.accessory-picker{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-bottom:10px}
+.accessory-picker label{display:flex;align-items:center;gap:7px;min-width:0;border:1px solid #e1e4ed;border-radius:7px;background:#fff;padding:9px;color:#455166;font-size:12px;font-weight:600;cursor:pointer}
+.accessory-picker label:has(input:checked){border-color:#9f8ee9;background:#f3f0ff;color:var(--primary)}
+.accessory-picker input{width:15px;height:15px;flex:0 0 auto}
+@media(max-width:900px){.accessory-picker{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:600px){.inline-field-action{grid-template-columns:1fr}.accessory-picker{grid-template-columns:repeat(2,minmax(0,1fr))}.filter-presets{width:100%;overflow:auto}.period-chip{flex:1}}

@@ -44,7 +44,7 @@ import { issueBill, receivePurchase, addPayment } from '@/lib/operations';
 import { useStore } from './store';
 import { PageHead, Card, Btn, Field, Modal, SearchBox, Empty, Badge, csvDownload } from './ui';
 import { PaymentDialog } from './payments';
-import {invoiceWhatsAppMessage, whatsappUrl} from '@/lib/whatsapp';
+import { invoiceWhatsAppMessage, whatsappUrl } from '@/lib/whatsapp';
 import { PersonForm } from './people';
 import { InvoiceTemplate } from '@/lib/extensions';
 import { TemplateInvoice as InvoicePaper, PrintDialog } from './templates';
@@ -208,7 +208,7 @@ export function DocumentComposer({
   const [review, setReview] = useState(false);
   const [newProduct, setNewProduct] = useState(false);
   const [serviceId, setServiceId] = useState('');
-  const [pcCustom, setPcCustom] = useState({label: '', category: '', description: '', price: '', qty: '1'});
+  const [pcCustom, setPcCustom] = useState({ label: '', category: '', description: '', price: '', qty: '1' });
 
   const addPcComponent = (categoryName: string) => {
     setLines(current => [
@@ -244,7 +244,7 @@ export function DocumentComposer({
         rate: enteredPrice,
       } as Line,
     ]);
-    setPcCustom({label: '', category: '', description: '', price: '', qty: '1'});
+    setPcCustom({ label: '', category: '', description: '', price: '', qty: '1' });
   };
 
   const changePriceEntryMode = (nextInclusive: boolean) => {
@@ -1265,7 +1265,7 @@ export function DocumentComposer({
                   </Btn>
                   <details className="optional-fields">
                     <summary>More purchase options</summary>
-                    <div style={{display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem'}}>
+                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
                       <Btn secondary disabled={busy} onClick={() => handlePurchaseAction('confirm')}>
                         Create order only
                       </Btn>
@@ -1522,7 +1522,7 @@ export function DocumentComposer({
                     <input
                       value={(billTo as any)[k] || ''}
                       onChange={(e) => {
-                        const next = {...billTo, [k]: e.target.value};
+                        const next = { ...billTo, [k]: e.target.value };
                         setBillTo(next);
                         if (k === 'state' && !shipSeparate) setPlaceOfSupply(e.target.value);
                       }}
@@ -1601,12 +1601,12 @@ export function DocumentComposer({
               </div>
               <details className="pc-custom-item">
                 <summary>Add custom PC item</summary>
-                <div className="form-grid" style={{marginTop: '0.75rem'}}>
-                  <Field label="Label *"><input value={pcCustom.label} onChange={e => setPcCustom(value => ({...value, label: e.target.value}))} placeholder="e.g. Assembly charge" /></Field>
-                  <Field label="Category"><input value={pcCustom.category} onChange={e => setPcCustom(value => ({...value, category: e.target.value}))} placeholder="e.g. Accessories" /></Field>
-                  <Field label="Description"><input value={pcCustom.description} onChange={e => setPcCustom(value => ({...value, description: e.target.value}))} placeholder="Specification or model" /></Field>
-                  <Field label="Price"><input type="number" min="0" step="0.01" value={pcCustom.price} onChange={e => setPcCustom(value => ({...value, price: e.target.value}))} /></Field>
-                  <Field label="Qty"><input type="number" min="1" step="1" value={pcCustom.qty} onChange={e => setPcCustom(value => ({...value, qty: e.target.value}))} /></Field>
+                <div className="form-grid" style={{ marginTop: '0.75rem' }}>
+                  <Field label="Label *"><input value={pcCustom.label} onChange={e => setPcCustom(value => ({ ...value, label: e.target.value }))} placeholder="e.g. Assembly charge" /></Field>
+                  <Field label="Category"><input value={pcCustom.category} onChange={e => setPcCustom(value => ({ ...value, category: e.target.value }))} placeholder="e.g. Accessories" /></Field>
+                  <Field label="Description"><input value={pcCustom.description} onChange={e => setPcCustom(value => ({ ...value, description: e.target.value }))} placeholder="Specification or model" /></Field>
+                  <Field label="Price"><input type="number" min="0" step="0.01" value={pcCustom.price} onChange={e => setPcCustom(value => ({ ...value, price: e.target.value }))} /></Field>
+                  <Field label="Qty"><input type="number" min="1" step="1" value={pcCustom.qty} onChange={e => setPcCustom(value => ({ ...value, qty: e.target.value }))} /></Field>
                   <div className="field"><span>&nbsp;</span><Btn secondary onClick={addPcCustomItem}><Plus size={14} /> Add custom item</Btn></div>
                 </div>
               </details>
@@ -1640,7 +1640,7 @@ export function DocumentComposer({
             </div>
           )}
           {purchase && (
-            <p className="muted body-pad" style={{paddingTop: 0, paddingBottom: '0.5rem'}}>
+            <p className="muted body-pad" style={{ paddingTop: 0, paddingBottom: '0.5rem' }}>
               The product’s saved cost is only a starting value. Edit the rate on this purchase when the supplier price changes; the received lot keeps that exact historical cost while the product remains the same item.
             </p>
           )}
@@ -2055,11 +2055,11 @@ export function DocumentComposer({
               {purchase && isLive && (
                 <Field label="Supplier bill / purchase attachment">
                   {!isReceiptMode && <input
-                      type="file"
-                      accept="application/pdf,image/png,image/jpeg"
-                      disabled={uploadingAttachment}
-                      onChange={(e) => void uploadPurchaseAttachment(e.target.files?.[0])}
-                    />}
+                    type="file"
+                    accept="application/pdf,image/png,image/jpeg"
+                    disabled={uploadingAttachment}
+                    onChange={(e) => void uploadPurchaseAttachment(e.target.files?.[0])}
+                  />}
                   <small>
                     {uploadingAttachment
                       ? 'Uploading…'
@@ -2282,11 +2282,11 @@ export function DocumentComposer({
           onClose={() => setNewPerson(false)}
           onSuccess={(created) => {
             if (purchase) {
-              void fetchSuppliersPage({limit: 50, q: supplierSearch.trim() || undefined})
+              void fetchSuppliersPage({ limit: 50, q: supplierSearch.trim() || undefined })
                 .then((result) => setSupplierChoices(result.records))
-                .catch(() => {});
+                .catch(() => { });
             } else {
-              void fetchCustomersPage({limit: 50, q: created?.name || customerSearch.trim() || undefined, status: 'Active'})
+              void fetchCustomersPage({ limit: 50, q: created?.name || customerSearch.trim() || undefined, status: 'Active' })
                 .then((result) => {
                   setCustomerChoices(result.records);
                   const createdCustomer = created && 'type' in created ? created : result.records[0];
@@ -2295,7 +2295,7 @@ export function DocumentComposer({
                     setCustomerSearch(createdCustomer.name);
                   }
                 })
-                .catch(() => {});
+                .catch(() => { });
             }
           }}
         />
@@ -2749,7 +2749,7 @@ export default function Documents({
   const [detailError, setDetailError] = useState('');
   const detailRequestRef = useRef(0);
   const [quotationSharing, setQuotationSharing] = useState(false);
-  const quotationShareAttempt = useRef<{fingerprint: string; key: string} | null>(null);
+  const quotationShareAttempt = useRef<{ fingerprint: string; key: string } | null>(null);
   const [detailTab, setDetailTab] = useState<'Overview' | 'Receipts' | 'Payments' | 'Returns' | 'Credit notes'>('Overview');
   const [purchaseAttachmentBusy, setPurchaseAttachmentBusy] = useState(false);
   const [reversalModal, setReversalModal] = useState<{
@@ -3090,7 +3090,7 @@ export default function Documents({
     if (batchPreparing) return;
     setBatchPreparing(true);
     try {
-      const query = new URLSearchParams({page: '1', limit: '100'});
+      const query = new URLSearchParams({ page: '1', limit: '100' });
       if (q.trim()) query.set('search', q.trim());
       query.set('status', ['Draft', 'Issued', 'Cancelled'].includes(status) ? status : 'Issued');
       if (invoicePaymentFilter !== 'All') query.set('paymentStatus', invoicePaymentFilter);
@@ -3233,7 +3233,7 @@ export default function Documents({
                       const version = detailData?.raw?.version ?? record.version ?? 1;
                       const fingerprint = `${id}:${version}`;
                       if (quotationShareAttempt.current?.fingerprint !== fingerprint) {
-                        quotationShareAttempt.current = {fingerprint, key: `quote-share-${id}-${version}-${Date.now()}`};
+                        quotationShareAttempt.current = { fingerprint, key: `quote-share-${id}-${version}-${Date.now()}` };
                       }
                       setQuotationSharing(true);
                       try {
@@ -3325,9 +3325,6 @@ export default function Documents({
             </>
           ) : (
             <>
-              <Link className="btn secondary" href="/reports">
-                Reports / Excel / PDF
-              </Link>
               {purchase ? (
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <Btn secondary onClick={() => window.open(purchaseExportUrl('csv'), '_blank')}>
@@ -3620,7 +3617,7 @@ export default function Documents({
                       ) : (
                         <div className="stack">
                           <p>No supplier PDF or photo was attached to this purchase.</p>
-                          <label className="btn secondary" style={{width: 'fit-content'}}>
+                          <label className="btn secondary" style={{ width: 'fit-content' }}>
                             {purchaseAttachmentBusy ? 'Uploading…' : 'Attach supplier bill'}
                             <input
                               type="file"
@@ -3636,7 +3633,7 @@ export default function Documents({
                                   const uploaded = await uploadFile(file);
                                   const response = await fetch(`/api/purchases/${record.id}/attachment`, {
                                     method: 'POST',
-                                    headers: {'Content-Type': 'application/json'},
+                                    headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({
                                       attachmentFileId: uploaded.id,
                                       expectedVersion: record.version,
@@ -4141,7 +4138,7 @@ export default function Documents({
                   {[
                     ['1D', 0], ['7D', 6], ['30D', 29],
                   ].map(([label, days]) => (
-                    <button key={String(label)} type="button" className="link-button" onClick={() => {
+                    <button key={String(label)} type="button" className="period-chip" onClick={() => {
                       const end = new Date(`${TODAY}T12:00:00Z`);
                       const start = new Date(end);
                       start.setUTCDate(start.getUTCDate() - Number(days));
@@ -4149,7 +4146,7 @@ export default function Documents({
                       setInvoiceDateTo(TODAY);
                     }}>{label}</button>
                   ))}
-                  <button type="button" className="link-button" onClick={() => {
+                  <button type="button" className="period-chip" onClick={() => {
                     setInvoiceDateFrom(TODAY.slice(0, 8) + '01');
                     setInvoiceDateTo(TODAY);
                   }}>This month</button>

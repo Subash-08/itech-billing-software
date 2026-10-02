@@ -388,7 +388,10 @@ export function mapInvoiceFromApi(doc: any) {
     notes: snap.notes || doc.notes || '',
     profit: null,
     customerSnapshot: (snap.customer || doc.customerSnapshot) ? mapCustomerFromApi(snap.customer || doc.customerSnapshot) : undefined,
-    shopSnapshot: snap.seller || undefined,
+    shopSnapshot: snap.seller ? {
+      ...snap.seller,
+      logo: snap.seller.logo || (snap.seller.logoFileId ? `/api/files/${snap.seller.logoFileId}` : ''),
+    } : undefined,
     templateId: snap.templateId || doc.templateId,
     templateRevision: snap.templateRevision || doc.templateRevision,
     templateSnapshot: snap.template || undefined,

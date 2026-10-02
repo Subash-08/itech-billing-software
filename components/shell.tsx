@@ -30,42 +30,47 @@ import {
 } from 'lucide-react';
 import {useStore} from './store';
 
+const primaryItems = [
+  ['/', 'Dashboard', LayoutDashboard],
+  ['/sales', 'Sales & invoices', ShoppingCart],
+  ['/enquiries', 'Enquiries', MessageSquareText],
+  ['/quotations', 'Quotations', FileText],
+  ['/services', 'Service jobs', Wrench],
+] as const;
+
 const groups = [
   {
-    label: 'OVERVIEW',
-    items: [['/', 'Dashboard', LayoutDashboard]],
-  },
-  {
-    label: 'CUSTOMERS & SALES',
+    label: 'Customers & service',
     items: [
       ['/customers', 'Customers', Users],
-      ['/enquiries', 'Enquiries', MessageSquareText],
-      ['/sales', 'Sales & invoices', ShoppingCart],
-      ['/quotations', 'Quotations', FileText],
-      ['/documents', 'Document library', FileText],
-      ['/templates', 'Invoice templates', FileText],
-      ['/services', 'Service jobs', Wrench],
       ['/service-catalog', 'Service catalogue', Wrench],
+      ['/warranty', 'Warranty', ShieldCheck],
     ],
   },
   {
-    label: 'STOCK & PURCHASES',
+    label: 'Stock & purchases',
     items: [
       ['/inventory', 'Inventory', Package],
       ['/purchases', 'Purchases', Truck],
       ['/suppliers', 'Suppliers', Users],
       ['/reservations', 'Stock holds', CalendarClock],
       ['/returns', 'Returns & refunds', ArrowLeftRight],
-      ['/warranty', 'Warranty', ShieldCheck],
     ],
   },
   {
-    label: 'MONEY & BUSINESS',
+    label: 'Money & reports',
     items: [
       ['/register', 'Cash & account', Wallet],
       ['/dues', 'Dues & reminders', CalendarClock],
       ['/profit', 'Daily closing', Wallet],
       ['/reports', 'Reports', BarChart3],
+    ],
+  },
+  {
+    label: 'Documents & settings',
+    items: [
+      ['/documents', 'Document library', FileText],
+      ['/templates', 'Invoice templates', FileText],
       ['/communication', 'WhatsApp & offers', MessageSquareText],
       ['/settings', 'Settings', Settings],
       ['/account', 'Company account', Users],
@@ -82,7 +87,24 @@ export default function Shell({children}: {children: ReactNode}) {
   const [notifications, setNotifications] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(
+      groups.map((group) => [
+        group.label,
+        group.items.some(([url]) => path.startsWith(url as string)),
+      ]),
+    ),
+  );
   const accountRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const activeGroup = groups.find((group) =>
+      group.items.some(([url]) => path.startsWith(url as string)),
+    );
+    if (activeGroup) {
+      setOpenGroups((current) => ({...current, [activeGroup.label]: true}));
+    }
+  }, [path]);
 
   useEffect(() => {
     function closeMenus(event: MouseEvent) {
@@ -153,26 +175,54 @@ export default function Shell({children}: {children: ReactNode}) {
           <X />
         </button>
         <nav>
+          <div className="nav-primary">
+            {primaryItems.map(([url, label, Icon]) => {
+              const active = url === '/' ? path === '/' : path.startsWith(url);
+              return (
+                <Link
+                  onClick={() => setMobile(false)}
+                  className={`nav-link ${active ? 'active' : ''}`}
+                  href={url}
+                  key={url}
+                >
+                  <Icon size={18} />
+                  <span>{label}</span>
+                </Link>
+              );
+            })}
+          </div>
           {groups.map((g) => (
-            <div className="nav-group" key={g.label}>
-              <div className="nav-label">{g.label}</div>
-              {g.items.map(([url, label, Icon]) => {
-                const I = Icon as typeof Monitor;
-                return (
-                  <Link
-                    onClick={() => setMobile(false)}
-                    className={`nav-link ${(url === '/' ? path === '/' : path.startsWith(url as string)) ? 'active' : ''}`}
-                    href={url as string}
-                    key={url as string}
-                  >
-                    <I size={18} />
-                    <span>{label as string}</span>
-                    {url === '/services' && (
-                      <small>{state.jobs.filter((j) => j.status !== 'Delivered').length}</small>
-                    )}
-                  </Link>
-                );
-              })}
+            <div className={`nav-group collapsible ${openGroups[g.label] ? 'open' : ''}`} key={g.label}>
+              <button
+                type="button"
+                className="nav-group-toggle"
+                aria-expanded={Boolean(openGroups[g.label])}
+                onClick={() => setOpenGroups((current) => ({...current, [g.label]: !current[g.label]}))}
+              >
+                <span>{g.label}</span>
+                <ChevronDown size={15} aria-hidden="true" />
+              </button>
+              {openGroups[g.label] && (
+                <div className="nav-group-items">
+                  {g.items.map(([url, label, Icon]) => {
+                    const I = Icon as typeof Monitor;
+                    return (
+                      <Link
+                        onClick={() => setMobile(false)}
+                        className={`nav-link ${path.startsWith(url as string) ? 'active' : ''}`}
+                        href={url as string}
+                        key={url as string}
+                      >
+                        <I size={18} />
+                        <span>{label as string}</span>
+                        {url === '/services' && (
+                          <small>{state.jobs.filter((j) => j.status !== 'Delivered').length}</small>
+                        )}
+                      </Link>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           ))}
         </nav>
@@ -235,13 +285,14 @@ export default function Shell({children}: {children: ReactNode}) {
               </div>
             )}
           </div>
-          {isLoading ? (
-            <span className="session-pill loading">Checking account…</span>
-          ) : !isLive ? (
-            <span className="demo-pill">Demo workspace</span>
-          ) : null}
-          <ProfitAccess />
-          <div className="notification-wrap">
+          <div className="topbar-actions">
+            {isLoading ? (
+              <span className="session-pill loading">Checking account…</span>
+            ) : !isLive ? (
+              <span className="demo-pill">Demo workspace</span>
+            ) : null}
+            <ProfitAccess />
+            <div className="notification-wrap">
             <button
               className="icon-btn notification-button"
               aria-label="Notifications"
@@ -264,8 +315,8 @@ export default function Shell({children}: {children: ReactNode}) {
                 </Link>
               </div>
             )}
-          </div>
-          <div className="account-menu-wrap" ref={accountRef}>
+            </div>
+            <div className="account-menu-wrap" ref={accountRef}>
             <button
               className="user-menu"
               type="button"
@@ -316,6 +367,7 @@ export default function Shell({children}: {children: ReactNode}) {
                 )}
               </div>
             )}
+            </div>
           </div>
         </header>
 

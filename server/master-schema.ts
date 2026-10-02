@@ -155,6 +155,7 @@ export const ServiceCatalogInputSchema = z.object({
 export type ServiceCatalogInput = z.infer<typeof ServiceCatalogInputSchema>;
 
 export const TEMPLATE_FIELD_KEYS = [
+  'referenceLayout', 'referenceBoxes', 'taxWords', 'shopState', 'customerState',
   'logo', 'shopName', 'shopAddress', 'shopGst', 'shopPhone', 'shopEmail',
   'customerName', 'customerAddress', 'customerPhone', 'customerGst', 'shipping',
   'number', 'date', 'due', 'reference', 'order', 'delivery', 'dispatch', 'destination',
@@ -164,7 +165,7 @@ export const TEMPLATE_FIELD_KEYS = [
 
 export const TEMPLATE_COLUMN_IDS = [
   'index', 'description', 'hsn', 'tax', 'qty', 'rateIncl', 'rateExcl',
-  'discount', 'warranty', 'amount'
+  'discount', 'warranty', 'amount', 'per'
 ] as const;
 
 export const TemplateColumnSchema = z.object({

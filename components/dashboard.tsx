@@ -32,10 +32,9 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!isLive) return;
-    const controller = new AbortController();
     let active = true;
     setLoadError(''); setRefreshing(true);
-    fetch('/api/company/dashboard', {signal: controller.signal, cache: 'no-store'})
+    fetch('/api/company/dashboard', {cache: 'no-store'})
       .then(async res => { const data = await res.json(); if (!res.ok || data.error) throw new Error(data.error || 'Dashboard unavailable.'); return data; })
       .then((data) => {
         if (active && data && !data.error) {
@@ -47,7 +46,6 @@ export default function Dashboard() {
       .finally(() => { if (active) setRefreshing(false); });
     return () => {
       active = false;
-      controller.abort();
     };
   }, [isLive, revision, companySession?.company?.name]);
 

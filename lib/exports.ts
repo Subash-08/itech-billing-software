@@ -60,7 +60,7 @@ export async function invoicePreviewPdfBytes(element:HTMLElement,template:Invoic
  });
  const pageWidth=doc.internal.pageSize.getWidth();
  const pageHeight=doc.internal.pageSize.getHeight();
- const margin=12;
+ const margin=element.classList.contains('reference-paper') ? 0 : 12;
  const availableWidth=pageWidth-margin*2;
  const availableHeight=pageHeight-margin*2;
  const ratio=availableWidth/canvas.width;

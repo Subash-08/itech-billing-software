@@ -1,4 +1,5 @@
 'use client';
+import ReferenceInvoice from './reference-invoice';
 import {amountWords} from '@/lib/amount-words';
 import {useRef, useState} from 'react';
 import Link from 'next/link';
@@ -31,7 +32,8 @@ export function TemplateInvoice({
   const s = bill.shopSnapshot || state.settings;
   const c = supplier || bill.customerSnapshot || state.customers.find((c) => c.id === bill.customerId);
   const billTo = supplier ? undefined : bill.billTo || c;
-  const deliveryTo = bill.shipTo || billTo;
+  const deliveryTo = bill.shipTo;
+  const hasDeliveryTo = Boolean(deliveryTo && [deliveryTo.name, deliveryTo.address, deliveryTo.phone, deliveryTo.state, deliveryTo.postalCode].some(value => value?.trim()));
   const interstate = bill.taxMode === 'Inter-state';
   const isDraft = bill.status === 'Draft';
   const documentNumber = (bill as any).invoiceNumber || (bill as any).quotationNumber || (bill as any).purchaseNumber || bill.id;
@@ -61,6 +63,8 @@ export function TemplateInvoice({
       return a;
     }, {})
   );
+
+  if (f.referenceLayout) return <ReferenceInvoice bill={bill} template={t} shop={s} customer={c} supplier={Boolean(supplier)} received={bill.previewPaid ?? bill.paid ?? paid(state,bill.id)} due={bill.dueAmount ?? balance(state,bill)} demo={!isLive} />;
 
   return (
     <div className="print-area">
@@ -113,13 +117,13 @@ export function TemplateInvoice({
                 number: [isDraft ? 'Draft reference' : 'Document No.', documentNumber],
                 date: ['Date', dateLabel(bill.date)],
                 due: [bill.kind === 'Quotation' ? 'Valid until' : 'Due date', dateLabel(bill.due)],
-                reference: ['Reference', bill.jobId || bill.sourceId || '—'],
-                order: ['Buyer order no.', bill.orderRef || '—'],
-                delivery: ['Delivery note', bill.deliveryNote || '—'],
-                dispatch: ['Dispatched through', bill.dispatch || '—'],
-                destination: ['Place of supply', bill.placeOfSupply || 'Tamil Nadu'],
+                reference: ['Reference', bill.jobId || bill.sourceId || ''],
+                order: ['Buyer order no.', bill.orderRef || ''],
+                delivery: ['Delivery note', bill.deliveryNote || ''],
+                dispatch: ['Dispatched through', bill.dispatch || ''],
+                destination: ['Place of supply', bill.placeOfSupply || ''],
               })
-                .filter(([k]) => f[k])
+                .filter(([k, [, value]]) => f[k] && Boolean(String(value || '').trim()))
                 .map(([k, [label, value]]) => (
                   <div key={k}>
                     <small>{label}</small>
@@ -135,17 +139,13 @@ export function TemplateInvoice({
             {f.customerPhone && <p>{billTo?.phone}</p>}
             {f.customerGst && <p>GSTIN/UIN: {c?.gst || 'Not provided'}</p>}
             {billTo && (billTo as any).state && <p>{(billTo as any).state}{(billTo as any).stateCode ? `, Code: ${(billTo as any).stateCode}` : ''}{(billTo as any).postalCode ? ` · PIN: ${(billTo as any).postalCode}` : ''}</p>}
-            {f.shipping && (
+            {f.shipping && hasDeliveryTo && deliveryTo && (
               <div className="invoice-shipto">
                 <strong>Ship to (Deliver to)</strong>
-                <p>{bill.shipTo?.name || billTo?.name}</p>
-                <p>{bill.shipTo?.address || billTo?.address}</p>
-                <p>{bill.shipTo?.phone || billTo?.phone}</p>
-                {deliveryTo && (
-                  <p>
-                    {(deliveryTo as any).state || ''} {(deliveryTo as any).postalCode || ''}
-                  </p>
-                )}
+                {deliveryTo.name && <p>{deliveryTo.name}</p>}
+                {deliveryTo.address && <p>{deliveryTo.address}</p>}
+                {deliveryTo.phone && <p>{deliveryTo.phone}</p>}
+                {(deliveryTo.state || deliveryTo.postalCode) && <p>{deliveryTo.state || ''} {deliveryTo.postalCode || ''}</p>}
               </div>
             )}
           </div>
@@ -596,6 +596,19 @@ export default function Templates() {
                 <p className="muted">
                   Logo position and visibility are set below. Issued invoices retain their original company details.
                 </p>
+                <Btn secondary onClick={() => setEditing({...editing, paper:'A4', orientation:'portrait',fontSize:13,accent:'#000000',borders:true,striped:false,logoPosition:'left',
+                  fields:{...editing.fields,referenceLayout:true,referenceBoxes:false,taxWords:true,shopState:true,customerState:true,shipping:true,due:false,payments:false,subtotal:false,warranty:false,model:true},
+                  columns:[
+                    {id:'index',label:'Sl No.',show:true,align:'center'},
+                    {id:'description',label:'Description of Goods',show:true,align:'left'},
+                    {id:'hsn',label:'HSN/SAC',show:true,align:'center'},
+                    {id:'qty',label:'Quantity',show:true,align:'right'},
+                    {id:'rateExcl',label:'Rate',show:true,align:'right'},
+                    {id:'per',label:'per',show:true,align:'center'},
+                    {id:'amount',label:'Amount',show:true,align:'right'},
+                    ...editing.columns.filter(c=>!['index','description','hsn','qty','rateExcl','per','amount'].includes(c.id)).map(c=>({...c,show:false})),
+                  ]})}>Use Tally-style layout</Btn>
+                <p className="muted">Applies the reference page structure and column defaults. Adjust visibility below, then save the template. Existing issued snapshots remain unchanged.</p>
                 <Field label="Template name">
                   <input value={editing.name} onChange={(e) => setEditing({...editing, name: e.target.value})} />
                 </Field>
@@ -608,6 +621,7 @@ export default function Templates() {
                 <div className="form-grid">
                   <Field label="Paper">
                     <select
+                      disabled={Boolean(editing.fields.referenceLayout)}
                       value={editing.paper}
                       onChange={(e) => setEditing({...editing, paper: e.target.value as InvoiceTemplate['paper']})}
                     >
@@ -617,6 +631,7 @@ export default function Templates() {
                   </Field>
                   <Field label="Orientation">
                     <select
+                      disabled={Boolean(editing.fields.referenceLayout)}
                       value={editing.orientation}
                       onChange={(e) =>
                         setEditing({...editing, orientation: e.target.value as InvoiceTemplate['orientation']})
@@ -669,12 +684,14 @@ export default function Templates() {
                   <label>
                     <input
                       type="checkbox"
+                      disabled={Boolean(editing.fields.referenceLayout)}
                       checked={editing.striped}
                       onChange={(e) => setEditing({...editing, striped: e.target.checked})}
                     />
                     Alternate row shading
                   </label>
                 </div>
+                {editing.fields.referenceLayout && <p className="muted">The measured reference layout uses A4 portrait with plain white rows. Text size, field visibility, columns, logo, borders and footer remain editable.</p>}
                 <Field label="Footer">
                   <textarea
                     value={editing.footer}
@@ -690,7 +707,7 @@ export default function Templates() {
                     <span>{label}</span>
                     <input
                       type="checkbox"
-                      checked={editing.fields[key]}
+                      checked={Boolean(editing.fields[key])}
                       onChange={(e) =>
                         setEditing({...editing, fields: {...editing.fields, [key]: e.target.checked}})
                       }

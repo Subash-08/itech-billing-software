@@ -2,7 +2,7 @@
 import {useState, useEffect, useCallback, useRef} from 'react';
 import Link from 'next/link';
 import {useRouter, useSearchParams} from 'next/navigation';
-import {Plus, Pencil, ArrowLeft, ArrowUpRight, FileText, RotateCcw} from 'lucide-react';
+import {Plus, Pencil, ArrowLeft, ArrowUpRight, FileText, RotateCcw, UserPlus} from 'lucide-react';
 import {Job, TODAY, uid, money, dateLabel, available, balance} from '@/lib/domain';
 import {consumePart} from '@/lib/operations';
 import {uploadFile} from '@/lib/upload';
@@ -12,6 +12,31 @@ import {PaymentDialog} from './payments';
 import {CustomerReceiptModal} from './sales-modals';
 import ServicePhotos from './service-photos';
 import {mapInvoiceFromApi} from '@/lib/mappers';
+import {PersonForm} from './people';
+
+const ACCESSORY_OPTIONS = [
+  'Power adapter',
+  'Power cable',
+  'Laptop bag',
+  'Mouse',
+  'Keyboard',
+  'Battery',
+  'RAM',
+  'HDD',
+  'SSD',
+  'DVD drive',
+] as const;
+
+function splitAccessories(value: unknown) {
+  const entries = String(value || '').split(/[,\n]/).map((entry) => entry.trim()).filter(Boolean);
+  const selected = ACCESSORY_OPTIONS.filter((option) =>
+    entries.some((entry) => entry.toLowerCase() === option.toLowerCase()),
+  );
+  const notes = entries.filter((entry) =>
+    !ACCESSORY_OPTIONS.some((option) => option.toLowerCase() === entry.toLowerCase()),
+  ).join(', ');
+  return {selected, notes};
+}
 
 export const jobStatuses = [
   'Received',
@@ -43,6 +68,23 @@ export function normalizeStatus(s?: string) {
   return s;
 }
 
+export function statusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    Received: 'Received',
+    Diagnosing: 'Diagnosing',
+    EstimatePending: 'Estimate pending',
+    EstimateApproved: 'Estimate approved',
+    EstimateRejected: 'Estimate rejected',
+    WorkInProgress: 'Work in progress',
+    WaitingForParts: 'Waiting for parts',
+    ReadyForDelivery: 'Ready for delivery',
+    Delivered: 'Delivered',
+    Unrepaired: 'Unrepaired',
+    Cancelled: 'Cancelled',
+  };
+  return labels[normalizeStatus(status)] || status || 'Unknown';
+}
+
 export function JobForm({
   existing,
   onClose,
@@ -64,10 +106,12 @@ export function JobForm({
   const [serial, setSerial] = useState(existing?.device?.serialNumber || existing?.serial || '');
   const [problem, setProblem] = useState(existing?.reportedProblem || existing?.problem || '');
   const [condition, setCondition] = useState(existing?.device?.conditionNotes || existing?.condition || '');
-  const [accessories, setAccessories] = useState(
+  const initialAccessories = splitAccessories(
     existing?.device?.accessories ||
-      (Array.isArray(existing?.accessories) ? existing.accessories.join('\n') : existing?.accessories || '')
+      (Array.isArray(existing?.accessories) ? existing.accessories.join(', ') : existing?.accessories || ''),
   );
+  const [selectedAccessories, setSelectedAccessories] = useState<string[]>(initialAccessories.selected);
+  const [accessoryNotes, setAccessoryNotes] = useState(initialAccessories.notes);
   const [estimate, setEstimate] = useState(
     existing?.estimate?.estimatedCostPaise !== undefined
       ? (existing.estimate.estimatedCostPaise / 100).toString()
@@ -80,7 +124,10 @@ export function JobForm({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [photoIds, setPhotoIds] = useState<string[]>(existing?.device?.photos || []);
   const [uploading, setUploading] = useState(false);
+  const [customerModal, setCustomerModal] = useState(false);
   const [intakeKey] = useState(() => uid('INTAKE'));
+
+  const accessories = [...selectedAccessories, accessoryNotes.trim()].filter(Boolean).join(', ');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,6 +156,7 @@ export function JobForm({
                 reportedProblem: problem,
                 work: notes,
                 diagnosticNotes: notes,
+                accessories: accessories ? accessories.split(',').map((a) => a.trim()).filter(Boolean) : [],
                 estimate: parseFloat(estimate || '0'),
               }
             : x
@@ -124,7 +172,7 @@ export function JobForm({
           serial: serial.trim(),
           problem: problem.trim(),
           reportedProblem: problem.trim(),
-          accessories: accessories.split('\n').map((a: string) => a.trim()).filter(Boolean),
+          accessories: accessories.split(',').map((a: string) => a.trim()).filter(Boolean),
           condition: condition.trim(),
           estimate: parseFloat(estimate || '0'),
           final: 0,
@@ -154,6 +202,7 @@ export function JobForm({
             status,
             diagnosticNotes: notes,
             notes,
+            accessories,
             expectedVersion: existing.version ?? 1,
             photos: photoIds,
           }),
@@ -174,7 +223,7 @@ export function JobForm({
               brand: brand.trim(),
               model: model.trim(),
               serialNumber: serial.trim(),
-              accessories: accessories.trim(),
+              accessories,
               conditionNotes: condition.trim(),
               photos: photoIds,
             },
@@ -207,19 +256,26 @@ export function JobForm({
         <div className="form-body">
           <div className="form-grid">
             <Field label="Customer *">
-              <select
-                required
-                disabled={Boolean(existing)}
-                value={customerId}
-                onChange={e => setCustomerId(e.target.value)}
-              >
-                <option value="">Select customer</option>
-                {state.customers.map(c => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} {c.phone ? `· ${c.phone}` : ''}
-                  </option>
-                ))}
-              </select>
+              <div className="inline-field-action">
+                <select
+                  required
+                  disabled={Boolean(existing)}
+                  value={customerId}
+                  onChange={e => setCustomerId(e.target.value)}
+                >
+                  <option value="">Select customer</option>
+                  {state.customers.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} {c.phone ? `· ${c.phone}` : ''}
+                    </option>
+                  ))}
+                </select>
+                {!existing && (
+                  <Btn secondary onClick={() => setCustomerModal(true)}>
+                    <UserPlus size={15} /> New customer
+                  </Btn>
+                )}
+              </div>
             </Field>
 
             <Field label="Device Category">
@@ -260,6 +316,12 @@ export function JobForm({
               />
             </Field>
 
+            <div className="service-number-note">
+              <strong>Shop service S.No.</strong>
+              <span>{existing?.jobNumber || 'Generated automatically after saving this intake'}</span>
+              <small>Write this number on the physical service label. Keep the manufacturer serial in the field above.</small>
+            </div>
+
             <Field label="Initial Estimate (₹)">
               <input
                 type="number"
@@ -296,11 +358,27 @@ export function JobForm({
 
             <div className="full">
               <Field label="Accessories Received">
-                <textarea
-                  rows={2}
-                  value={accessories}
-                  onChange={e => setAccessories(e.target.value)}
-                  placeholder="Power adapter (65W original), laptop bag, power cord, etc."
+                <div className="accessory-picker">
+                  {ACCESSORY_OPTIONS.map((option) => (
+                    <label key={option}>
+                      <input
+                        type="checkbox"
+                        checked={selectedAccessories.includes(option)}
+                        onChange={(event) => setSelectedAccessories((current) =>
+                          event.target.checked
+                            ? [...current, option]
+                            : current.filter((item) => item !== option),
+                        )}
+                      />
+                      <span>{option}</span>
+                    </label>
+                  ))}
+                </div>
+                <input
+                  value={accessoryNotes}
+                  onChange={(event) => setAccessoryNotes(event.target.value)}
+                  maxLength={160}
+                  placeholder="Other accessory or identifying details (optional)"
                 />
               </Field>
             </div>
@@ -361,6 +439,15 @@ export function JobForm({
           </Btn>
         </div>
       </form>
+      {customerModal && (
+        <PersonForm
+          onClose={() => setCustomerModal(false)}
+          onSuccess={(person) => {
+            if (person?.id) setCustomerId(person.id);
+            setCustomerModal(false);
+          }}
+        />
+      )}
     </Modal>
   );
 }
@@ -683,30 +770,28 @@ export default function Services({id}: {id?: string}) {
   const [liveList, setLiveList] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(isLive);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const requestRef = useRef<AbortController | null>(null);
+  const requestRef = useRef(0);
 
   const fetchLive = useCallback(async (url: string, detail: boolean) => {
-    requestRef.current?.abort();
-    const controller = new AbortController();
-    requestRef.current = controller;
+    const requestId = ++requestRef.current;
     setIsLoading(true);
     setLoadError(null);
     if (detail) setLiveJob(null);
     else setLiveList([]);
     try {
-      const res = await fetch(url, {signal: controller.signal, cache: 'no-store'});
+      const res = await fetch(url, {cache: 'no-store'});
       if (detail && res.status === 404) return;
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Unable to load service records. Please retry.');
-      if (controller.signal.aborted) return;
+      if (requestId !== requestRef.current) return;
       if (detail) setLiveJob(data);
       else if (Array.isArray(data.jobs)) setLiveList(data.jobs);
       else throw new Error('The service list response was incomplete. Please retry.');
     } catch (error: any) {
-      if (controller.signal.aborted || error?.name === 'AbortError') return;
+      if (requestId !== requestRef.current) return;
       setLoadError(error instanceof Error ? error.message : 'Unable to load service records.');
     } finally {
-      if (!controller.signal.aborted) setIsLoading(false);
+      if (requestId === requestRef.current) setIsLoading(false);
     }
   }, []);
 
@@ -722,7 +807,7 @@ export default function Services({id}: {id?: string}) {
     if (!isLive) return;
     if (isDetailView) void fetchJob(id!);
     else { setLiveJob(null); void fetchList(); }
-    return () => requestRef.current?.abort();
+    return () => { requestRef.current += 1; };
   }, [isLive, isDetailView, id, fetchJob, fetchList]);
 
   // Only resolve j when in detail view
@@ -862,7 +947,7 @@ export default function Services({id}: {id?: string}) {
               return (
                 <div key={s} className={isDone ? 'done' : ''}>
                   <span>{i + 1}</span>
-                  <small>{s}</small>
+                  <small>{statusLabel(s)}</small>
                 </div>
               );
             })}
@@ -872,6 +957,10 @@ export default function Services({id}: {id?: string}) {
             <div className="stack">
               <Card title="Device & Intake Record">
                 <dl className="detail-list">
+                  <div>
+                    <dt>Shop service S.No.</dt>
+                    <dd><strong>{j.jobNumber || j.id}</strong></dd>
+                  </div>
                   <div>
                     <dt>Device</dt>
                     <dd>
@@ -922,7 +1011,7 @@ export default function Services({id}: {id?: string}) {
 
               <Card title="Diagnostic & Repair Outcome">
                 <div className="body-pad">
-                  <Badge>{j.status}</Badge>
+                  <Badge>{statusLabel(j.status)}</Badge>
                   <p className="spaced" style={{marginTop: '0.75rem'}}>
                     {j.diagnosticNotes || j.work || 'No diagnostic notes added yet.'}
                   </p>

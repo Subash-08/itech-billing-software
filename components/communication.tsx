@@ -8,14 +8,16 @@ import {PageHead, Card, Btn, Field, Modal, Badge} from './ui';
 import {whatsappUrl} from '@/lib/whatsapp';
 
 export default function Communication() {
-  const {state, notify} = useStore();
+  const {state, notify, isLive} = useStore();
   const params = useSearchParams();
+  const requestedJobId = params.get('job');
+  const [liveJob, setLiveJob] = useState<any | null>(null);
 
   const initialCustomerId = params.get('customer') || state.customers[0]?.id || '';
   const [customerId, setCustomerId] = useState(initialCustomerId);
   const [template, setTemplate] = useState(
-    params.get('job')
-      ? 'Service received'
+    requestedJobId
+      ? 'Service status update'
       : params.get('reminder')
       ? 'Payment reminder'
       : 'General message'
@@ -23,9 +25,11 @@ export default function Communication() {
   const [message, setMessage] = useState('');
   const [preview, setPreview] = useState(false);
 
-  const customer = state.customers.find((c) => c.id === customerId);
+  const customer = state.customers.find((c) => c.id === customerId) ||
+    (liveJob?.customerSnapshot ? {id: liveJob.customerId, ...liveJob.customerSnapshot} : undefined);
   const job =
-    state.jobs.find((j) => j.id === params.get('job')) ||
+    liveJob ||
+    state.jobs.find((j) => j.id === requestedJobId || (j as any)._id === requestedJobId || (j as any).jobNumber === requestedJobId) ||
     state.jobs.find((j) => j.customerId === customerId);
   const bill =
     state.bills.find((b) => b.id === params.get('reminder')) ||
@@ -34,10 +38,53 @@ export default function Communication() {
 
   const shopName = state.settings.name || 'iTech Computers';
 
+  useEffect(() => {
+    if (!isLive || !requestedJobId) {
+      setLiveJob(null);
+      return;
+    }
+    let active = true;
+    fetch(`/api/services/${encodeURIComponent(requestedJobId)}`, {cache: 'no-store'})
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Unable to load the current service status.');
+        if (active) setLiveJob(data);
+      })
+      .catch((error) => {
+        if (active) notify(error instanceof Error ? error.message : 'Unable to load the current service status.');
+      });
+    return () => { active = false; };
+  }, [isLive, requestedJobId]);
+
+  const jobDevice = typeof job?.device === 'string'
+    ? job.device
+    : [job?.device?.brand, job?.device?.model].filter(Boolean).join(' ') || 'device';
+  const jobReference = (job as any)?.jobNumber || job?.id || requestedJobId || 'pending';
+  const jobStatus = String((job as any)?.status || 'Received').toLowerCase().replace(/[\s_-]/g, '');
+  const serviceStatusMessage = (() => {
+    const name = customer?.name || 'Customer';
+    const prefix = `Hello ${name}, update from ${shopName} for ${jobDevice} (Job Ref: ${jobReference}).`;
+    const messages: Record<string, string> = {
+      received: 'Your device has been received safely and is waiting for diagnosis.',
+      diagnosing: 'Our technician is currently diagnosing the reported issue.',
+      estimatepending: 'Diagnosis is complete and the repair estimate is waiting for your approval.',
+      estimateapproved: 'Your estimate is approved. We will proceed with the repair work.',
+      estimaterejected: 'The repair estimate was not approved. Please contact us to arrange the next step.',
+      workinprogress: 'Repair work is currently in progress.',
+      waitingforparts: 'The repair is paused while we wait for the required part.',
+      readyfordelivery: 'Your device is ready for collection. Please visit the shop at your convenience.',
+      delivered: 'Your device has been delivered. Thank you for choosing us.',
+      unrepaired: 'The device could not be repaired. Please contact us to arrange collection.',
+      cancelled: 'This service job has been cancelled. Please contact us if you need further assistance.',
+    };
+    return `${prefix} ${messages[jobStatus] || `Current status: ${(job as any)?.status || 'Received'}.`}`;
+  })();
+
   const defaultTemplates: Record<string, string> = {
     'General message': `Hello ${customer?.name || 'Customer'}, thank you for contacting ${shopName}. How can we assist you today?`,
-    'Service received': `Hello ${customer?.name || 'Customer'}, thank you for choosing ${shopName}. We have received your ${job?.device || 'device'} for service. Reported issue: ${job?.problem || 'under diagnosis'}. Job Ref: ${job?.id || 'pending'}. We will update you once diagnosis is complete.`,
-    'Service ready': `Hello ${customer?.name || 'Customer'}, your ${job?.device || 'device'} service is complete at ${shopName}.${job?.work ? ` Work done: ${job.work}.` : ''} Total payable: ${money(job?.final || 0)}. Please visit our store to collect your device.`,
+    'Service status update': serviceStatusMessage,
+    'Service received': `Hello ${customer?.name || 'Customer'}, thank you for choosing ${shopName}. We have received your ${jobDevice} for service. Reported issue: ${(job as any)?.reportedProblem || job?.problem || 'under diagnosis'}. Job Ref: ${jobReference}. We will update you once diagnosis is complete.`,
+    'Service ready': `Hello ${customer?.name || 'Customer'}, your ${jobDevice} service is complete at ${shopName}.${(job as any)?.diagnosticNotes || job?.work ? ` Work done: ${(job as any)?.diagnosticNotes || job?.work}.` : ''} Please visit our store to collect your device.`,
     'Payment reminder': `Hello ${customer?.name || 'Customer'}, this is a gentle reminder from ${shopName} regarding your outstanding balance of ${bill ? money(balance(state, bill)) : 'pending amount'}${bill ? ' against invoice ' + bill.id : ''}. Kindly arrange for settlement at your earliest convenience. Thank you!`,
     'Quotation follow-up': `Hello ${customer?.name || 'Customer'}, following up on the quotation ${quote?.id || ''} provided by ${shopName}. Please let us know if you would like to proceed or need any adjustments to the configuration.`,
   };
@@ -85,6 +132,7 @@ export default function Communication() {
                   setMessage('');
                 }}
               >
+                <option value="Service status update">Current service status</option>
                 <option value="General message">General customer query</option>
                 <option value="Service received">Service device intake</option>
                 <option value="Service ready">Service ready for delivery</option>
