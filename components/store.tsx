@@ -270,7 +270,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
       setState((prev) => ({
         ...prev,
         settings: {
-          name: boot.company.name || prev.settings.name,
+          name: boot.company.name || '',
           phone: boot.company.phone || '',
           email: boot.company.email || '',
           address: boot.company.address || '',
@@ -281,7 +281,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
           bank: boot.company.bank || '',
           account: boot.company.account || '',
           ifsc: boot.company.ifsc || '',
-          declaration: boot.company.declaration || prev.settings.declaration,
+          declaration: boot.company.declaration || '',
           logo: boot.company.logoFileId ? `/api/files/${boot.company.logoFileId}` : '',
         },
         customers: (boot.firstCustomers || []).map(mapCustomerFromApi),
@@ -365,7 +365,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
         throw new Error(data.message || data.error || 'Failed to sign in.');
       }
       await refreshMasterData();
-      notify('Signed in to live company: iTech Computers. Database persistence active.');
+      notify('Signed in to the live company account. Complete Shop details before recording business activity.');
       return true;
     } catch (e: any) {
       notify(e.message || 'Could not sign in to live company.');

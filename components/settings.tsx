@@ -452,15 +452,17 @@ export default function Settings() {
         title="Settings"
         description={
           isLive
-            ? `Live Company: ${companySession?.company?.name || state.settings.name} · Master data persisted to Atlas.`
+            ? state.settings.name
+              ? `${state.settings.name} · Company settings and business data are persisted to Atlas.`
+              : 'Complete Shop details before recording business activity.'
             : 'Store details, document preferences and the rules for this demo workspace.'
         }
       />
 
       {isLive && (
         <div className="notice spaced" style={{backgroundColor: '#f0fdf4', borderColor: '#bbf7d0', color: '#166534'}}>
-          <strong>Live Company Account Active:</strong> You are logged into <b>{companySession?.company?.name}</b>.
-          Master data, customers, suppliers, products, invoice templates and opening balances are saved directly to MongoDB Atlas.
+          <strong>Live company account active.</strong>{state.settings.name ? <> Current company: <b>{state.settings.name}</b>.</> : <> Company identity is not configured yet.</>}
+          {' '}Saved settings and business records are stored directly in MongoDB Atlas.
           {businessDataMode === 'demo-imported' && <span> (Sample master data imported for evaluation).</span>}
         </div>
       )}
@@ -500,7 +502,7 @@ export default function Settings() {
               }).map(([k, label]) => (
                 <Field label={label} key={k}>
                   <input
-                    required={k === 'name' || k === 'phone'}
+                    required={['name','phone','address','state','stateCode','postalCode'].includes(k)}
                     value={f[k as keyof typeof f]}
                     onChange={(e) => set(k, e.target.value)}
                   />

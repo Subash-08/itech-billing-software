@@ -640,8 +640,8 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
                   )}
                 </dl>
                 <div className="body-pad">
-                  {!supplier && whatsappUrl(person.phone || '', `Hello ${person.name}, thank you for visiting ${state.settings.name || 'iTech Computers'}. We appreciate your business and look forward to helping you again.`) ? (
-                    <a className="btn secondary" target="_blank" rel="noopener noreferrer" href={whatsappUrl(person.phone || '', `Hello ${person.name}, thank you for visiting ${state.settings.name || 'iTech Computers'}. We appreciate your business and look forward to helping you again.`)!}>
+                  {!supplier && whatsappUrl(person.phone || '', `Hello ${person.name}, thank you for visiting ${state.settings.name || (isLive ? 'our store' : 'iTech Computers')}. We appreciate your business and look forward to helping you again.`) ? (
+                    <a className="btn secondary" target="_blank" rel="noopener noreferrer" href={whatsappUrl(person.phone || '', `Hello ${person.name}, thank you for visiting ${state.settings.name || (isLive ? 'our store' : 'iTech Computers')}. We appreciate your business and look forward to helping you again.`)!}>
                       Send thank-you on WhatsApp
                     </a>
                   ) : (

@@ -32,24 +32,7 @@ export async function initializeAccountBalances(db: Db, tenantId: string, sessio
   // touched below, so concurrent operational posting conflicts and is retried.
   let settings = await db.collection<any>('companySettings').findOne({tenantId}, {session});
   if (!settings) {
-    const tenant = await db.collection<any>('tenants').findOne({_id: tenantId}, {session});
-    const defaultSettings = {
-      tenantId,
-      name: tenant?.companyName || 'My Store',
-      legalName: '',
-      gstin: '',
-      phone: '',
-      email: '',
-      address: '',
-      state: 'Tamil Nadu',
-      stateCode: '33',
-      accountInitializationVersion: 1,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      demoImported: false,
-    };
-    await db.collection<any>('companySettings').insertOne(defaultSettings, {session});
-    settings = defaultSettings;
+    throw new AppError(409, 'Complete Settings → Shop details before initializing Cash and Bank.');
   } else {
     settings = await db.collection<any>('companySettings').findOneAndUpdate(
       {tenantId},

@@ -6,6 +6,7 @@ import {Db, ClientSession} from 'mongodb';
 import {database, mongo, AppError} from './db';
 import {Identity} from './security';
 import {recordAudit} from './audit';
+import {assertCompanyProfileComplete} from './company-profile';
 import * as canonicalTemplates from './sales-templates';
 import {
   CompanySettingsInput,
@@ -54,10 +55,9 @@ export async function getCompanySettings(identity: Identity) {
   const db = await database();
   const settings = await col(db, 'companySettings').findOne({tenantId: identity.tenantId});
   if (!settings) {
-    const tenant = await col(db, 'tenants').findOne({_id: identity.tenantId});
     return {
       tenantId: identity.tenantId,
-      name: tenant?.companyName || 'My Store',
+      name: '',
       phone: '',
       email: '',
       address: '',
@@ -68,7 +68,7 @@ export async function getCompanySettings(identity: Identity) {
       bank: '',
       account: '',
       ifsc: '',
-      declaration: 'Goods once sold will not be taken back.',
+      declaration: '',
       logoFileId: '',
       demoImported: false,
     };
@@ -1679,6 +1679,8 @@ export async function finalizeOpeningSetup(identity: Identity, options?: Finaliz
   try {
     return await session.withTransaction(async () => {
       const db = client.db(process.env.MONGODB_DB || 'itech_dev');
+
+      await assertCompanyProfileComplete(db, identity.tenantId, session);
 
       const draft = await col(db, 'openingSetups').findOne({tenantId: identity.tenantId}, {session});
       if (!draft) {

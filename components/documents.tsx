@@ -3208,7 +3208,7 @@ export default function Documents({
                 const dueValue = detailData?.raw?.duePaise != null ? detailData.raw.duePaise / 100 : balance(state, record);
                 const url = whatsappUrl(phone, invoiceWhatsAppMessage({
                   customerName: snapshot?.name || customer?.name || 'Customer',
-                  shopName: state.settings.name || 'iTech Computers',
+                  shopName: state.settings.name || (isLive ? '' : 'iTech Computers'),
                   invoiceNumber,
                   total: money(totalValue),
                   due: dueValue > 0 ? money(dueValue) : '',

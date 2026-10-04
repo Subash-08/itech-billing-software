@@ -36,7 +36,7 @@ export default function Communication() {
     state.bills.find((b) => b.customerId === customerId && b.kind !== 'Quotation' && balance(state, b) > 0);
   const quote = state.bills.find((b) => b.customerId === customerId && b.kind === 'Quotation');
 
-  const shopName = state.settings.name || 'iTech Computers';
+  const shopName = state.settings.name || (isLive ? '' : 'iTech Computers');
 
   useEffect(() => {
     if (!isLive || !requestedJobId) {

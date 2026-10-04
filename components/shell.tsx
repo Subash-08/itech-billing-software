@@ -32,6 +32,7 @@ import {useStore} from './store';
 
 const primaryItems = [
   ['/', 'Dashboard', LayoutDashboard],
+  ['/profit', 'Daily closing', Wallet],
   ['/sales', 'Sales & invoices', ShoppingCart],
   ['/enquiries', 'Enquiries', MessageSquareText],
   ['/quotations', 'Quotations', FileText],
@@ -62,7 +63,6 @@ const groups = [
     items: [
       ['/register', 'Cash & account', Wallet],
       ['/dues', 'Dues & reminders', CalendarClock],
-      ['/profit', 'Daily closing', Wallet],
       ['/reports', 'Reports', BarChart3],
     ],
   },
@@ -126,7 +126,17 @@ export default function Shell({children}: {children: ReactNode}) {
 
   const userName = isLive ? companySession?.user?.name || 'Company user' : 'Demo user';
   const userEmail = isLive ? companySession?.user?.email || '' : '';
-  const companyName = isLive ? companySession?.company?.name || state.settings.name || 'Company' : 'iTech Computers';
+  const missingCompanyDetails = isLive ? [
+    !state.settings.name?.trim() && 'shop name',
+    !state.settings.phone?.trim() && 'contact phone',
+    !state.settings.address?.trim() && 'shop address',
+    !state.settings.state?.trim() && 'state name',
+    !state.settings.stateCode?.trim() && 'GST state code',
+    !state.settings.postalCode?.trim() && 'postal code',
+  ].filter(Boolean) as string[] : [];
+  const companySetupComplete = !isLive || missingCompanyDetails.length === 0;
+  const companyName = isLive ? state.settings.name?.trim() || 'Company setup required' : 'iTech Computers';
+  const setupPageAllowed = path.startsWith('/settings') || path.startsWith('/account');
   const initials = userName.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'U';
 
   async function signOut() {
@@ -229,7 +239,7 @@ export default function Shell({children}: {children: ReactNode}) {
         <div className="sidebar-bottom">
           <div className="store-location">
             <span className="online-dot" />
-            Salem store <span>01</span>
+            {isLive ? companyName : 'Salem store'} <span>01</span>
           </div>
           <small>Single branch · All records retained</small>
         </div>
@@ -392,11 +402,27 @@ export default function Shell({children}: {children: ReactNode}) {
               </button>
             </div>
           )}
-          {children}
+          {isLive && !isLoading && !companySetupComplete && (
+            <div className="module-migration-notice" role="alert" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:'1rem',flexWrap:'wrap'}}>
+              <div>
+                <strong>Complete company setup before recording business activity.</strong>
+                <div>Missing: {missingCompanyDetails.join(', ')}. These details are required on invoices and business records.</div>
+              </div>
+              {!path.startsWith('/settings') && <Link className="btn" href="/settings">Open Settings</Link>}
+            </div>
+          )}
+          {companySetupComplete || setupPageAllowed || isLoading ? children : (
+            <section className="empty-state" style={{margin:'2rem'}}>
+              <Building2 size={36}/>
+              <h2>Company setup required</h2>
+              <p>Complete Shop details before creating sales, purchases, stock movements, payments, services or daily closings.</p>
+              <Link className="btn" href="/settings">Complete Shop details</Link>
+            </section>
+          )}
         </main>
 
         <footer className="app-footer">
-          <span>{isLive ? companySession?.company?.name || 'iTech Computers' : 'iTech Computers · Salem'}</span>
+          <span>{isLive ? companyName : 'iTech Computers · Salem'}</span>
           <span>{isLive ? 'Multi-tenant company account' : 'Demo data · Changes reset on refresh'}</span>
         </footer>
       </div>

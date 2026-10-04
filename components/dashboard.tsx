@@ -117,7 +117,7 @@ export default function Dashboard() {
           amountPaise: Math.round(p.amount * 100),
         }));
 
-  const companyName = companySession?.company?.name || state.settings.name || 'iTech Computers';
+  const companyName = state.settings.name || (isLive ? 'Company setup required' : 'iTech Computers');
   const userName = companySession?.user?.name || 'Store Manager';
 
   if (isLive && !liveData) return <>

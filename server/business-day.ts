@@ -3,6 +3,7 @@ import {ClientSession, Db} from 'mongodb';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {AppError} from './db';
 import {todayInKolkata} from './purchase-schema';
+import {assertCompanyProfileComplete} from './company-profile';
 
 export interface BusinessDayAttemptContext {
   attemptId: number;
@@ -67,6 +68,11 @@ export async function lockBusinessDay(
     }
     return existing;
   }
+
+  // This is the common fence for operational posting. Keeping the company
+  // identity check here prevents direct API calls from bypassing onboarding.
+  // Nested locks in the same transaction return above and do not repeat this read.
+  await assertCompanyProfileComplete(db, tenantId, session);
 
   const gate = await db.collection<any>('businessDayGates').findOneAndUpdate(
     {_id: `DAY-${tenantId}`, tenantId},

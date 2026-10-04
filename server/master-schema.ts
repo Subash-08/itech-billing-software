@@ -29,13 +29,15 @@ export function normalizePhone(p: string): string {
 
 export const CompanySettingsSchema = z.object({
   name: z.string().trim().min(1, 'Company name is required').max(120),
-  phone: z.string().trim().min(5).max(20),
+  phone: z.string().trim().max(20)
+    .regex(/^[+()0-9 .-]+$/, 'Enter a valid company phone number')
+    .refine(value => { const digits = value.replace(/\D/g, ''); return digits.length >= 10 && digits.length <= 15; }, 'Enter 10 to 15 phone digits'),
   email: z.string().trim().email('Invalid email address').or(z.literal('')),
-  address: z.string().trim().max(500),
+  address: z.string().trim().min(1, 'Shop address is required').max(500),
   gst: z.string().trim().regex(gstinRegex, 'Invalid GSTIN format').or(z.literal('')),
-  state: z.string().trim().max(100).optional().default(''),
-  stateCode: z.string().trim().regex(/^\d{2}$/, 'State code must contain exactly 2 digits').or(z.literal('')).optional().default(''),
-  postalCode: z.string().trim().regex(/^\d{6}$/, 'Postal code must contain exactly 6 digits').or(z.literal('')).optional().default(''),
+  state: z.string().trim().min(1, 'State name is required').max(100),
+  stateCode: z.string().trim().regex(/^\d{2}$/, 'State code must contain exactly 2 digits'),
+  postalCode: z.string().trim().regex(/^\d{6}$/, 'Postal code must contain exactly 6 digits'),
   bank: z.string().trim().max(100),
   account: z.string().trim().max(50),
   ifsc: z.string().trim().max(20),
