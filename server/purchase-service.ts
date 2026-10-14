@@ -1,4 +1,12 @@
 import 'server-only';
+import {planSupplierPayment} from '../lib/supplier-payment-plan';
+import {getSupplierPaymentBills} from './supplier-payment-plan';
+
+function supplierPaymentDeadline(date: string, days: number) {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + (Number.isInteger(days) && days >= 0 ? days : 30));
+  return value.toISOString().slice(0, 10);
+}
 import {ensureAccountBalances, initializeAccountBalances, signedAccountMovementPaise} from './account-initialization';
 import {Db, ClientSession, Filter, Document} from 'mongodb';
 import {AsyncLocalStorage} from 'node:async_hooks';
@@ -369,6 +377,7 @@ export async function createPurchase(db: Db, identity: Identity, input: CreatePu
         discountType: l.discountType,
         discountValue: l.discountValue,
         taxBasisPoints: l.taxBasisPoints,
+        inputTaxCreditEligible: l.inputTaxCreditEligible !== false,
         ...linePaise,
         creditedLiabilityPaise: 0,
         allocatedPaidPaise: 0,
@@ -468,7 +477,7 @@ export async function createPurchase(db: Db, identity: Identity, input: CreatePu
     financialYear,
     orderDate: input.orderDate,
     postingDate,
-    dueDate: input.dueDate || input.orderDate,
+    dueDate: input.dueDate || supplierPaymentDeadline(input.supplierInvoiceDate || input.orderDate, supplier.terms ?? supplier.paymentTermsDays ?? 30),
 
     documentStatus: docStatus,
     billStatus: bStatus,
@@ -569,6 +578,7 @@ export async function updatePurchaseDraft(
         discountType: l.discountType,
         discountValue: l.discountValue,
         taxBasisPoints: l.taxBasisPoints,
+        inputTaxCreditEligible: l.inputTaxCreditEligible !== false,
         ...linePaise,
         creditedLiabilityPaise: 0,
         allocatedPaidPaise: 0,
@@ -624,7 +634,7 @@ export async function updatePurchaseDraft(
         supplierInvoiceDate: input.supplierInvoiceDate,
         financialYear,
         orderDate: input.orderDate,
-        dueDate: input.dueDate || input.orderDate,
+        dueDate: input.dueDate || supplierPaymentDeadline(input.supplierInvoiceDate || input.orderDate, supplier.terms ?? supplier.paymentTermsDays ?? 30),
         inclusive: input.inclusive,
         taxMode: input.taxMode,
         placeOfSupply: input.placeOfSupply,
@@ -795,7 +805,14 @@ export async function postPurchaseBill(
           supplierInvoiceNumberNormalized: supInvNorm,
           supplierInvoiceDate: input.supplierInvoiceDate,
           postingDate: todayInKolkata(),
-          dueDate: input.dueDate || existing.dueDate,
+          dueDate:
+            input.dueDate ||
+            (existing.dueDate && existing.dueDate > existing.orderDate
+              ? existing.dueDate
+              : supplierPaymentDeadline(
+                  input.supplierInvoiceDate,
+                  existing.supplierSnapshot?.paymentTermsDays ?? 30
+                )),
           notes: input.notes !== undefined ? input.notes : existing.notes,
           updatedAt: now,
           updatedBy: identity.userId,
@@ -1078,6 +1095,17 @@ export async function receivePurchaseStock(
         const lotId = uid('LOT');
         const now = new Date();
 
+        const inventoryCostForFullLine = line.inputTaxCreditEligible !== false
+          ? line.taxableBasePaise
+          : line.totalPaise;
+        const receivedBefore = line.quantityReceived || 0;
+        const costBefore = Number(BigInt(inventoryCostForFullLine) * BigInt(receivedBefore) / BigInt(line.quantityOrdered));
+        const receivedAfter = receivedBefore + rl.quantityReceived;
+        const costAfter = receivedAfter === line.quantityOrdered
+          ? inventoryCostForFullLine
+          : Number(BigInt(inventoryCostForFullLine) * BigInt(receivedAfter) / BigInt(line.quantityOrdered));
+        const lotCostTotalPaise = costAfter - costBefore;
+
         lotInserts.push({
           _id: lotId,
           tenantId,
@@ -1087,7 +1115,9 @@ export async function receivePurchaseStock(
           purchaseLineId: line.lineId,
           purchaseReceiptId: receiptId,
           receivedDate: input.receiptDate,
-          costPaise: line.unitCostPaise,
+          costPaise: Math.round(lotCostTotalPaise / rl.quantityReceived),
+          costTotalPaise: lotCostTotalPaise,
+          costBasis: line.inputTaxCreditEligible !== false ? 'ExcludingRecoverableGST' : 'IncludingGST',
           sourceReference: purchase.purchaseNumber,
           quantityReceived: rl.quantityReceived,
           quantityRemaining: rl.quantityReceived,
@@ -1929,6 +1959,10 @@ export async function recordSupplierPayment(
   const totalComponentPaise = input.components.reduce((sum, c) => sum + c.amountPaise, 0);
   const totalAllocatedPaise = input.allocations.reduce((sum, a) => sum + a.amountPaise, 0);
 
+  if (!Number.isSafeInteger(totalComponentPaise) || !Number.isSafeInteger(totalAllocatedPaise)) {
+    throw new AppError(400, 'Payment amount is too large.');
+  }
+
   if (totalAllocatedPaise > totalComponentPaise) {
     throw new AppError(400, 'Total allocated amount exceeds payment component total.');
   }
@@ -1963,6 +1997,15 @@ export async function recordSupplierPayment(
       await lockBusinessDay(db, session, tenantId, {date: input.date});
       const supplier = await col(db, 'suppliers').findOne({_id: input.supplierId, tenantId}, {session});
       if (!supplier) throw new AppError(404, 'Supplier record not found.');
+
+      if (input.allocationMode && input.allocationMode !== 'Manual') {
+        if (input.allocationMode === 'SelectedBills' && !input.selectedBillIds?.length) throw new AppError(400, 'Select at least one bill.');
+        const bills = await getSupplierPaymentBills(db, tenantId, input.supplierId, session);
+        const plan = planSupplierPayment(bills, totalComponentPaise,
+          input.allocationMode === 'SelectedBills' ? input.selectedBillIds : undefined);
+        const canonical = (items: typeof input.allocations) => items.map(a => `${a.targetType}:${a.targetId}:${a.purchaseLineId || ''}:${a.amountPaise}`).sort().join('|');
+        if (canonical(plan.allocations) !== canonical(input.allocations)) throw new AppError(409, 'Bill balances changed. Refresh the payment preview before confirming.');
+      }
 
       // Decrement account balances with atomic balance guard (D-019 & D-020)
       for (const comp of input.components) {
@@ -2056,6 +2099,7 @@ export async function recordSupplierPayment(
             {
               _id: alloc.targetId,
               tenantId,
+              supplierId: input.supplierId,
               billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']},
               lines: {
                 $elemMatch: {
@@ -2103,6 +2147,7 @@ export async function recordSupplierPayment(
             {
               _id: alloc.targetId,
               tenantId,
+              supplierId: input.supplierId,
               remainingAmountPaise: {$gte: alloc.amountPaise},
             },
             {
@@ -2159,7 +2204,7 @@ export async function recordSupplierPayment(
           advanceNumber,
           tenantId,
           supplierId: input.supplierId,
-          sourceType: 'ExplicitAdvance',
+          sourceType: totalAllocatedPaise > 0 ? 'PaymentOverpay' : 'ExplicitAdvance',
           sourceId: paymentId,
           paymentId,
           originalAmountPaise: excessPaise,
@@ -2193,6 +2238,8 @@ export async function recordSupplierPayment(
       };
 
       await col(db, 'supplierPayments').insertOne(paymentDoc, {session});
+      await recordAudit(db, {identity, action: 'Supplier payment', entityType: 'supplierPayment', entityId: paymentId,
+        detail: `Payment ${paymentNumber}: ${totalComponentPaise} paise; applied ${totalAllocatedPaise}; available balance ${excessPaise}.`}, session);
       return paymentDoc;
     }
   );
@@ -2210,6 +2257,10 @@ export async function allocateSupplierAdvance(
   await assertOperationalPostingAllowed(db, tenantId, input.effectiveDate);
 
   const totalAllocPaise = input.allocations.reduce((sum, a) => sum + a.amountPaise, 0);
+  if (!Number.isSafeInteger(totalAllocPaise) || totalAllocPaise <= 0) throw new AppError(400, 'Enter a valid allocation amount.');
+  const uniqueTargets = new Set(input.allocations.map(a => `${a.targetType}:${a.targetId}:${a.purchaseLineId || ''}`));
+  if (uniqueTargets.size !== input.allocations.length) throw new AppError(400, 'Do not repeat a bill line in the same allocation.');
+  if (input.allocations.some(a => a.targetType === 'PurchaseLine' && !a.purchaseLineId)) throw new AppError(400, 'Purchase line is required.');
 
   return executeIdempotentTransaction(
     db,
@@ -2256,6 +2307,7 @@ export async function allocateSupplierAdvance(
             {
               _id: alloc.targetId,
               tenantId,
+              supplierId: advRes.supplierId,
               billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']},
               lines: {
                 $elemMatch: {
@@ -2299,7 +2351,7 @@ export async function allocateSupplierAdvance(
           }
         } else if (alloc.targetType === 'OpeningPayable') {
           const updateRes = await col(db, 'openingPayables').updateOne(
-            {_id: alloc.targetId, tenantId, remainingAmountPaise: {$gte: alloc.amountPaise}},
+            {_id: alloc.targetId, tenantId, supplierId: advRes.supplierId, remainingAmountPaise: {$gte: alloc.amountPaise}},
             {$inc: {remainingAmountPaise: -alloc.amountPaise}, $set: {updatedAt: now}},
             {session}
           );
@@ -2307,6 +2359,9 @@ export async function allocateSupplierAdvance(
           if (updateRes.matchedCount === 0 || updateRes.modifiedCount === 0) {
             throw new AppError(409, 'Opening payable due has changed or is insufficient.');
           }
+          const opening = await col(db, 'openingPayables').findOne({_id: alloc.targetId, tenantId, supplierId: advRes.supplierId}, {session});
+          await col(db, 'openingPayables').updateOne({_id: alloc.targetId, tenantId, supplierId: advRes.supplierId},
+            {$set: {status: opening?.remainingAmountPaise === 0 ? 'Settled' : 'PartiallySettled'}}, {session});
         }
 
         allocationInserts.push({
@@ -3791,10 +3846,12 @@ export async function getPurchaseSummary(
   params: {hasDue?: boolean; supplierId?: string}
 ) {
   const tenantId = identity.tenantId;
+  const today = todayInKolkata();
+  const monthStart = `${today.slice(0, 7)}-01`;
   const matchBase: Filter<PurchaseDocument> = {tenantId};
   if (params.supplierId) matchBase.supplierId = params.supplierId;
 
-  const [purchasesFacet, advancesRes] = await Promise.all([
+  const [purchasesFacet, advancesRes, paymentsThisMonthRes] = await Promise.all([
     col<PurchaseDocument>(db, 'purchases').aggregate([
       {$match: matchBase},
       {
@@ -3822,6 +3879,15 @@ export async function getPurchaseSummary(
             {$match: {billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']}, paymentStatus: {$in: ['Unpaid', 'PartlyPaid']}}},
             {$group: {_id: null, sum: {$sum: '$duePaise'}}},
           ],
+          overdueDue: [
+            {$match: {
+              billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']},
+              paymentStatus: {$in: ['Unpaid', 'PartlyPaid']},
+              duePaise: {$gt: 0},
+              dueDate: {$lt: today},
+            }},
+            {$group: {_id: null, count: {$sum: 1}, sum: {$sum: '$duePaise'}}},
+          ],
           awaitingReceiptCount: [
             {$match: {billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']}, receiptStatus: 'NotReceived'}},
             {$count: 'count'},
@@ -3840,6 +3906,15 @@ export async function getPurchaseSummary(
       {$match: {tenantId, ...(params.supplierId ? {supplierId: params.supplierId} : {}), status: {$ne: 'Consumed'}}},
       {$group: {_id: null, sum: {$sum: '$remainingAmountPaise'}}},
     ]).toArray(),
+    col<SupplierPaymentDocument>(db, 'supplierPayments').aggregate([
+      {$match: {
+        tenantId,
+        ...(params.supplierId ? {supplierId: params.supplierId} : {}),
+        isReversed: false,
+        date: {$gte: monthStart, $lte: today},
+      }},
+      {$group: {_id: null, sum: {$sum: '$totalAmountPaise'}, count: {$sum: 1}}},
+    ]).toArray(),
   ]);
 
   const f = purchasesFacet[0] || {};
@@ -3847,10 +3922,14 @@ export async function getPurchaseSummary(
   const confirmedOrderCount = f.confirmedOrderCount?.[0]?.count || 0;
   const postedTotals = f.postedTotals?.[0] || {postedValuePaise: 0, allocatedPaidPaise: 0, creditedLiabilityPaise: 0};
   const unpaidDuePaise = f.unpaidDue?.[0]?.sum || 0;
+  const overdueDuePaise = f.overdueDue?.[0]?.sum || 0;
+  const overdueCount = f.overdueDue?.[0]?.count || 0;
   const awaitingReceiptCount = f.awaitingReceiptCount?.[0]?.count || 0;
   const partlyReceivedCount = f.partlyReceivedCount?.[0]?.count || 0;
   const availableAdvancePaise = advancesRes?.[0]?.sum || 0;
   const totalCount = f.allCount?.[0]?.count || 0;
+  const paymentsThisMonthPaise = paymentsThisMonthRes?.[0]?.sum || 0;
+  const paymentsThisMonthCount = paymentsThisMonthRes?.[0]?.count || 0;
 
   return {
     count: totalCount,
@@ -3864,6 +3943,10 @@ export async function getPurchaseSummary(
     confirmedOrderCount,
     postedValuePaise: postedTotals.postedValuePaise || 0,
     unpaidDuePaise,
+    overdueDuePaise,
+    overdueCount,
+    paymentsThisMonthPaise,
+    paymentsThisMonthCount,
     awaitingReceiptCount,
     partlyReceivedCount,
     availableAdvancePaise,

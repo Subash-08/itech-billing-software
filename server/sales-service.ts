@@ -5,6 +5,7 @@ import {AppError} from './db';
 import {Identity} from './security';
 import {recordAudit} from './audit';
 import {uid} from '../lib/domain';
+import {cumulativeCostSlice} from '../lib/pricing-helper';
 import {
   todayInKolkata,
   deriveFinancialYear,
@@ -35,6 +36,7 @@ import {z} from 'zod';
 import {normalizeSerial} from './master-schema';
 import {canonicalSerialKey, resolveSerialUnit, transitionSerialUnit} from './serial-identity';
 import {assertSalePostingDay, settleInvoiceOnIssue, addWarrantyMonths} from './sales-posting';
+import {sameGstState} from '../lib/indian-states';
 import {consumeStockReservation} from './stock-reservations';
 import {
   nextTenantSequence,
@@ -43,6 +45,45 @@ import {
 } from './purchase-service';
 
 const salesTransaction = new AsyncLocalStorage<ClientSession>();
+
+const hasProfitAccess = (identity: Identity) => Boolean(identity.profitUntil && new Date(identity.profitUntil) > new Date());
+
+function withoutPrivateProfitFields<T extends Record<string, any>>(document: T): T {
+  const copy: any = {...document};
+  delete copy.inventoryCostPaise;
+  delete copy.calculatedProfitPaise;
+  delete copy.manualProfitPaise;
+  delete copy.profitCalculationStatus;
+  const sanitizeLines = (lines: any[] = []) => lines.map(line => {
+    const safe = {...line};
+    delete safe.directCostPaise;
+    delete safe.directCostConfirmed;
+    delete safe.costOfGoodsPaise;
+    delete safe.calculatedProfitPaise;
+    if (safe.stockAllocations) safe.stockAllocations = safe.stockAllocations.map((allocation: any) => {
+      const clean = {...allocation};
+      delete clean.costOfGoodsPaise;
+      return clean;
+    });
+    return safe;
+  });
+  if (copy.lines) copy.lines = sanitizeLines(copy.lines);
+  if (copy.issuedSnapshot) copy.issuedSnapshot = {...copy.issuedSnapshot, lines: sanitizeLines(copy.issuedSnapshot.lines)};
+  return copy;
+}
+
+function costSafeInputLines(lines: any[], identity: Identity, priorLines: SaleLineDocument[] = []) {
+  const priorByKey = new Map(priorLines.map(line => [line.clientLineKey, line]));
+  return lines.map(line => {
+    if (hasProfitAccess(identity)) return line;
+    const prior = priorByKey.get(line.clientLineKey);
+    return {
+      ...line,
+      directCostPaise: prior?.directCostPaise ?? null,
+      directCostConfirmed: prior?.directCostConfirmed === true,
+    };
+  });
+}
 
 export type InvoiceStatus = 'Draft' | 'Issued' | 'Cancelled';
 export type QuotationStatus = 'Draft' | 'Sent' | 'Accepted' | 'Rejected' | 'Converted' | 'Expired';
@@ -86,6 +127,10 @@ export type SaleLineDocument = {
   totalPaise: number;
   returnedQuantity: number;
   creditedReturnPaise: number;
+  directCostPaise?: number | null;
+  directCostConfirmed?: boolean;
+  costOfGoodsPaise?: number | null;
+  calculatedProfitPaise?: number | null;
 };
 
 export type CustomerAddressSnapshot = {
@@ -252,6 +297,8 @@ async function buildSaleLines(
       taxBasisPoints: l.taxBasisPoints, taxTreatment: l.taxTreatment,
       priceEntryMode: lineInclusive ? 'Inclusive' : 'Exclusive', inclusive: lineInclusive, ...calc, ...tax,
       returnedQuantity: 0, creditedReturnPaise: 0,
+      directCostPaise: l.directCostPaise ?? null,
+      directCostConfirmed: l.directCostConfirmed === true,
     };
     if (l.lineType === 'Product') {
       const product = productById.get(l.productId!);
@@ -341,17 +388,19 @@ async function assertSupplyTaxTreatment(
   session?: ClientSession,
   knownCompanySettings?: any,
 ) {
-  const normalize = (value: string | undefined) => (value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
-  const place = normalize(input.placeOfSupply);
+  const place = input.placeOfSupply.trim();
   if (!place) throw new AppError(400, 'Place of supply is required.');
-  const destination = input.shipTo?.state || input.billTo?.state || '';
-  if (destination && normalize(destination) !== place) {
+  const destinationAddress = input.shipTo || input.billTo;
+  const destination = destinationAddress?.state || '';
+  const destinationMatchesPlace = destination
+    ? sameGstState(destination, place, destinationAddress?.stateCode)
+    : undefined;
+  if (destinationMatchesPlace === false) {
     throw new AppError(400, 'Place of supply must match the bill-to or ship-to state.');
   }
   const settings = knownCompanySettings ?? await col(db, 'companySettings').findOne({tenantId}, sessionOpt(session));
-  const sellerState = normalize(settings?.state);
-  if (!sellerState || !destination) return;
-  const sameState = sellerState === normalize(destination);
+  const sameState = sameGstState(settings?.state, place, settings?.stateCode);
+  if (sameState === undefined) return;
   if (input.taxMode === 'Inter-state' && sameState) {
     throw new AppError(400, 'Interstate / IGST cannot be used when the destination is in the shop state.');
   }
@@ -374,7 +423,8 @@ async function createQuotationWithinTransaction(db: Db, identity: Identity, inpu
   const customer = await resolveCustomer(db, tenantId, input.customerId, session);
   await resolveTemplate(db, tenantId, input.templateId, input.templateRevision, session);
   await assertSupplyTaxTreatment(db, tenantId, input, session);
-  const lines = await buildSaleLines(db, tenantId, input.lines, input.inclusive, input.taxMode, session);
+  const quotationLines = input.lines.map(line => ({...line, directCostPaise: null, directCostConfirmed: false}));
+  const lines = await buildSaleLines(db, tenantId, quotationLines, input.inclusive, input.taxMode, session);
   const totals = calculateSaleDocumentTotals(lines, input.roundOffPaise);
   const now = new Date();
   const yearStr = input.quotationDate.slice(0, 4);
@@ -466,7 +516,8 @@ export async function updateQuotation(db: Db, identity: Identity, id: string, ra
     const tenantId = identity.tenantId;
     const customer = await resolveCustomer(db, tenantId, input.quotation.customerId, session);
     await resolveTemplate(db, tenantId, input.quotation.templateId, input.quotation.templateRevision, session);
-    const lines = await buildSaleLines(db, tenantId, input.quotation.lines, input.quotation.inclusive, input.quotation.taxMode, session);
+    const quotationLines = input.quotation.lines.map(line => ({...line, directCostPaise: null, directCostConfirmed: false}));
+    const lines = await buildSaleLines(db, tenantId, quotationLines, input.quotation.inclusive, input.quotation.taxMode, session);
     const totals = calculateSaleDocumentTotals(lines, input.quotation.roundOffPaise);
     const now = new Date();
     const oldLineIds = new Map(before.lines.map((l: SaleLineDocument) => [l.clientLineKey, l.lineId]));
@@ -575,12 +626,13 @@ export async function reopenQuotation(db: Db, identity: Identity, id: string, ra
 }
 
 // 3. Prepare Invoice Draft (internal helper)
-async function prepareInvoiceDraft(db: Db, identity: Identity, input: CreateInvoiceDraftInput, session: ClientSession) {
+async function prepareInvoiceDraft(db: Db, identity: Identity, input: CreateInvoiceDraftInput, session: ClientSession, priorLines: SaleLineDocument[] = []) {
   const tenantId = identity.tenantId;
   const customer = await resolveCustomer(db, tenantId, input.customerId, session);
   await resolveTemplate(db, tenantId, input.templateId, input.templateRevision, session);
   await assertSupplyTaxTreatment(db, tenantId, input, session);
-  const lines = await buildSaleLines(db, tenantId, input.lines, input.inclusive, input.taxMode, session);
+  const protectedLines = costSafeInputLines(input.lines, identity, priorLines);
+  const lines = await buildSaleLines(db, tenantId, protectedLines, input.inclusive, input.taxMode, session);
   const totals = calculateSaleDocumentTotals(lines, input.roundOffPaise);
   const now = new Date();
   const invoiceId = uid('INV');
@@ -629,7 +681,7 @@ export async function updateInvoiceDraft(db: Db, identity: Identity, id: string,
     if (before.status !== 'Draft' || before.version !== input.expectedVersion) throw new AppError(409, 'Only the current draft version can be edited.');
     if (input.draft.sourceQuotationId && input.draft.sourceQuotationId !== before.sourceQuotationId) throw new AppError(400, 'Quotation links cannot be reassigned.');
     if (before.sourceQuotationId && input.draft.customerId !== before.customerId) throw new AppError(400, 'A converted quotation must retain its customer.');
-    const prepared = await prepareInvoiceDraft(db, identity, {...input.draft, sourceQuotationId: before.sourceQuotationId}, session);
+    const prepared = await prepareInvoiceDraft(db, identity, {...input.draft, sourceQuotationId: before.sourceQuotationId}, session, before.lines);
     const oldLineIds = new Map(before.lines.map((line: SaleLineDocument) => [line.clientLineKey, line.lineId]));
     const {_id: ignored, ...next} = {...prepared, lines: prepared.lines.map(line => ({...line, lineId: oldLineIds.get(line.clientLineKey) ?? line.lineId})),
       version: before.version + 1, createdAt: before.createdAt, createdBy: before.createdBy};
@@ -698,11 +750,11 @@ export async function issueInvoice(db: Db, identity: Identity, rawInput: IssueIn
     const lines = calculated.map((line, index) => ({...line, lineId: draft.lines[index].lineId}));
     const totals = calculateSaleDocumentTotals(lines, draft.roundOffPaise);
     if (totals.totalPaise !== draft.totalPaise) throw new AppError(409, 'Draft totals are inconsistent. Re-save the draft before issuing.');
-    if (!draft.billTo?.address?.trim()) {
-      throw new AppError(400, 'Billing address is required before issuing an invoice.');
-    }
+    if (!draft.billTo?.name?.trim()) throw new AppError(400, 'Bill-to name is required before issuing an invoice.');
     const now = new Date();
     const usedSerials = new Set<string>();
+    let invoiceCostPaise = 0;
+    let hasUnknownDirectCost = false;
     for (const line of lines) {
       if (line.lineType === 'ConsumedPart') {
         const jId = line.serviceJobId || draft.serviceJobId;
@@ -714,6 +766,13 @@ export async function issueInvoice(db: Db, identity: Identity, rawInput: IssueIn
         if (!part) throw new AppError(404, `Part ${line.partId} not found on service job ${jId}.`);
         if (part.reversed) throw new AppError(400, `Part ${part.productName || line.partId} has been reversed and cannot be billed.`);
         if (part.invoiced && part.invoiceId !== draft._id) throw new AppError(409, `Part ${part.productName || line.partId} is already billed.`);
+
+        const partCost = Number.isSafeInteger(part.costTotalPaise)
+          ? part.costTotalPaise
+          : (part.unitCostPaise || 0) * line.quantity;
+        line.costOfGoodsPaise = partCost;
+        line.calculatedProfitPaise = line.taxableBasePaise - partCost;
+        invoiceCostPaise += partCost;
 
         // Mark part as invoiced on service job - stock was ALREADY decremented during consumption!
         await col(db, 'serviceJobs').updateOne(
@@ -730,8 +789,36 @@ export async function issueInvoice(db: Db, identity: Identity, rawInput: IssueIn
         );
         continue;
       }
-      if (line.lineType !== 'Product') continue;
+      if (line.lineType !== 'Product') {
+        if (line.directCostConfirmed && Number.isSafeInteger(line.directCostPaise) && (line.directCostPaise ?? -1) >= 0) {
+          const directTotal = (line.directCostPaise || 0) * line.quantity;
+          line.costOfGoodsPaise = directTotal;
+          line.calculatedProfitPaise = line.taxableBasePaise - directTotal;
+          invoiceCostPaise += directTotal;
+        } else {
+          line.costOfGoodsPaise = null;
+          line.calculatedProfitPaise = null;
+          hasUnknownDirectCost = true;
+        }
+        continue;
+      }
+      let productLineCostPaise = 0;
       for (const allocation of line.stockAllocations!) {
+        const costLot = await col(db, 'stockLots').findOne({_id: allocation.lotId, tenantId, productId: line.productId}, {session});
+        if (!costLot) throw new AppError(404, 'Stock lot not found while calculating invoice cost.');
+        const lotQty = costLot.quantityReceived || 0;
+        if (lotQty < 1) throw new AppError(409, 'Stock lot has no valid received quantity for cost calculation.');
+        const lotCostTotal = Number.isSafeInteger(costLot.costTotalPaise)
+          ? costLot.costTotalPaise
+          : (costLot.costPaise || 0) * lotQty;
+        // The transaction reads its own earlier lot updates, so quantitySold already
+        // includes any previous allocation from this invoice.
+        const startQty = (costLot.quantitySold || 0) + (costLot.quantityConsumed || 0);
+        const endQty = startQty + allocation.quantity;
+        if (endQty > lotQty) throw new AppError(409, 'Stock lot cost allocation exceeds received quantity.');
+        const allocationCostPaise = cumulativeCostSlice(lotCostTotal, lotQty, startQty, allocation.quantity);
+        (allocation as any).costOfGoodsPaise = allocationCostPaise;
+        productLineCostPaise += allocationCostPaise;
         const rawSerials = allocation.serials || [];
         if (line.productSnapshot!.isSerialTracked ? rawSerials.length !== allocation.quantity : rawSerials.length !== 0)
           throw new AppError(400, 'Serial count does not match product tracking and allocated quantity.');
@@ -785,26 +872,35 @@ export async function issueInvoice(db: Db, identity: Identity, rawInput: IssueIn
           sellableDelta: -allocation.quantity, soldDelta: allocation.quantity, reference: draft._id,
           invoiceId: draft._id, invoiceLineId: line.lineId, createdAt: now, createdBy: identity.userId}, {session});
       }
+      line.costOfGoodsPaise = productLineCostPaise;
+      line.calculatedProfitPaise = line.taxableBasePaise - productLineCostPaise;
+      invoiceCostPaise += productLineCostPaise;
     }
+    const calculatedProfitPaise = hasUnknownDirectCost
+      ? null
+      : lines.reduce((sum, line) => sum + (line.calculatedProfitPaise || 0), 0);
     const settlement = await settleInvoiceOnIssue(db, identity, session, {...draft, totalPaise: totals.totalPaise}, input);
     const year = deriveFinancialYear(draft.invoiceDate);
     const invoiceNumber = await nextTenantSequence(db, tenantId,
       draft.invoiceKind === 'Service' ? 'ServiceInvoice' : 'Invoice', year,
       draft.invoiceKind === 'Service' ? 'SRV' : 'INV', session);
     const sellerSnapshot = Object.fromEntries(['name','phone','email','address','gst','bank','account','ifsc','declaration','logoFileId'].map(key => [key, seller[key] ?? '']));
+    const publicIssuedLines = withoutPrivateProfitFields({lines}).lines;
     const issuedSnapshot = {schemaVersion: 1, invoiceNumber, invoiceDate: draft.invoiceDate, dueDate: draft.dueDate,
       seller: sellerSnapshot, customer: draft.customerSnapshot, billTo: draft.billTo, shipTo: draft.shipTo,
       invoiceKind: draft.invoiceKind, businessCategory: draft.businessCategory,
       inclusive: draft.inclusive, taxMode: draft.taxMode, placeOfSupply: draft.placeOfSupply,
       templateId: draft.templateId, templateRevision: draft.templateRevision, template: template.snapshot,
       orderReference: draft.orderReference, deliveryNote: draft.deliveryNote, dispatchThrough: draft.dispatchThrough,
-      notes: draft.notes, lines, ...totals};
+      notes: draft.notes, lines: publicIssuedLines, ...totals};
     const updated = await col<InvoiceDocument>(db, 'invoices').updateOne({_id: draft._id, tenantId, status: 'Draft', version: input.expectedVersion},
       {$set: {status: 'Issued', invoiceNumber, financialYear: deriveFinancialYear(draft.invoiceDate), issuedAt: now,
         issuedBy: identity.userId, lines, ...totals, originalTotalPaise: totals.totalPaise,
         allocatedReceiptPaise: settlement.receiptApplied, allocatedAdvancePaise: settlement.advanceUsed,
         allocatedCreditPaise: 0, allocatedPaidPaise: settlement.receiptApplied + settlement.advanceUsed,
         duePaise: settlement.duePaise, issuedSnapshot,
+        inventoryCostPaise: invoiceCostPaise, calculatedProfitPaise,
+        profitCalculationStatus: calculatedProfitPaise === null ? 'PendingDirectCost' : 'Automatic',
         paymentStatus: settlement.duePaise === 0 ? 'Paid' : settlement.duePaise < totals.totalPaise ? 'PartlyPaid' : 'Unpaid',
         updatedAt: now, updatedBy: identity.userId}, $inc: {version: 1}}, {session});
     if (updated.matchedCount !== 1) throw new AppError(409, 'Draft changed during issue.');
@@ -932,7 +1028,8 @@ async function listSalesDocuments(db: Db, identity: Identity, raw: unknown, kind
     col(db, kind).find(filter).sort({[kind === 'invoices' ? 'invoiceDate' : 'quotationDate']: -1, createdAt: -1, _id: -1}).skip((page - 1) * limit).limit(limit).toArray(),
     col(db, kind).countDocuments(filter),
   ]);
-  return {items, total, page, limit, totalPages: Math.ceil(total / limit)};
+  const visibleItems = hasProfitAccess(identity) ? items : items.map(item => withoutPrivateProfitFields(item));
+  return {items: visibleItems, total, page, limit, totalPages: Math.ceil(total / limit)};
 }
 
 export const listInvoices = (db: Db, identity: Identity, raw: unknown) => listSalesDocuments(db, identity, raw, 'invoices');
@@ -946,14 +1043,14 @@ export async function getInvoice(db: Db, identity: Identity, invoiceId: string) 
     col(db, 'customerReceipts').find({tenantId: identity.tenantId, invoiceId}).sort({date: -1}).limit(50).toArray(),
     col(db, 'warranties').find({tenantId: identity.tenantId, invoiceId}).sort({createdAt: -1}).limit(50).toArray(),
   ]);
-  return {invoice, receipts, warranties};
+  return {invoice: hasProfitAccess(identity) ? invoice : withoutPrivateProfitFields(invoice), receipts, warranties};
 }
 
 // 8. Get Quotation
 export async function getQuotation(db: Db, identity: Identity, quotationId: string) {
   const quotation = await col<QuotationDocument>(db, 'quotations').findOne({_id: quotationId, tenantId: identity.tenantId});
   if (!quotation) throw new AppError(404, 'Quotation not found.');
-  return {quotation};
+  return {quotation: withoutPrivateProfitFields(quotation)};
 }
 
 // 9. Get Sales Summary

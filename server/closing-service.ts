@@ -453,7 +453,7 @@ export async function getClosingDashboard(db: Db, identity: Identity, date: stri
 
   const invoiceEntries = invoices.map(inv => {
     salesTotalPaise += inv.totalPaise || 0;
-    const profit = inv.manualProfitPaise;
+    const profit = inv.manualProfitPaise ?? inv.calculatedProfitPaise;
     if (profit === undefined || profit === null) {
       pendingProfitCount++;
     } else {
@@ -470,7 +470,10 @@ export async function getClosingDashboard(db: Db, identity: Identity, date: stri
       allocatedPaidPaise: inv.allocatedPaidPaise || 0,
       duePaise: inv.duePaise || 0,
       paymentStatus: inv.paymentStatus || (inv.duePaise === 0 ? 'Paid' : 'Unpaid'),
-      manualProfitPaise: profitUnlocked ? (profit ?? null) : null,
+      manualProfitPaise: profitUnlocked ? (inv.manualProfitPaise ?? null) : null,
+      calculatedProfitPaise: profitUnlocked ? (inv.calculatedProfitPaise ?? null) : null,
+      effectiveProfitPaise: profitUnlocked ? (profit ?? null) : null,
+      profitCalculationStatus: inv.profitCalculationStatus || (inv.calculatedProfitPaise == null ? 'PendingDirectCost' : 'Automatic'),
       isProfitPending: profit === undefined || profit === null,
     };
   });
@@ -811,7 +814,10 @@ export async function closeBusinessDay(
             tenantId,
             invoiceDate: date,
             status: 'Issued',
-            $or: [{manualProfitPaise: {$exists: false}}, {manualProfitPaise: null}],
+            $and: [
+              {$or: [{manualProfitPaise: {$exists: false}}, {manualProfitPaise: null}]},
+              {$or: [{calculatedProfitPaise: {$exists: false}}, {calculatedProfitPaise: null}]},
+            ],
           },
           {session}
         )
@@ -832,7 +838,7 @@ export async function closeBusinessDay(
         const totalPending = pendingInvoices.length + pendingAdjustments.length;
         throw new AppError(
           400,
-          `Enter manual profit for ${totalPending} pending invoice/return adjustment(s) before closing.`
+          `Resolve profit for ${totalPending} invoice/return adjustment(s) with missing direct cost before closing.`
         );
       }
 
@@ -895,7 +901,7 @@ export async function closeBusinessDay(
       let tradingProfitPaise = 0;
       for (const inv of invoices) {
         salesTotalPaise += inv.totalPaise || 0;
-        tradingProfitPaise += inv.manualProfitPaise || 0;
+        tradingProfitPaise += inv.manualProfitPaise ?? inv.calculatedProfitPaise ?? 0;
       }
       for (const adj of adjustments) {
         tradingProfitPaise += adj.signedAdjustmentPaise || 0;

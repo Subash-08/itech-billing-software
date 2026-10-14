@@ -13,7 +13,7 @@ import {
 } from './purchase-service';
 import {signedAccountMovementPaise} from './account-initialization';
 import {todayInKolkata} from './purchase-schema';
-import {getOpeningBalanceForDate} from './closing-service';
+import {getOpeningBalanceForDate, isProfitUnlocked} from './closing-service';
 import {
   RecordMoneyInInput,
   RecordMoneyInSchema,
@@ -867,27 +867,127 @@ export async function getAccountRegister(db: Db, identity: Identity, rawQuery: u
     expectedClosingCombinedPaise: number;
   } | null = null;
 
-  if (query.date) {
-    const openingBal = await getOpeningBalanceForDate(db, tenantId, query.date);
+  let daySummary: {
+    date: string;
+    status: string;
+    sales: {
+      totalPaise: number;
+      invoiceCount: number;
+      newGoodsPaise: number;
+      usedGoodsPaise: number;
+      servicePaise: number;
+      cashReceivedPaise: number;
+      bankReceivedPaise: number;
+    };
+    collections: {cashPaise: number; bankPaise: number; totalPaise: number};
+    expenses: {cashPaise: number; bankPaise: number; totalPaise: number};
+    supplierPayments: {cashPaise: number; bankPaise: number; totalPaise: number};
+    customerRefunds: {cashPaise: number; bankPaise: number; totalPaise: number};
+    profit: {
+      unlocked: boolean;
+      tradingProfitPaise: number | null;
+      netProfitPaise: number | null;
+      pendingCount: number;
+    };
+    invoices: Array<{
+      _id: string;
+      invoiceNumber: string;
+      customerName: string;
+      businessCategory: string;
+      totalPaise: number;
+      cashReceivedPaise: number;
+      bankReceivedPaise: number;
+      duePaise: number;
+      paymentStatus: string;
+      profitPaise: number | null;
+      profitPending: boolean;
+    }>;
+  } | null = null;
 
-    // Sum all movements for this exact day by account
-    const dayMovements = await col(db, 'accountMovements')
-      .find({tenantId, date: query.date})
-      .toArray();
+  if (query.date) {
+    const [openingBal, dayMovements, dayInvoices, dayAdjustments, closing] = await Promise.all([
+      getOpeningBalanceForDate(db, tenantId, query.date),
+      col(db, 'accountMovements').find({tenantId, date: query.date}).toArray(),
+      col(db, 'invoices').find({tenantId, invoiceDate: query.date, status: 'Issued'}).toArray(),
+      col(db, 'manualProfitAdjustments').find({tenantId, date: query.date}).toArray(),
+      col(db, 'dailyClosings').findOne({tenantId, date: query.date}),
+    ]);
 
     let dayCashInPaise = 0;
     let dayCashOutPaise = 0;
     let dayBankInPaise = 0;
     let dayBankOutPaise = 0;
+    let customerCashPaise = 0;
+    let customerBankPaise = 0;
+    let cashExpensesPaise = 0;
+    let bankExpensesPaise = 0;
+    let cashSupplierPaymentsPaise = 0;
+    let bankSupplierPaymentsPaise = 0;
+    let cashCustomerRefundsPaise = 0;
+    let bankCustomerRefundsPaise = 0;
+    const receiptByInvoice = new Map<string, {cashPaise: number; bankPaise: number}>();
+    const receiptInvoiceBySource = new Map<string, string>();
+
+    for (const movement of dayMovements) {
+      if (movement.sourceType === 'CustomerReceipt' && movement.sourceId && movement.invoiceId) {
+        receiptInvoiceBySource.set(movement.sourceId, movement.invoiceId);
+      }
+    }
 
     for (const m of dayMovements) {
       const signedVal = signedAccountMovementPaise(m);
-      if (m.account === 'Cash') {
+      const isCash = m.account === 'Cash';
+      if (isCash) {
         if (signedVal > 0) dayCashInPaise += signedVal;
         else dayCashOutPaise += Math.abs(signedVal);
       } else if (m.account === 'Bank' || m.account === 'Bank account') {
         if (signedVal > 0) dayBankInPaise += signedVal;
         else dayBankOutPaise += Math.abs(signedVal);
+      }
+
+      if (m.sourceType === 'CustomerReceipt' && signedVal > 0) {
+        if (isCash) customerCashPaise += signedVal;
+        else customerBankPaise += signedVal;
+        if (m.invoiceId) {
+          const invoiceReceipt = receiptByInvoice.get(m.invoiceId) || {cashPaise: 0, bankPaise: 0};
+          if (isCash) invoiceReceipt.cashPaise += signedVal;
+          else invoiceReceipt.bankPaise += signedVal;
+          receiptByInvoice.set(m.invoiceId, invoiceReceipt);
+        }
+      } else if (m.sourceType === 'CustomerReceiptReversal' && signedVal < 0) {
+        if (isCash) customerCashPaise -= Math.abs(signedVal);
+        else customerBankPaise -= Math.abs(signedVal);
+        const reversedInvoiceId = m.sourceId ? receiptInvoiceBySource.get(m.sourceId) : undefined;
+        if (reversedInvoiceId) {
+          const invoiceReceipt = receiptByInvoice.get(reversedInvoiceId) || {cashPaise: 0, bankPaise: 0};
+          if (isCash) invoiceReceipt.cashPaise -= Math.abs(signedVal);
+          else invoiceReceipt.bankPaise -= Math.abs(signedVal);
+          receiptByInvoice.set(reversedInvoiceId, invoiceReceipt);
+        }
+      }
+
+      if (m.category === 'Expense') {
+        if (isCash) cashExpensesPaise += Math.abs(signedVal);
+        else bankExpensesPaise += Math.abs(signedVal);
+      } else if (m.category === 'ExpenseReversal') {
+        if (isCash) cashExpensesPaise -= Math.abs(signedVal);
+        else bankExpensesPaise -= Math.abs(signedVal);
+      }
+
+      if (m.sourceType === 'SupplierPayment' && signedVal < 0) {
+        if (isCash) cashSupplierPaymentsPaise += Math.abs(signedVal);
+        else bankSupplierPaymentsPaise += Math.abs(signedVal);
+      } else if (m.sourceType === 'SupplierPaymentReversal' && signedVal > 0) {
+        if (isCash) cashSupplierPaymentsPaise -= signedVal;
+        else bankSupplierPaymentsPaise -= signedVal;
+      }
+
+      if ((m.sourceType === 'CustomerRefund' || m.sourceType === 'CustomerReturnRefund') && signedVal < 0) {
+        if (isCash) cashCustomerRefundsPaise += Math.abs(signedVal);
+        else bankCustomerRefundsPaise += Math.abs(signedVal);
+      } else if (m.sourceType === 'CustomerRefundReversal' && signedVal > 0) {
+        if (isCash) cashCustomerRefundsPaise -= signedVal;
+        else bankCustomerRefundsPaise -= signedVal;
       }
     }
 
@@ -906,6 +1006,97 @@ export async function getAccountRegister(db: Db, identity: Identity, rawQuery: u
       expectedClosingBankPaise,
       expectedClosingCombinedPaise: expectedClosingCashPaise + expectedClosingBankPaise,
     };
+
+    let salesTotalPaise = 0;
+    let newGoodsPaise = 0;
+    let usedGoodsPaise = 0;
+    let servicePaise = 0;
+    let calculatedTradingProfitPaise = 0;
+    let pendingProfitCount = 0;
+    const profitUnlocked = isProfitUnlocked(identity);
+
+    const invoiceRows = dayInvoices.map(inv => {
+      const totalPaise = inv.totalPaise || 0;
+      salesTotalPaise += totalPaise;
+      if (inv.businessCategory === 'UsedGoods') usedGoodsPaise += totalPaise;
+      else if (inv.businessCategory === 'Service') servicePaise += totalPaise;
+      else newGoodsPaise += totalPaise;
+
+      const invoiceProfit = inv.manualProfitPaise ?? inv.calculatedProfitPaise;
+      const profitPending = invoiceProfit === undefined || invoiceProfit === null;
+      if (profitPending) pendingProfitCount += 1;
+      else calculatedTradingProfitPaise += invoiceProfit;
+
+      const received = receiptByInvoice.get(inv._id) || {cashPaise: 0, bankPaise: 0};
+      return {
+        _id: inv._id,
+        invoiceNumber: inv.invoiceNumber || inv._id,
+        customerName: inv.customerSnapshot?.name || 'Customer',
+        businessCategory: inv.businessCategory || 'NewGoods',
+        totalPaise,
+        cashReceivedPaise: received.cashPaise,
+        bankReceivedPaise: received.bankPaise,
+        duePaise: inv.duePaise || 0,
+        paymentStatus: inv.paymentStatus || ((inv.duePaise || 0) === 0 ? 'Paid' : 'Unpaid'),
+        profitPaise: profitUnlocked && !profitPending ? invoiceProfit : null,
+        profitPending,
+      };
+    });
+
+    for (const adjustment of dayAdjustments) {
+      if (adjustment.signedAdjustmentPaise === undefined || adjustment.signedAdjustmentPaise === null) {
+        pendingProfitCount += 1;
+      } else {
+        calculatedTradingProfitPaise += adjustment.signedAdjustmentPaise;
+      }
+    }
+
+    const operatingExpensesPaise = cashExpensesPaise + bankExpensesPaise;
+    const tradingProfitPaise = closing?.snapshot?.tradingProfitPaise ?? calculatedTradingProfitPaise;
+    const netProfitPaise = closing?.snapshot?.netShopProfitPaise ?? (tradingProfitPaise - operatingExpensesPaise);
+    const salesCashReceivedPaise = invoiceRows.reduce((sum, invoice) => sum + invoice.cashReceivedPaise, 0);
+    const salesBankReceivedPaise = invoiceRows.reduce((sum, invoice) => sum + invoice.bankReceivedPaise, 0);
+
+    daySummary = {
+      date: query.date,
+      status: closing?.status || 'Open',
+      sales: {
+        totalPaise: closing?.snapshot?.salesTotalPaise ?? salesTotalPaise,
+        invoiceCount: closing?.snapshot?.invoiceCount ?? invoiceRows.length,
+        newGoodsPaise,
+        usedGoodsPaise,
+        servicePaise,
+        cashReceivedPaise: salesCashReceivedPaise,
+        bankReceivedPaise: salesBankReceivedPaise,
+      },
+      collections: {
+        cashPaise: customerCashPaise,
+        bankPaise: customerBankPaise,
+        totalPaise: customerCashPaise + customerBankPaise,
+      },
+      expenses: {
+        cashPaise: cashExpensesPaise,
+        bankPaise: bankExpensesPaise,
+        totalPaise: closing?.snapshot?.operatingExpensesPaise ?? operatingExpensesPaise,
+      },
+      supplierPayments: {
+        cashPaise: cashSupplierPaymentsPaise,
+        bankPaise: bankSupplierPaymentsPaise,
+        totalPaise: cashSupplierPaymentsPaise + bankSupplierPaymentsPaise,
+      },
+      customerRefunds: {
+        cashPaise: cashCustomerRefundsPaise,
+        bankPaise: bankCustomerRefundsPaise,
+        totalPaise: cashCustomerRefundsPaise + bankCustomerRefundsPaise,
+      },
+      profit: {
+        unlocked: profitUnlocked,
+        tradingProfitPaise: profitUnlocked ? tradingProfitPaise : null,
+        netProfitPaise: profitUnlocked ? netProfitPaise : null,
+        pendingCount: closing ? 0 : pendingProfitCount,
+      },
+      invoices: invoiceRows,
+    };
   }
 
   return {
@@ -922,6 +1113,7 @@ export async function getAccountRegister(db: Db, identity: Identity, rawQuery: u
       combinedPaise: currentCashPaise + currentBankPaise,
     },
     historicalPosition,
+    daySummary,
     filterSummary: {
       totalInPaise: filterSummary.totalInPaise,
       totalOutPaise: filterSummary.totalOutPaise,

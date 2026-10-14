@@ -491,13 +491,21 @@ export async function issueServicePart(
         {session}
       );
 
+      const lotQty = lot.quantityReceived || 1;
+      const lotCostTotal = Number.isSafeInteger(lot.costTotalPaise) ? lot.costTotalPaise : (lot.costPaise || 0) * lotQty;
+      const costStartQty = (lot.quantitySold || 0) + (lot.quantityConsumed || 0);
+      const costEndQty = costStartQty + input.quantity;
+      const partCostTotalPaise = Number(BigInt(lotCostTotal) * BigInt(costEndQty) / BigInt(lotQty))
+        - Number(BigInt(lotCostTotal) * BigInt(costStartQty) / BigInt(lotQty));
+
       const partRecord = {
         partId,
         productId: input.productId,
         productName: product.name,
         lotId: input.lotId,
         quantity: input.quantity,
-        unitCostPaise: lot.costPaise || 0,
+        unitCostPaise: Math.round(partCostTotalPaise / input.quantity),
+        costTotalPaise: partCostTotalPaise,
         billingRatePaise: input.billingRatePaise,
         taxBasisPoints: input.taxBasisPoints,
         hsn: product.hsn || '',

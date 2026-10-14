@@ -1,10 +1,9 @@
 'use client';
 
 import {useState, useEffect} from 'react';
-import SupplierReturnForm from './supplier-return-form';
 import Link from 'next/link';
 import {useSearchParams} from 'next/navigation';
-import {Plus, RotateCcw} from 'lucide-react';
+import {RotateCcw} from 'lucide-react';
 import {ReturnRecord, TODAY, uid, money, roundedTotal, balance, paid, credits} from '@/lib/domain';
 import {processReturn, addPayment} from '@/lib/operations';
 import {useStore} from './store';
@@ -25,13 +24,10 @@ export default function Returns() {
   const params = useSearchParams();
   const ref = params.get('reference') || '';
 
-  const [form, setForm] = useState<any>(
-    ref ? fresh(ref.startsWith('PUR') ? 'Supplier' : 'Customer', ref) : null
-  );
+  const [form, setForm] = useState<any>(ref && !ref.startsWith('PUR') ? fresh('Customer', ref) : null);
   const [refund, setRefund] = useState(0);
   const [account, setAccount] = useState('Cash');
   const [q, setQ] = useState('');
-  const [type, setType] = useState('All');
   const [settle, setSettle] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -123,8 +119,8 @@ export default function Returns() {
   const line = original?.lines.find((l) => l.productId === form?.productId);
   const list = state.returns.filter(
     (r) =>
-      (r.id + r.reference + r.reason).toLowerCase().includes(q.toLowerCase()) &&
-      (type === 'All' || r.type === type)
+      r.type === 'Customer' &&
+      (r.id + r.reference + r.reason).toLowerCase().includes(q.toLowerCase())
   );
 
   // Computed customer return lines from authoritative source
@@ -352,14 +348,11 @@ export default function Returns() {
   return (
     <>
       <PageHead
-        title="Returns & refunds"
-        description="Manage customer returns and supplier returns with live stock restoration and settlement."
+        title="Customer returns & refunds"
+        description="Return individual invoice items, restore eligible stock and settle the customer credit or refund."
         actions={
           <>
-            <Btn onClick={() => setForm(fresh('Supplier'))}>
-              <Plus size={16} /> Supplier return
-            </Btn>
-            <Btn secondary onClick={() => setForm(fresh('Customer'))}>
+            <Btn onClick={() => setForm(fresh('Customer'))}>
               <RotateCcw size={16} /> Customer return
             </Btn>
           </>
@@ -369,11 +362,6 @@ export default function Returns() {
       <Card>
         <div className="toolbar">
           <SearchBox value={q} onChange={setQ} placeholder="Search return or original document…" />
-          <select aria-label="Return type" value={type} onChange={(e) => setType(e.target.value)}>
-            <option>All</option>
-            <option>Supplier</option>
-            <option>Customer</option>
-          </select>
         </div>
 
         {list.length ? (
@@ -464,20 +452,14 @@ export default function Returns() {
             title="No returns recorded"
             text="Start with an original invoice or purchase. Select the item, quantity and disposition."
             action={
-              <div style={{display: 'flex', gap: '8px'}}>
-                <Btn secondary onClick={() => setForm(fresh('Customer'))}>Record customer return</Btn>
-                <Btn secondary onClick={() => setForm(fresh('Supplier'))}>Record supplier return</Btn>
-              </div>
+              <Btn secondary onClick={() => setForm(fresh('Customer'))}>Record customer return</Btn>
             }
           />
         )}
       </Card>
 
       {/* Return Creation Modal */}
-      {form && isLive && form.type === 'Supplier' && (
-        <SupplierReturnForm initialPurchaseId={form.reference} onClose={() => setForm(null)} />
-      )}
-      {form && !(isLive && form.type === 'Supplier') && (
+      {form && (
         <Modal
           title={
             form.type === 'Customer'
@@ -607,7 +589,7 @@ export default function Returns() {
                         onChange={(e) => setForm({...form, disposition: e.target.value})}
                       >
                         <option value="RestockSellable">Restock (Sellable stock)</option>
-                        <option value="Quarantine">Defective return (Quarantine)</option>
+                        <option value="Quarantine">Damaged / defective — do not sell</option>
                       </select>
                     )
                   ) : (

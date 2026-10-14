@@ -31,6 +31,7 @@ export type CompanySession = {
   user?: {name?: string; email?: string};
   company?: {name?: string};
   profitUnlocked?: boolean;
+  profitUnlockedUntil?: string;
   businessDataMode?: 'live' | 'demo-imported';
 };
 
@@ -53,6 +54,7 @@ type Store = {
   isLive: boolean;
   businessDataMode: 'demo-only' | 'live' | 'demo-imported';
   companySession: CompanySession | null;
+  setProfitUnlocked: (unlocked: boolean, unlockedUntil?: string) => void;
   openingStatus: OpeningStatus | null;
   isLoading: boolean;
   refreshMasterData: () => Promise<void>;
@@ -66,7 +68,8 @@ type Store = {
   archiveSupplierApi: (id: string) => Promise<boolean>;
   restoreSupplierApi: (id: string) => Promise<boolean>;
   saveProductApi: (p: any, id?: string) => Promise<boolean>;
-  adjustProductStockApi: (id: string, delta: number, serials: string[], reason: string, idempotencyKey?: string) => Promise<boolean>;
+  adjustProductStockApi: (id: string, delta: number, serials: string[], reason: string,
+    options?: {unitCostPaise?: number; idempotencyKey?: string}) => Promise<boolean>;
   archiveProductApi: (id: string) => Promise<boolean>;
   restoreProductApi: (id: string) => Promise<boolean>;
   saveServiceApi: (srv: any, id?: string) => Promise<boolean>;
@@ -211,6 +214,26 @@ export function StoreProvider({children}: {children: ReactNode}) {
   const [isLive, setIsLive] = useState(false);
   const [businessDataMode, setBusinessDataMode] = useState<'demo-only' | 'live' | 'demo-imported'>('demo-only');
   const [companySession, setCompanySession] = useState<CompanySession | null>(null);
+  const setProfitUnlocked = useCallback((unlocked: boolean, unlockedUntil?: string) => {
+    setCompanySession(prev => prev
+      ? {...prev, profitUnlocked: unlocked, profitUnlockedUntil: unlocked ? (unlockedUntil || prev.profitUnlockedUntil) : undefined}
+      : {profitUnlocked: unlocked, profitUnlockedUntil: unlocked ? unlockedUntil : undefined});
+  }, []);
+
+  useEffect(() => {
+    if (!companySession?.profitUnlocked || !companySession.profitUnlockedUntil) return;
+    const delay = new Date(companySession.profitUnlockedUntil).getTime() - Date.now();
+    if (delay <= 0) {
+      setRole('Staff');
+      setProfitUnlocked(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setRole('Staff');
+      setProfitUnlocked(false);
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [companySession?.profitUnlocked, companySession?.profitUnlockedUntil, setProfitUnlocked]);
   const [openingStatus, setOpeningStatus] = useState<OpeningStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -253,9 +276,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
       setBusinessDataMode(meData.businessDataMode || 'live');
       setIsLive(true);
       setState(emptyLiveState());
-      if (!meData.profitUnlocked) {
-        setRole('Staff');
-      }
+      setRole(meData.profitUnlocked ? 'Owner' : 'Staff');
 
       const bootRes = await fetch('/api/master/bootstrap');
       if (!bootRes.ok) {
@@ -623,7 +644,8 @@ export function StoreProvider({children}: {children: ReactNode}) {
     }
   }
 
-  async function adjustProductStockApi(id: string, delta: number, serials: string[], reason: string, idempotencyKey?: string) {
+  async function adjustProductStockApi(id: string, delta: number, serials: string[], reason: string,
+    options?: {unitCostPaise?: number; idempotencyKey?: string}) {
     if (!isLive) {
       notify('Demo stock adjustment recorded.');
       return true;
@@ -636,7 +658,8 @@ export function StoreProvider({children}: {children: ReactNode}) {
           delta,
           serials,
           reason,
-          idempotencyKey: idempotencyKey || `ADJ-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          ...(delta > 0 && options?.unitCostPaise != null ? {unitCostPaise: options.unitCostPaise} : {}),
+          idempotencyKey: options?.idempotencyKey || `ADJ-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         }),
       });
       const data = await res.json();
@@ -1016,6 +1039,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
       orderDate: p.orderDate || p.date,
       dueDate: p.dueDate || p.due || undefined,
       inclusive: !!p.inclusive,
+      claimInputTaxCredit: p.claimInputTaxCredit !== false,
       taxMode: p.taxMode,
       placeOfSupply: p.placeOfSupply,
       notes: p.notes || '',
@@ -1033,6 +1057,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
         quantityOrdered: (l.lineType || 'Product') === 'Charge' ? 1 : (Number(l.quantityOrdered ?? l.qty) || 1),
         unitCostPaise: Math.round(Number(l.unitCostPaise ?? ((l.rate || 0) * 100))),
         taxBasisPoints: Math.round(Number(l.taxBasisPoints ?? ((l.tax || 0) * 100))),
+        inputTaxCreditEligible: l.inputTaxCreditEligible ?? p.claimInputTaxCredit !== false,
         discountType: l.discountType || 'Percentage',
         discountValue: Math.round(Number(l.discountValue ?? ((l.discount || 0) * 100))),
       })),
@@ -1063,6 +1088,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
             supplierInvoiceNumber: payload.supplierInvoiceNumber,
             supplierInvoiceDate: payload.supplierInvoiceDate,
             inclusive: payload.inclusive,
+            claimInputTaxCredit: payload.claimInputTaxCredit,
             taxMode: payload.taxMode,
             placeOfSupply: payload.placeOfSupply,
             notes: payload.notes,
@@ -2435,6 +2461,7 @@ export function StoreProvider({children}: {children: ReactNode}) {
         isLive,
         businessDataMode,
         companySession,
+        setProfitUnlocked,
         openingStatus,
         isLoading,
         refreshMasterData,

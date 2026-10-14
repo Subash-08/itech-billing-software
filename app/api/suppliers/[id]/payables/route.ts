@@ -22,7 +22,7 @@ export async function GET(request: Request, context: {params: Promise<{id: strin
       {$project: {
         _id: 1, id: '$_id', payableType: {$literal: 'OpeningPayable'},
         reference: {$ifNull: ['$reference', 'Opening Balance']},
-        date: {$ifNull: ['$date', '$cutoffDate']}, originalAmountPaise: 1,
+        date: {$ifNull: ['$date', '$cutoffDate']}, dueDate: 1, originalAmountPaise: 1,
         remainingDuePaise: '$remainingAmountPaise', createdAt: {$ifNull: ['$createdAt', new Date(0)]},
       }},
       {$unionWith: {coll: 'purchases', pipeline: [
@@ -34,7 +34,7 @@ export async function GET(request: Request, context: {params: Promise<{id: strin
           payableType: {$literal: 'PurchaseLine'}, purchaseId: '$_id', purchaseNumber: 1,
           supplierInvoiceNumber: 1, purchaseLineId: '$lines.lineId', lineType: '$lines.lineType',
           description: {$cond: [{$eq: ['$lines.lineType', 'Product']}, '$lines.productSnapshot.name', '$lines.description']},
-          date: {$ifNull: ['$postingDate', '$orderDate']}, originalAmountPaise: '$lines.totalPaise',
+          date: {$ifNull: ['$postingDate', '$orderDate']}, dueDate: {$ifNull: ['$promisedPaymentDate', '$dueDate']}, originalDueDate: '$dueDate', originalAmountPaise: '$lines.totalPaise',
           remainingDuePaise: '$lines.remainingDuePaise', createdAt: 1,
         }},
       ]}},

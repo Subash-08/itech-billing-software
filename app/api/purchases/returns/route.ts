@@ -44,9 +44,21 @@ export async function GET(request: Request) {
       })
     );
 
+    const purchaseIds = [...new Set(returns.map(r => r.purchaseId))];
+    const purchases = purchaseIds.length ? await col<any>(db, 'purchases').find(
+      {tenantId: identity.tenantId, _id: {$in: purchaseIds}},
+      {projection: {_id: 1, purchaseNumber: 1, 'lines.lineId': 1, 'lines.productSnapshot.name': 1}}
+    ).toArray() : [];
+    const purchaseById = new Map(purchases.map(p => [p._id, p]));
+    const records = enriched.map(r => {
+      const purchase = purchaseById.get(r.purchaseId);
+      const line = purchase?.lines?.find((item: any) => item.lineId === r.purchaseLineId);
+      return {...r, purchaseNumber: purchase?.purchaseNumber, productName: line?.productSnapshot?.name};
+    });
+
     return {
-      returns: enriched,
-      records: enriched,
+      returns: records,
+      records,
       total,
       page,
       limit,

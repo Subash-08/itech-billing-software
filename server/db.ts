@@ -315,6 +315,13 @@ export async function ensureIndexes() {
         safeCreateIndex(db.collection('purchases'), {tenantId: 1, documentStatus: 1, orderDate: -1}),
         safeCreateIndex(db.collection('purchases'), {tenantId: 1, billStatus: 1, duePaise: 1}),
         // Phase 3.5 purchases indexes
+        safeCreateIndex(db.collection('purchases'), {tenantId: 1, supplierId: 1, orderDate: -1}),
+        safeCreateIndex(db.collection('purchases'), {tenantId: 1, billStatus: 1, dueDate: 1}),
+        safeCreateIndex(db.collection('purchases'), {tenantId: 1, billStatus: 1, promisedPaymentDate: 1}),
+        safeCreateIndex(db.collection('invoices'), {tenantId: 1, status: 1, dueDate: 1}),
+        safeCreateIndex(db.collection('invoices'), {tenantId: 1, status: 1, promisedPaymentDate: 1}),
+        safeCreateIndex(db.collection('openingPayables'), {tenantId: 1, supplierId: 1, remainingAmountPaise: 1}),
+        safeCreateIndex(db.collection('serviceJobs'), {tenantId: 1, status: 1, updatedAt: 1}),
         safeCreateIndex(db.collection('purchases'), {tenantId: 1, supplierId: 1, billStatus: 1, orderDate: -1}),
         safeCreateIndex(db.collection('purchases'), {tenantId: 1, receiptStatus: 1, orderDate: -1}),
         safeCreateIndex(db.collection('purchases'), {tenantId: 1, paymentStatus: 1, orderDate: -1}),

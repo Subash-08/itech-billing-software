@@ -1,11 +1,26 @@
 'use client';
 import {useState, useEffect, useCallback, useRef} from 'react';
 import Link from 'next/link';
+import {
+  ArrowDownToLine,
+  ArrowRightLeft,
+  ArrowUpFromLine,
+  CalendarCheck,
+  Download,
+  Landmark,
+  ReceiptText,
+  Repeat2,
+  ShoppingCart,
+  TrendingUp,
+  Truck,
+  Undo2,
+  UserRound,
+} from 'lucide-react';
 import {useStore} from './store';
 import {TODAY, money, accountBalance, uid} from '@/lib/domain';
 import SupplierSettlement from './supplier-settlement';
 import CustomerSettlement from './customer-settlement';
-import {PageHead, Card, Btn, Modal, Field, SearchBox, Badge, Empty, csvDownload} from './ui';
+import {Card, Btn, Modal, Field, SearchBox, Badge, Empty, csvDownload} from './ui';
 
 interface MovementRow {
   _id: string;
@@ -54,12 +69,54 @@ interface RegisterResponse {
     expectedClosingBankPaise: number;
     expectedClosingCombinedPaise: number;
   } | null;
+  daySummary?: {
+    date: string;
+    status: string;
+    sales: {
+      totalPaise: number;
+      invoiceCount: number;
+      newGoodsPaise: number;
+      usedGoodsPaise: number;
+      servicePaise: number;
+      cashReceivedPaise: number;
+      bankReceivedPaise: number;
+    };
+    collections: {cashPaise: number; bankPaise: number; totalPaise: number};
+    expenses: {cashPaise: number; bankPaise: number; totalPaise: number};
+    supplierPayments: {cashPaise: number; bankPaise: number; totalPaise: number};
+    customerRefunds: {cashPaise: number; bankPaise: number; totalPaise: number};
+    profit: {
+      unlocked: boolean;
+      tradingProfitPaise: number | null;
+      netProfitPaise: number | null;
+      pendingCount: number;
+    };
+    invoices: Array<{
+      _id: string;
+      invoiceNumber: string;
+      customerName: string;
+      businessCategory: string;
+      totalPaise: number;
+      cashReceivedPaise: number;
+      bankReceivedPaise: number;
+      duePaise: number;
+      paymentStatus: string;
+      profitPaise: number | null;
+      profitPending: boolean;
+    }>;
+  } | null;
   filterSummary: {
     totalInPaise: number;
     totalOutPaise: number;
     netPaise: number;
     count: number;
   };
+}
+
+function categoryLabel(value: string) {
+  if (value === 'UsedGoods') return 'Used goods';
+  if (value === 'Service') return 'Service';
+  return 'New goods';
 }
 
 export function MoneyEntryModal({
@@ -349,8 +406,8 @@ export function MoneyEntryModal({
                   <div className="grid-2">
                     <Field label={kind === 'in' ? 'Deposit into' : 'Disburse from'}>
                       <select value={account} onChange={e => handleAccountChange(e.target.value as any)}>
-                        <option value="Cash">Cash in shop</option>
-                        <option value="Bank">GPay / Bank account</option>
+                        <option value="Cash">Cash</option>
+                        <option value="Bank">Bank / GPay</option>
                       </select>
                     </Field>
                     <Field label="Payment Method">
@@ -631,28 +688,27 @@ export default function MoneyDesk() {
     : money(accountBalance(state, 'Cash', date) + accountBalance(state, 'Bank account', date));
 
   const hist = registerData?.historicalPosition;
+  const day = registerData?.daySummary;
   const isHistoricalDate = date !== TODAY;
 
   return (
-    <>
-      <PageHead
-        title="Cash & Account Register"
-        description="All receipts, expenses, transfers and settlements in one authoritative ledger. GPay and bank payments use one account."
-        actions={
-          <>
-            <Btn onClick={() => setKind('in')}>+ Money in</Btn>
-            <Btn secondary onClick={() => setKind('out')}>
-              − Money out
-            </Btn>
-            <Btn secondary onClick={() => setKind('transfer')}>
-              ⇄ Cash ↔ Account
-            </Btn>
-          </>
-        }
-      />
+    <div className="cashbook-page">
+      <header className="cashbook-hero">
+        <div className="cashbook-hero-copy">
+          <div>
+            <h1>Cashbook</h1>
+            <p>See every cash and Bank/GPay movement in one place. Sales receipts, expenses, transfers and settlements update here automatically.</p>
+          </div>
+        </div>
+        <div className="cashbook-hero-actions" aria-label="Cashbook actions">
+          <Btn onClick={() => setKind('in')}><ArrowDownToLine size={15} />Receive money</Btn>
+          <Btn secondary onClick={() => setKind('out')}><ArrowUpFromLine size={15} />Record payment</Btn>
+          <Btn secondary onClick={() => setKind('transfer')}><ArrowRightLeft size={15} />Move cash &amp; bank</Btn>
+        </div>
+      </header>
 
-      <div className="toolbar">
-        <Field label="Ledger Date">
+      <div className="toolbar cashbook-date-toolbar">
+        <Field label="Date">
           <input
             type="date"
             max={TODAY}
@@ -664,7 +720,7 @@ export default function MoneyDesk() {
           />
         </Field>
         <Link className="btn secondary" href={'/profit?date=' + date}>
-          Review daily closing
+          <CalendarCheck size={15} />Daily closing
         </Link>
         <Btn
           secondary
@@ -704,9 +760,122 @@ export default function MoneyDesk() {
             }
           }}
         >
-          Export CSV
+          <Download size={15} />Export
         </Btn>
+        <div className="cashbook-quick-date">
+          <span>Quick date</span>
+          <Btn
+            secondary={date !== TODAY}
+            className={date === TODAY ? 'is-current' : ''}
+            onClick={() => {
+              setDate(TODAY);
+              setPage(1);
+            }}
+          >
+            Today
+          </Btn>
+        </div>
       </div>
+
+      <section className="cashbook-section" aria-labelledby="daily-overview-title">
+        <div className="cashbook-section-head">
+          <div>
+            <span>Selected date</span>
+            <h2 id="daily-overview-title">Daily overview</h2>
+          </div>
+          <div className="cashbook-section-meta">
+            <strong>{date}</strong>
+            {day && <Badge>{day.status === 'Holiday' ? 'Shop holiday' : day.status}</Badge>}
+          </div>
+        </div>
+
+        <div className="cashbook-overview-grid">
+          <article className="cashbook-overview-card sales-card">
+            <div className="cashbook-card-label"><span className="cashbook-card-icon purple"><ReceiptText size={16} /></span>Sales billed</div>
+            <strong className="cashbook-card-value">
+              {day ? money(day.sales.totalPaise / 100) : isLoading ? 'Loading…' : '—'}
+            </strong>
+            <div className="cashbook-card-lines">
+              <span><small>Cash received</small><b>{day ? money(day.sales.cashReceivedPaise / 100) : '—'}</b></span>
+              <span><small>Bank / GPay received</small><b>{day ? money(day.sales.bankReceivedPaise / 100) : '—'}</b></span>
+              <span><small>Invoices</small><b>{day?.sales.invoiceCount ?? '—'}</b></span>
+            </div>
+            <div className="cashbook-category-strip" aria-label="Sales by category">
+              <span>New {day ? money(day.sales.newGoodsPaise / 100) : '—'}</span>
+              <span>Used {day ? money(day.sales.usedGoodsPaise / 100) : '—'}</span>
+              <span>Service {day ? money(day.sales.servicePaise / 100) : '—'}</span>
+            </div>
+          </article>
+
+          <article className="cashbook-overview-card expense-card">
+            <div className="cashbook-card-label"><span className="cashbook-card-icon orange"><ShoppingCart size={16} /></span>Shop expenses</div>
+            <strong className="cashbook-card-value">
+              {day ? money(day.expenses.totalPaise / 100) : isLoading ? 'Loading…' : '—'}
+            </strong>
+            <div className="cashbook-card-lines">
+              <span><small>Paid from cash</small><b>{day ? money(day.expenses.cashPaise / 100) : '—'}</b></span>
+              <span><small>Paid from Bank / GPay</small><b>{day ? money(day.expenses.bankPaise / 100) : '—'}</b></span>
+              <span><small>Supplier payments</small><b>{day ? money(day.supplierPayments.totalPaise / 100) : '—'}</b></span>
+            </div>
+            <p>Supplier payments settle bills and are shown separately from shop expenses.</p>
+          </article>
+
+          <article className="cashbook-overview-card balance-card">
+            <div className="cashbook-card-label"><span className="cashbook-card-icon blue"><Landmark size={16} /></span>End-of-day funds</div>
+            <strong className="cashbook-card-value">
+              {hist ? money(hist.expectedClosingCombinedPaise / 100) : isLoading ? 'Loading…' : '—'}
+            </strong>
+            <div className="cashbook-card-lines">
+              <span><small>Cash drawer</small><b>{hist ? money(hist.expectedClosingCashPaise / 100) : '—'}</b></span>
+              <span><small>Bank / GPay</small><b>{hist ? money(hist.expectedClosingBankPaise / 100) : '—'}</b></span>
+              <span><small>Opening funds</small><b>{hist ? money(hist.openingCombinedPaise / 100) : '—'}</b></span>
+            </div>
+            <p>Opening funds plus all money in, less all money out.</p>
+          </article>
+
+          <article className="cashbook-overview-card profit-card">
+            <div className="cashbook-card-label"><span className="cashbook-card-icon green"><TrendingUp size={16} /></span>Profit after expenses</div>
+            <strong className="cashbook-card-value">
+              {day?.profit.unlocked
+                ? money((day.profit.netProfitPaise || 0) / 100)
+                : day
+                ? 'Hidden'
+                : isLoading
+                ? 'Loading…'
+                : '—'}
+            </strong>
+            <div className="cashbook-card-lines">
+              <span><small>Trading profit</small><b>{day?.profit.unlocked ? money((day.profit.tradingProfitPaise || 0) / 100) : 'Hidden'}</b></span>
+              <span><small>Less shop expenses</small><b>{day ? money(day.expenses.totalPaise / 100) : '—'}</b></span>
+              <span><small>Profit entries to review</small><b>{day?.profit.pendingCount ?? '—'}</b></span>
+            </div>
+            <p>{day?.profit.unlocked ? 'GST is excluded from product profit calculations.' : 'Use Unlock profit in the header to view profit totals.'}</p>
+          </article>
+        </div>
+
+        <div className="cashbook-flow-grid">
+          <div>
+            <span><i className="cashbook-flow-icon"><UserRound size={14} /></i>Customer collections</span>
+            <strong>{day ? money(day.collections.totalPaise / 100) : '—'}</strong>
+            <small>Cash {day ? money(day.collections.cashPaise / 100) : '—'} · Bank/GPay {day ? money(day.collections.bankPaise / 100) : '—'}</small>
+          </div>
+          <div>
+            <span><i className="cashbook-flow-icon"><Truck size={14} /></i>Supplier payments</span>
+            <strong>{day ? money(day.supplierPayments.totalPaise / 100) : '—'}</strong>
+            <small>Cash {day ? money(day.supplierPayments.cashPaise / 100) : '—'} · Bank/GPay {day ? money(day.supplierPayments.bankPaise / 100) : '—'}</small>
+          </div>
+          <div>
+            <span><i className="cashbook-flow-icon"><Undo2 size={14} /></i>Customer refunds</span>
+            <strong>{day ? money(day.customerRefunds.totalPaise / 100) : '—'}</strong>
+            <small>Cash {day ? money(day.customerRefunds.cashPaise / 100) : '—'} · Bank/GPay {day ? money(day.customerRefunds.bankPaise / 100) : '—'}</small>
+          </div>
+          <div>
+            <span><i className="cashbook-flow-icon"><Repeat2 size={14} /></i>Net account movement</span>
+            <strong>{hist ? money((hist.dayCashInPaise + hist.dayBankInPaise - hist.dayCashOutPaise - hist.dayBankOutPaise) / 100) : '—'}</strong>
+            <small>All receipts, payments, transfers and reversals</small>
+          </div>
+        </div>
+      </section>
 
       {/* Historical Date Position Panel */}
       {isLive && hist && isHistoricalDate && (
@@ -762,24 +931,91 @@ export default function MoneyDesk() {
         </div>
       )}
 
+      <section className="cashbook-section" aria-labelledby="sales-breakdown-title">
+        <div className="cashbook-section-head">
+          <div>
+            <span>Invoice entries</span>
+            <h2 id="sales-breakdown-title">Sales recorded on this date</h2>
+          </div>
+          <small>Outstanding shows the invoice’s current balance.</small>
+        </div>
+        <Card title="Sales breakdown">
+          {day?.invoices.length ? (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Invoice / Customer</th>
+                    <th>Category</th>
+                    <th>Invoice amount</th>
+                    <th>Cash received</th>
+                    <th>Bank / GPay</th>
+                    <th>Outstanding</th>
+                    <th>Profit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {day.invoices.map(invoice => (
+                    <tr key={invoice._id}>
+                      <td>
+                        <Link className="record-link" href={'/sales/' + invoice._id}>{invoice.invoiceNumber}</Link>
+                        <small>{invoice.customerName}</small>
+                      </td>
+                      <td><Badge>{categoryLabel(invoice.businessCategory)}</Badge></td>
+                      <td className="amount">{money(invoice.totalPaise / 100)}</td>
+                      <td className="positive">{money(invoice.cashReceivedPaise / 100)}</td>
+                      <td className="positive">{money(invoice.bankReceivedPaise / 100)}</td>
+                      <td>
+                        <strong>{money(invoice.duePaise / 100)}</strong>
+                        <small>{invoice.paymentStatus}</small>
+                      </td>
+                      <td>
+                        {day.profit.unlocked
+                          ? invoice.profitPending
+                            ? <Badge>Review needed</Badge>
+                            : money((invoice.profitPaise || 0) / 100)
+                          : <span className="muted">Hidden</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <Empty
+              title="No sales invoices on this date"
+              text="Choose another date or create the first sales invoice for this day."
+              action={<Link className="btn secondary" href="/sales/new">+ Create sales invoice</Link>}
+            />
+          )}
+        </Card>
+      </section>
+
       {/* Live Account Cards */}
+      <div className="cashbook-section-head cashbook-live-heading">
+        <div>
+          <span>Right now</span>
+          <h2>Current account balances</h2>
+        </div>
+        <small>These are live balances today, even when you review an older date.</small>
+      </div>
       <div className="grid-3 spaced">
-        <Card title="Current Live Cash (Drawer)">
+        <Card title="Cash in shop">
           <div className="body-pad">
             <h1>{cashBalDisplay}</h1>
-            <p>Physical cash drawer balance</p>
+            <p>Current physical cash balance</p>
           </div>
         </Card>
-        <Card title="Current Live Bank / GPay">
+        <Card title="Bank / GPay">
           <div className="body-pad">
             <h1>{bankBalDisplay}</h1>
-            <p>UPI, cards & bank transfer balance</p>
+            <p>UPI, cards and bank transfer balance</p>
           </div>
         </Card>
-        <Card title="Current Combined Funds">
+        <Card title="Total money available">
           <div className="body-pad">
             <h1>{combinedBalDisplay}</h1>
-            <p>Transfers preserve this total.</p>
+            <p>Moving money between accounts does not change this total.</p>
           </div>
         </Card>
       </div>
@@ -806,8 +1042,8 @@ export default function MoneyDesk() {
       )}
 
       <div className="notice">
-        Payments received while creating sales, service and non-GST invoices appear here automatically.
-        Customer collection and supplier settlements update dues and cash balances atomically.
+        Payments received for sales and service invoices appear here automatically.
+        Customer and supplier settlements update dues and account balances together.
       </div>
 
       {loadError && (
@@ -816,7 +1052,7 @@ export default function MoneyDesk() {
         </div>
       )}
 
-      <Card title="Money Movements">
+      <Card title="Cashbook activity">
         <div className="toolbar">
           <SearchBox
             value={q}
@@ -824,7 +1060,7 @@ export default function MoneyDesk() {
               setQ(v);
               setPage(1);
             }}
-            placeholder="Search reason, party or reference…"
+            placeholder="Search activity, person or reference…"
           />
           <select
             aria-label="Account filter"
@@ -835,8 +1071,8 @@ export default function MoneyDesk() {
             }}
           >
             <option value="All">All accounts</option>
-            <option value="Cash">Cash in shop</option>
-            <option value="Bank">GPay / Bank account</option>
+            <option value="Cash">Cash</option>
+            <option value="Bank">Bank / GPay</option>
           </select>
         </div>
 
@@ -849,12 +1085,12 @@ export default function MoneyDesk() {
             <table>
               <thead>
                 <tr>
-                  <th>Date & Purpose</th>
+                  <th>Activity</th>
                   <th>Account</th>
-                  <th>Method</th>
+                  <th>How paid</th>
                   <th>Money In</th>
                   <th>Money Out</th>
-                  <th>Details / Reference</th>
+                  <th>Reference</th>
                   <th>Action</th>
                 </tr>
               </thead>
@@ -1026,6 +1262,6 @@ export default function MoneyDesk() {
           onSuccess={() => fetchRegister()}
         />
       )}
-    </>
+    </div>
   );
 }

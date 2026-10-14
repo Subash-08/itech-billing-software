@@ -5,8 +5,14 @@ import {purchaseLineBalances} from '@/lib/settlement';
 import {addPayment} from '@/lib/operations';
 import {useStore} from './store';
 import {Modal, Btn, Field, Badge} from './ui';
+import SupplierBillPayment from './supplier-bill-payment';
 
-export default function SupplierSettlement({
+export default function SupplierSettlement(props: {supplierId: string; defaultPurchaseId?: string; onClose: () => void}) {
+  const {isLive} = useStore();
+  return isLive ? <SupplierBillPayment {...props} /> : <LegacySupplierSettlement {...props} />;
+}
+
+function LegacySupplierSettlement({
   supplierId,
   defaultPurchaseId,
   onClose,

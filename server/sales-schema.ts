@@ -32,6 +32,8 @@ const CommonLine = z.object({
   taxBasisPoints: z.number().int().min(0).max(10000),
   taxTreatment: z.enum(['Taxable', 'Exempt', 'NonGST']).default('Taxable'),
   priceEntryMode: z.enum(['Inclusive', 'Exclusive']).optional(),
+  directCostPaise: Paise.nullish(),
+  directCostConfirmed: z.boolean().default(false),
 });
 
 export const SaleLineInputSchema = z.discriminatedUnion('lineType', [

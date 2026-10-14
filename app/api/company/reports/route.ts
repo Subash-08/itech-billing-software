@@ -317,8 +317,8 @@ export async function GET(request: Request) {
             b.invoiceNumber || b._id,
             b.invoiceDate,
             b.businessCategory || 'Sale',
-            b.manualProfitPaise !== null && b.manualProfitPaise !== undefined
-              ? b.manualProfitPaise / 100
+            (b.manualProfitPaise ?? b.calculatedProfitPaise) !== null && (b.manualProfitPaise ?? b.calculatedProfitPaise) !== undefined
+              ? (b.manualProfitPaise ?? b.calculatedProfitPaise) / 100
               : 'Pending',
           ]),
           ...adjustments.map((a) => [
@@ -331,7 +331,7 @@ export async function GET(request: Request) {
           ]),
         ];
         return {
-          headers: ['Invoice', 'Date', 'Category', 'Entered profit'],
+          headers: ['Invoice', 'Date', 'Category', 'Profit (automatic or override)'],
           rows,
         };
       }

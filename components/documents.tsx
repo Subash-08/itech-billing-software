@@ -33,12 +33,12 @@ import {
   balance,
   paid,
   dateLabel,
-  activeReservation,
   State,
 } from '@/lib/domain';
 import SupplyReference from './supply-reference';
 import { ProductForm } from './inventory';
 import SupplierSettlement from './supplier-settlement';
+import SupplierDeadline from './supplier-deadline';
 import { assertOpen, nextDate } from '@/lib/closing';
 import { issueBill, receivePurchase, addPayment } from '@/lib/operations';
 import { useStore } from './store';
@@ -49,6 +49,8 @@ import { PersonForm } from './people';
 import { InvoiceTemplate } from '@/lib/extensions';
 import { TemplateInvoice as InvoicePaper, PrintDialog } from './templates';
 import { mapPurchaseFromApi, mapInvoiceFromApi, mapQuotationFromApi, mapTemplateFromApi } from '@/lib/mappers';
+import {sameGstState} from '@/lib/indian-states';
+import PricingHelper from './pricing-helper';
 import {
   IssueInvoiceModal,
   StockAllocationModal,
@@ -179,12 +181,14 @@ export function DocumentComposer({
   });
 
   const [date, setDate] = useState(TODAY);
-  const [due, setDue] = useState(existing?.due || '2026-09-17');
+  const [due, setDue] = useState(
+    existing?.due || nextDate(TODAY, purchase ? 30 : quotation ? 7 : 0)
+  );
   const [taxMode, setTaxMode] = useState<'Intra-state' | 'Inter-state'>(
     existing?.taxMode || source?.taxMode || 'Intra-state'
   );
   const [placeOfSupply, setPlaceOfSupply] = useState(
-    existing?.placeOfSupply || source?.placeOfSupply || 'Tamil Nadu'
+    existing?.placeOfSupply || source?.placeOfSupply || state.settings.state || ''
   );
   const [inclusive, setInclusive] = useState(existing?.inclusive ?? source?.inclusive ?? true);
   const [notes, setNotes] = useState(existing?.notes || source?.notes || (pcBuildMode ? 'Pre-built PC configuration quotation.' : ''));
@@ -259,33 +263,22 @@ export function DocumentComposer({
     setInclusive(nextInclusive);
   };
 
-  const changeLinePriceAndTaxMode = (index: number, next: 'Inclusive' | 'Exclusive' | 'NonGST' | 'Exempt') => {
+  const changeEnteredRate = (index: number, mode: 'Inclusive' | 'Exclusive', value: number) => {
+    if (!Number.isFinite(value) || value < 0) return;
+    setLines(current => current.map((line, lineIndex) => lineIndex === index ? {
+      ...line,
+      rate: moneyRate(value),
+      priceEntryMode: mode,
+    } : line));
+  };
+
+  const changeTaxTreatment = (index: number, selection: string) => {
     setLines(current => current.map((line, lineIndex) => {
       if (lineIndex !== index) return line;
-      const wasInclusive = lineUsesInclusiveRate(line, inclusive);
-      if (next === 'NonGST' || next === 'Exempt') {
-        const currentTotalRate = inclusiveRate(line, inclusive);
-        return {
-          ...line,
-          rate: currentTotalRate,
-          priceEntryMode: 'Inclusive',
-          taxTreatment: next,
-          tax: 0,
-        };
+      if (selection === 'NonGST' || selection === 'Exempt') {
+        return {...line, taxTreatment: selection, tax: 0};
       }
-      const nextInclusive = next === 'Inclusive';
-      const restoredTax = line.tax > 0
-        ? line.tax
-        : (state.products.find(product => product.id === line.productId)?.tax || 18);
-      const sourceMultiplier = line.taxTreatment === 'Taxable' && line.tax > 0 ? taxableMultiplier(line) : 1;
-      const oldInclusiveRate = wasInclusive ? line.rate : line.rate * sourceMultiplier;
-      return {
-        ...line,
-        taxTreatment: 'Taxable',
-        tax: restoredTax,
-        priceEntryMode: next,
-        rate: nextInclusive ? oldInclusiveRate : oldInclusiveRate / (1 + restoredTax / 100),
-      };
+      return {...line, taxTreatment: 'Taxable', tax: Number(selection)};
     }));
   };
   const [payRows, setPayRows] = useState<{ account: string; amount: string; method: string }[]>([]);
@@ -307,6 +300,7 @@ export function DocumentComposer({
   const [billTo, setBillTo] = useState(
     source?.billTo || { name: '', address: '', phone: '', state: '', stateCode: '', postalCode: '' }
   );
+  const hydratedCustomerRef = useRef(source?.billTo ? customerId : '');
   const [orderRef, setOrderRef] = useState('');
   const [deliveryNote, setDeliveryNote] = useState('');
   const [dispatch, setDispatch] = useState('');
@@ -340,19 +334,33 @@ export function DocumentComposer({
     ? supplierChoices.find((c) => c.id === customerId) || state.suppliers.find((c) => c.id === customerId)
     : customerChoices.find((c) => c.id === customerId) || state.customers.find((c) => c.id === customerId);
 
+  const setSupplyFromDestination = (destinationState: string, destinationCode = '') => {
+    const nextPlace = destinationState.trim() || state.settings.state?.trim() || '';
+    setPlaceOfSupply(nextPlace);
+    const sameState = sameGstState(state.settings.state, nextPlace, state.settings.stateCode, destinationCode);
+    if (sameState !== undefined) setTaxMode(sameState ? 'Intra-state' : 'Inter-state');
+  };
+
   useEffect(() => {
-    if (purchase || !person || billTo.name) return;
+    if (purchase || !person || hydratedCustomerRef.current === person.id) return;
     const next = {
       name: person.name || '',
       address: person.address || '',
       phone: person.phone || '',
       state: (person as any)?.details?.state || (person as any)?.state || '',
-      stateCode: (person as any)?.stateCode || '',
+      stateCode: (person as any)?.details?.stateCode || (person as any)?.stateCode || (person.gst?.slice(0,2).match(/^\d{2}$/)?.[0] || ''),
       postalCode: (person as any)?.details?.postalCode || (person as any)?.postalCode || '',
     };
     setBillTo(next);
-    if (!shipSeparate && next.state) setPlaceOfSupply(next.state);
-  }, [purchase, person?.id, billTo.name, shipSeparate]);
+    hydratedCustomerRef.current = person.id;
+    if (!shipSeparate) setSupplyFromDestination(next.state, next.stateCode);
+  }, [purchase, person?.id, shipSeparate, state.settings.state, state.settings.stateCode]);
+
+  useEffect(() => {
+    if (!purchase && !placeOfSupply.trim() && state.settings.state?.trim()) {
+      setSupplyFromDestination(state.settings.state, state.settings.stateCode);
+    }
+  }, [purchase, placeOfSupply, state.settings.state, state.settings.stateCode]);
 
   const bill: Bill = {
     id,
@@ -491,6 +499,8 @@ export function DocumentComposer({
             tax: l.tax ?? (l.taxBasisPoints ? l.taxBasisPoints / 100 : 0),
             taxTreatment: l.taxTreatment || 'Taxable',
             priceEntryMode: l.priceEntryMode || (l.inclusive === false ? 'Exclusive' : l.inclusive === true ? 'Inclusive' : undefined),
+            directCost: l.directCostPaise == null ? undefined : l.directCostPaise / 100,
+            directCostConfirmed: l.directCostConfirmed === true,
             hsn: l.hsn || '',
             sac: l.sac || '',
             warranty: l.warranty ?? l.warrantyMonths ?? 0,
@@ -573,6 +583,8 @@ export function DocumentComposer({
               stockAllocations: l.stockAllocations || [],
               serials: l.stockAllocations?.flatMap((a: any) => a.serials || []) || l.serials || [],
               clientLineKey: l.clientLineKey || uid('CLK'),
+              directCost: l.directCostPaise == null ? undefined : l.directCostPaise / 100,
+              directCostConfirmed: l.directCostConfirmed === true,
             })));
           }
           notify('Reloaded latest invoice draft.');
@@ -699,26 +711,33 @@ export function DocumentComposer({
   }
 
   function validateBasic(forIssue = false): boolean {
-    if (!purchase && (!billTo.name.trim() || !billTo.address.trim() || !billTo.state.trim())) {
-      notify('Enter the bill-to name, billing address and state for this document.');
+    if (!purchase && !billTo.name.trim()) {
+      notify('Enter the bill-to name for this document. Billing address is optional.');
       return false;
     }
-    if (shipSeparate && (!shipTo.name.trim() || !shipTo.address.trim() || !shipTo.state.trim())) {
-      notify('Enter the ship-to name, address and state, or use the billing address.');
+    if (shipSeparate && !shipTo.name.trim()) {
+      notify('Enter the ship-to name, or use the billing details. The delivery address is optional.');
       return false;
     }
     if (!purchase) {
-      const sellerState = (state.settings.state || '').trim().toLocaleLowerCase();
-      const destinationState = (shipSeparate ? shipTo.state : billTo.state || placeOfSupply).trim().toLocaleLowerCase();
       if (!placeOfSupply.trim()) {
         notify('Enter the place of supply.');
         return false;
       }
-      if (sellerState && destinationState && taxMode === 'Inter-state' && sellerState === destinationState) {
+      const destination = shipSeparate ? shipTo : billTo;
+      const destinationMatchesPlace = destination.state?.trim()
+        ? sameGstState(destination.state, placeOfSupply, destination.stateCode)
+        : undefined;
+      if (destinationMatchesPlace === false) {
+        notify('Place of supply must match the bill-to or ship-to state. Correct either field.');
+        return false;
+      }
+      const sameState = sameGstState(state.settings.state, placeOfSupply, state.settings.stateCode);
+      if (sameState === true && taxMode === 'Inter-state') {
         notify('Interstate supply needs a destination outside the shop state. Choose Within state for CGST + SGST.');
         return false;
       }
-      if (sellerState && destinationState && taxMode === 'Intra-state' && sellerState !== destinationState) {
+      if (sameState === false && taxMode === 'Intra-state') {
         notify('A destination outside the shop state needs Interstate / IGST.');
         return false;
       }
@@ -1039,6 +1058,8 @@ export function DocumentComposer({
           taxBasisPoints: isZeroTax ? 0 : Math.round((l.tax || 0) * 100),
           taxTreatment: treatment,
           priceEntryMode: (l.priceEntryMode || (inclusive ? 'Inclusive' : 'Exclusive')) as 'Inclusive' | 'Exclusive',
+          directCostPaise: l.directCostConfirmed ? Math.round((l.directCost || 0) * 100) : undefined,
+          directCostConfirmed: l.directCostConfirmed === true,
         };
 
         if (isChg) {
@@ -1212,7 +1233,7 @@ export function DocumentComposer({
   }
 
   return (
-    <>
+    <div className={purchase ? 'purchase-workspace' : undefined}>
       <Link className="back-link" href={purchase ? '/purchases' : quotation ? '/quotations' : '/sales'}>
         <ArrowLeft size={14} />
         Back to {purchase ? 'purchases' : quotation ? 'quotations' : 'invoices'}
@@ -1316,24 +1337,26 @@ export function DocumentComposer({
                 value={customerId}
                 onChange={(e) => {
                   setCustomerId(e.target.value);
+                  hydratedCustomerRef.current = '';
                   const c = purchase
                     ? supplierChoices.find((c) => c.id === e.target.value) || state.suppliers.find((c) => c.id === e.target.value)
                     : customerChoices.find((c) => c.id === e.target.value) || state.customers.find((c) => c.id === e.target.value);
                   const days = purchase
-                    ? (c as any)?.terms
+                    ? Number((c as any)?.terms ?? (c as any)?.paymentTermsDays ?? (c as any)?.details?.paymentTerms ?? 30)
                     : Number((c as any)?.details?.paymentTerms || 0);
-                  setDue(nextDate(date, days || 0));
+                  setDue(nextDate(date, Number.isFinite(days) ? Math.max(0, days) : (purchase ? 30 : 0)));
                   if (!purchase && c) {
                     const nextBillTo = {
                       name: c.name || '',
                       address: c.address || '',
                       phone: c.phone || '',
                       state: (c as any)?.details?.state || (c as any)?.state || '',
-                      stateCode: (c as any)?.stateCode || '',
+                      stateCode: (c as any)?.details?.stateCode || (c as any)?.stateCode || (c.gst?.slice(0,2).match(/^\d{2}$/)?.[0] || ''),
                       postalCode: (c as any)?.details?.postalCode || (c as any)?.postalCode || '',
                     };
                     setBillTo(nextBillTo);
-                    if (!shipSeparate) setPlaceOfSupply(nextBillTo.state || state.settings.state || '');
+                    hydratedCustomerRef.current = c.id;
+                    if (!shipSeparate) setSupplyFromDestination(nextBillTo.state, nextBillTo.stateCode);
                   }
                 }}
               >
@@ -1460,12 +1483,13 @@ export function DocumentComposer({
             <Field label="Place of supply">
               <input
                 value={placeOfSupply}
-                onChange={(e) => setPlaceOfSupply(e.target.value)}
+                onChange={(e) => setSupplyFromDestination(e.target.value)}
                 placeholder="State / union territory"
               />
+              <span className="muted">GST type is selected automatically when the shop and destination states are recognized.</span>
             </Field>
 
-            <Field label="Price entry mode">
+            <Field label="Default rate entry for new items">
               <select
                 value={inclusive ? 'inclusive' : 'exclusive'}
                 onChange={(e) => changePriceEntryMode(e.target.value === 'inclusive')}
@@ -1473,6 +1497,7 @@ export function DocumentComposer({
                 <option value="inclusive">GST inclusive · entered rate includes tax</option>
                 <option value="exclusive">GST exclusive · add tax to entered rate</option>
               </select>
+              <span className="muted">Both rate columns remain editable on every item. Editing either one recalculates the other.</span>
             </Field>
 
             {person && (
@@ -1518,18 +1543,19 @@ export function DocumentComposer({
                   stateCode: 'State code',
                   postalCode: 'PIN code',
                 }).map(([k, label]) => (
-                  <Field key={k} label={`${label}${['name', 'address', 'state'].includes(k) ? ' *' : ''}`}>
+                  <Field key={k} label={`${label}${k === 'name' ? ' *' : ''}`}>
                     <input
                       value={(billTo as any)[k] || ''}
                       onChange={(e) => {
                         const next = { ...billTo, [k]: e.target.value };
                         setBillTo(next);
-                        if (k === 'state' && !shipSeparate) setPlaceOfSupply(e.target.value);
+                        if (k === 'state' && !shipSeparate) setSupplyFromDestination(e.target.value, next.stateCode);
+                        if (k === 'stateCode' && !shipSeparate) setSupplyFromDestination(next.state, e.target.value);
                       }}
                     />
                   </Field>
                 ))}
-                <p className="muted full">Bill-to name, billing address and state are required so saved and printed documents contain a complete buyer address.</p>
+                <p className="muted full">Only the bill-to name is required. Saved customer details are filled automatically; leave unavailable address fields empty rather than entering a placeholder.</p>
               </div>
               <label className="checkbox-row">
                 <input
@@ -1542,10 +1568,10 @@ export function DocumentComposer({
                         name: person?.name || '',
                         address: (person as any)?.details?.shippingAddress || person?.address || '',
                         phone: person?.phone || '',
-                        state: (person as any)?.details?.state || 'Tamil Nadu',
+                        state: (person as any)?.details?.state || billTo.state || state.settings.state || '',
                         postalCode: (person as any)?.details?.postalCode || '',
                       });
-                      setPlaceOfSupply((person as any)?.details?.shippingState || (person as any)?.details?.state || billTo.state || '');
+                      setSupplyFromDestination((person as any)?.details?.shippingState || (person as any)?.details?.state || billTo.state || state.settings.state || '');
                     }
                   }}
                 />
@@ -1563,7 +1589,11 @@ export function DocumentComposer({
                     <Field key={k} label={label}>
                       <input
                         value={(shipTo as any)[k]}
-                        onChange={(e) => setShipTo({ ...shipTo, [k]: e.target.value })}
+                        onChange={(e) => {
+                          const next = {...shipTo, [k]: e.target.value};
+                          setShipTo(next);
+                          if (k === 'state') setSupplyFromDestination(e.target.value);
+                        }}
                       />
                     </Field>
                   ))}
@@ -1578,9 +1608,7 @@ export function DocumentComposer({
         <Card
           title={purchase ? 'Purchase items' : service ? 'Service and parts' : pcBuildMode ? 'PC build configuration' : 'Invoice items'}
           sub={
-            inclusive
-              ? 'Rates include GST. Discounts apply before tax; charges use their own editable GST rate.'
-              : 'GST is added after discount. Each line can override inclusive, exclusive or non-GST entry without changing inventory cost.'
+            'Enter either the GST-inclusive or GST-exclusive rate; the other updates automatically. Discounts apply before GST.'
           }
           actions={<span className="muted">{lines.length} lines</span>}
         >
@@ -1702,7 +1730,7 @@ export function DocumentComposer({
                   <th>Rate incl. GST</th>
                   <th>Rate excl. GST</th>
                   <th>Discount</th>
-                  <th>Price mode / GST</th>
+                  <th>GST</th>
                   <th>Total</th>
                   <th />
                 </tr>
@@ -1733,7 +1761,7 @@ export function DocumentComposer({
                           value={l.hsn}
                           onChange={(e) => update(i, 'hsn', e.target.value)}
                         />
-                        {l.productId && !service && l.lineType !== 'Charge' && (
+                        {l.productId && !service && l.lineType !== 'Charge' && (!purchase || l.isSerialTracked) && (
                           <button
                             type="button"
                             onClick={() => {
@@ -1746,16 +1774,59 @@ export function DocumentComposer({
                             }}
                           >
                             {purchase
-                              ? 'Enter serials'
+                              ? 'Enter receipt serials'
                               : quotation
                                 ? 'Serials at sale'
                                 : (l as any).stockAllocations?.length
                                   ? `${(l as any).stockAllocations.reduce((s: number, a: any) => s + (a.quantity || 0), 0)} allocated`
-                                  : 'Select stock / serial numbers'}
+                                  : l.isSerialTracked
+                                    ? 'Select stock & serial'
+                                    : 'Select stock lot'}
                           </button>
+                        )}
+                        {l.productId && purchase && !isReceiptMode && l.lineType !== 'Charge' && (
+                          <Badge>{l.isSerialTracked ? 'Enter serials before receiving stock' : 'Quantity tracked'}</Badge>
+                        )}
+                        {l.productId && purchase && isReceiptMode && !l.isSerialTracked && l.lineType !== 'Charge' && (
+                          <Badge>Quantity tracked · no serial required</Badge>
                         )}
                         {l.lineType === 'Charge' && <Badge>Non-stock charge</Badge>}
                       </div>
+                      {purchase && !isReceiptMode && <PricingHelper line={l} inclusive={inclusive} purchase />}
+                      {!purchase && !isPosted && l.productId && (() => {
+                        const selectedProduct = productChoices.find(p => p.id === l.productId)
+                          || state.products.find(p => p.id === l.productId);
+                        if (!selectedProduct) return null;
+                        const referenceCostBeforeGst = selectedProduct.tax > 0
+                          ? selectedProduct.cost / (1 + selectedProduct.tax / 100)
+                          : selectedProduct.cost;
+                        return <PricingHelper
+                          line={l}
+                          inclusive={inclusive}
+                          fixedCost={Math.round(referenceCostBeforeGst * 100) / 100}
+                          alwaysVisible
+                          showLockedHint
+                          referenceNote="Estimate uses the product reference cost. Final issued profit uses the exact selected stock-lot cost."
+                          onApply={(exclusiveRate, inclusiveRate) => {
+                            const mode = lineUsesInclusiveRate(l, inclusive) ? 'Inclusive' : 'Exclusive';
+                            changeEnteredRate(i, mode, mode === 'Inclusive' ? inclusiveRate : exclusiveRate);
+                          }}
+                        />;
+                      })()}
+                      {!purchase && !isPosted && !l.productId && (l.lineType === 'Service' || l.lineType === 'Charge') && (
+                        <PricingHelper line={l} inclusive={inclusive}
+                          initialCost={l.directCost}
+                          alwaysVisible
+                          showLockedHint
+                          showEstimateSummary={false}
+                          onCostConfirm={costPaise => setLines(current => current.map((row, idx) => idx === i
+                            ? {...row, directCost: costPaise / 100, directCostConfirmed: true}
+                            : row))}
+                          onApply={(exclusiveRate, inclusiveRate) => {
+                            const mode = lineUsesInclusiveRate(l, inclusive) ? 'Inclusive' : 'Exclusive';
+                            changeEnteredRate(i, mode, mode === 'Inclusive' ? inclusiveRate : exclusiveRate);
+                          }} />
+                      )}
                     </td>
                     <td>
                       <input
@@ -1776,11 +1847,11 @@ export function DocumentComposer({
                         type="number"
                         min="0"
                         step="0.01"
-                        disabled={isPosted || (l.taxTreatment === 'Taxable' && !lineUsesInclusiveRate(l, inclusive))}
+                        disabled={isPosted}
                         value={inclusiveRate(l, inclusive)}
-                        onChange={(e) => update(i, 'rate', +e.target.value)}
+                        onChange={(e) => changeEnteredRate(i, 'Inclusive', +e.target.value)}
                       />
-                      {(lineUsesInclusiveRate(l, inclusive) || l.taxTreatment !== 'Taxable') && <small className="muted">Entry</small>}
+                      {lineUsesInclusiveRate(l, inclusive) && <small className="muted">Last entered</small>}
                     </td>
                     <td>
                       <input
@@ -1789,11 +1860,11 @@ export function DocumentComposer({
                         type="number"
                         min="0"
                         step="0.01"
-                        disabled={isPosted || lineUsesInclusiveRate(l, inclusive) || l.taxTreatment !== 'Taxable'}
+                        disabled={isPosted}
                         value={exclusiveRate(l, inclusive)}
-                        onChange={(e) => update(i, 'rate', +e.target.value)}
+                        onChange={(e) => changeEnteredRate(i, 'Exclusive', +e.target.value)}
                       />
-                      {!lineUsesInclusiveRate(l, inclusive) && l.taxTreatment === 'Taxable' && <small className="muted">Entry</small>}
+                      {!lineUsesInclusiveRate(l, inclusive) && <small className="muted">Last entered</small>}
                     </td>
                     <td>
                       <input
@@ -1821,32 +1892,19 @@ export function DocumentComposer({
                     </td>
                     <td>
                       <select
-                        aria-label={`Item ${i + 1} price and tax mode`}
+                        aria-label={`Item ${i + 1} GST rate or treatment`}
                         className="table-input"
                         disabled={isPosted}
-                        style={{ marginBottom: 4 }}
-                        value={l.taxTreatment === 'NonGST' || l.taxTreatment === 'Exempt'
-                          ? l.taxTreatment
-                          : lineUsesInclusiveRate(l, inclusive) ? 'Inclusive' : 'Exclusive'}
-                        onChange={(e) => changeLinePriceAndTaxMode(i, e.target.value as 'Inclusive' | 'Exclusive' | 'NonGST' | 'Exempt')}
-                      >
-                        <option value="Inclusive">GST inclusive</option>
-                        <option value="Exclusive">GST exclusive</option>
-                        <option value="NonGST">Non-GST</option>
-                        <option value="Exempt">GST exempt</option>
-                      </select>
-                      <select
-                        aria-label={`Item ${i + 1} GST`}
-                        className="table-input"
-                        disabled={isPosted || l.taxTreatment === 'Exempt' || l.taxTreatment === 'NonGST'}
-                        value={l.taxTreatment === 'Exempt' || l.taxTreatment === 'NonGST' ? 0 : l.tax}
-                        onChange={(e) => update(i, 'tax', +e.target.value)}
+                        value={l.taxTreatment === 'Exempt' || l.taxTreatment === 'NonGST' ? l.taxTreatment : String(l.tax)}
+                        onChange={(e) => changeTaxTreatment(i, e.target.value)}
                       >
                         {[0, 5, 12, 18, 28].map((v) => (
-                          <option key={v} value={v}>
+                          <option key={v} value={String(v)}>
                             {v}%
                           </option>
                         ))}
+                        <option value="Exempt">Exempt</option>
+                        <option value="NonGST">Non-GST</option>
                       </select>
                     </td>
                     <td className="amount">
@@ -1946,6 +2004,7 @@ export function DocumentComposer({
             )}
             <span className="muted">A custom charge is financial only and never adds or removes inventory. Create an inventory product first when selling a physical item.</span>
           </div>
+          {!purchase && <div className="notice spaced"><strong>Pricing and margin:</strong> Add your margin to the GST-exclusive stock cost, then use that exclusive selling rate. GST applies to the complete taxable selling value, including the margin. If you instead enter a final customer price in “Rate incl. GST”, the app separates its taxable value and GST automatically.</div>}
         </Card>
 
         {!quotation && !purchase && (
@@ -2314,15 +2373,13 @@ export function DocumentComposer({
             ) : (
               <>
                 <p className="notice">
-                  Select {lines[serialIndex].qty} unit(s). Serials held for this customer are available to their sale.
+                  Select exactly {lines[serialIndex].qty} available serial unit(s).
                 </p>
                 <div className="serial-list">
                   {state.products
                     .find((p) => p.id === lines[serialIndex].productId)
                     ?.serials.map((n) => {
-                      const blocked = state.reservations.some(
-                        (r) => activeReservation(r) && r.customerId !== customerId && r.serials.includes(n)
-                      );
+                      const blocked = false;
                       return (
                         <label key={n}>
                           <input
@@ -2340,7 +2397,6 @@ export function DocumentComposer({
                             }
                           />
                           {n}
-                          {blocked && <Badge>Reserved</Badge>}
                         </label>
                       );
                     })}
@@ -2424,7 +2480,7 @@ export function DocumentComposer({
           }}
         />
       )}
-    </>
+    </div>
   );
 }
 
@@ -3172,7 +3228,7 @@ export default function Documents({
   }
 
   return (
-    <>
+    <div className={purchase ? 'purchase-workspace' : undefined}>
       {record && (
         <Link className="back-link" href={path}>
           <ArrowLeft size={14} />
@@ -3317,10 +3373,12 @@ export default function Documents({
                   </Link>
                 </>
               )}
-              {purchase && !quotation && balance(state, record) > 0 && (
-                <Btn onClick={() => setPayment(true)}>
-                  Pay supplier
-                </Btn>
+              {purchase && !quotation && Number((record as any).dueAmount || 0) > 0 && <>
+                <SupplierDeadline purchaseId={record.id} onSaved={refreshDetail} />
+                <Btn onClick={() => setPayment(true)}>Pay supplier</Btn>
+              </>}
+              {purchase && !quotation && (record as Purchase).receiptStatus !== 'NotReceived' && (
+                <Link className="btn secondary" href={`/suppliers/${(record as Purchase).supplierId}?tab=Returns&purchase=${record.id}`}>Return products</Link>
               )}
             </>
           ) : (
@@ -3406,43 +3464,32 @@ export default function Documents({
                 {summaryError} <Btn secondary onClick={() => setSummaryReload((value) => value + 1)}>Retry</Btn>
               </div>
             )}
-            <div className="summary-dashboard" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
-              <Card title="Draft orders">
-                <div className="body-pad" role="button" tabIndex={0} onClick={() => setDocStatusFilter('Draft')}>
-                  <h2>{isLive ? (summary ? summary.draftCount : '…') : state.purchases.filter((p) => p.documentStatus === 'Draft').length}</h2>
-                  <p>Awaiting confirmation</p>
-                </div>
-              </Card>
-              <Card title="Posted bill value">
+            <div className="summary-dashboard purchase-operations-summary" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+              <Card title="Amount to pay">
                 <div className="body-pad">
-                  <h2>{isLive ? (summary ? money(summary.postedValuePaise / 100) : '…') : money(state.purchases.filter((p) => p.billStatus === 'Posted').reduce((n, p) => n + roundedTotal(p), 0))}</h2>
-                  <p>Original value of posted supplier bills</p>
-                </div>
-              </Card>
-              <Card title="Unpaid dues">
-                <div className="body-pad" role="button" tabIndex={0} onClick={() => { setBillStatusFilter('Posted'); setPaymentStatusFilter('Unpaid'); }}>
                   <h2 style={{ color: 'var(--error, #e53935)' }}>
                     {isLive ? (summary ? money(summary.unpaidDuePaise / 100) : '…') : money(state.purchases.reduce((n, p) => n + balance(state, p), 0))}
                   </h2>
-                  <p>Due to suppliers</p>
+                  <p>Total remaining on supplier bills</p>
+                  {isLive && summary && summary.availableAdvancePaise > 0 && <small>{money(summary.availableAdvancePaise / 100)} supplier credit available</small>}
                 </div>
               </Card>
-              <Card title="Awaiting receipt">
-                <div className="body-pad" role="button" tabIndex={0} onClick={() => setReceiptStatusFilter('NotReceived')}>
-                  <h2>{isLive ? (summary ? summary.awaitingReceiptCount : '…') : state.purchases.filter((p) => p.receiptStatus === 'NotReceived' && p.billStatus === 'Posted').length}</h2>
-                  <p>Bills posted, 0 stock received</p>
-                </div>
-              </Card>
-              <Card title="Partly received">
-                <div className="body-pad" role="button" tabIndex={0} onClick={() => setReceiptStatusFilter('PartlyReceived')}>
-                  <h2>{isLive ? (summary ? summary.partlyReceivedCount : '…') : state.purchases.filter((p) => p.receiptStatus === 'PartlyReceived').length}</h2>
-                  <p>Orders with remaining balance</p>
-                </div>
-              </Card>
-              <Card title="Available advance">
+              <Card title="Overdue">
                 <div className="body-pad">
-                  <h2>{isLive ? (summary ? money(summary.availableAdvancePaise / 100) : '…') : money(0)}</h2>
-                  <p>Supplier prepayments available</p>
+                  <h2>{isLive ? (summary ? money((summary.overdueDuePaise || 0) / 100) : '…') : '—'}</h2>
+                  <p>{isLive && summary ? `${summary.overdueCount || 0} supplier bill(s) past due` : 'Supplier bills past their due date'}</p>
+                </div>
+              </Card>
+              <Card title="Paid this month">
+                <div className="body-pad">
+                  <h2>{isLive ? (summary ? money((summary.paymentsThisMonthPaise || 0) / 100) : '…') : '—'}</h2>
+                  <p>{isLive && summary ? `${summary.paymentsThisMonthCount || 0} supplier payment(s)` : 'Payments made to suppliers'}</p>
+                </div>
+              </Card>
+              <Card title="Stock still expected">
+                <div className="body-pad">
+                  <h2>{isLive ? (summary ? (summary.awaitingReceiptCount || 0) + (summary.partlyReceivedCount || 0) : '…') : state.purchases.filter((p) => p.receiptStatus === 'NotReceived' || p.receiptStatus === 'PartlyReceived').length}</h2>
+                  <p>{isLive && summary ? `${summary.awaitingReceiptCount || 0} not received · ${summary.partlyReceivedCount || 0} partly received` : 'Purchases with units still pending'}</p>
                 </div>
               </Card>
             </div>
@@ -3540,20 +3587,23 @@ export default function Documents({
               </>
             )}
             <span>
-              Total <b>{money(roundedTotal(record))}</b>
+              {purchase ? 'Original bill' : 'Total'} <b>{money(roundedTotal(record))}</b>
             </span>
             {!quotation && (
               <>
                 <span>
-                  Paid <b>{money(paid(state, record.id))}</b>
+                  Paid <b>{money(purchase ? Number((record as any).paid || 0) : paid(state, record.id))}</b>
                 </span>
+                {purchase && Number((record as any).creditedAmount || 0) > 0 && <span>Return / supplier credit <b>{money(Number((record as any).creditedAmount || 0))}</b></span>}
                 <span>
-                  Balance <b>{money(balance(state, record))}</b>
+                  Balance <b>{money(purchase ? Number((record as any).dueAmount || 0) : balance(state, record))}</b>
                 </span>
                 <Badge>
-                  {balance(state, record) === 0
-                    ? 'Paid'
-                    : paid(state, record.id) > 0
+                  {(purchase ? Number((record as any).dueAmount || 0) : balance(state, record)) === 0
+                    ? purchase && Number((record as any).creditedAmount || 0) > 0 && Number((record as any).paid || 0) < roundedTotal(record)
+                      ? 'Settled with supplier credit'
+                      : 'Paid'
+                    : (purchase ? Number((record as any).paid || 0) : paid(state, record.id)) > 0
                       ? 'Partly paid'
                       : 'Unpaid'}
                 </Badge>
@@ -3571,7 +3621,11 @@ export default function Documents({
                     className={detailTab === t ? 'active' : ''}
                     onClick={() => setDetailTab(t)}
                   >
-                    {t}
+                    {t === 'Receipts' ? `Stock received (${detailData?.historyCounts?.receiptCount || 0})`
+                      : t === 'Payments' ? `Payments (${detailData?.historyCounts?.allocationCount || 0})`
+                      : t === 'Returns' ? `Product returns (${detailData?.historyCounts?.returnCount || 0})`
+                      : t === 'Credit notes' ? `Bill reductions (${detailData?.historyCounts?.creditNoteCount || 0})`
+                      : t}
                   </button>
                 ))}
               </div>
@@ -3609,7 +3663,7 @@ export default function Documents({
                   <div className="body-pad spaced">
                     <p>{record.notes || 'No printed notes.'}</p>
                     <p>Supplier reference: {(record as Purchase).reference || '—'}</p>
-                    <p>Due date: {dateLabel(record.due)}</p>
+                    <p>Payment deadline: {dateLabel((record as Purchase).promisedPaymentDate || record.due)}</p>
                     <div className="notice">
                       <strong>Supplier bill file</strong>
                       {(record as Purchase).attachmentFileId ? (
@@ -3750,7 +3804,7 @@ export default function Documents({
               )}
 
               {detailTab === 'Payments' && (
-                <Card title="Linked Payments and Allocations">
+                <Card title="Payments applied to this bill">
                   {allocError ? (
                     <div className="body-pad stack">
                       <p className="error">{allocError}</p>
@@ -3763,9 +3817,9 @@ export default function Documents({
                           <thead>
                             <tr>
                               <th>Date</th>
-                              <th>Payment / Allocation ID</th>
-                              <th>Account</th>
-                              <th>Amount</th>
+                              <th>Payment / source</th>
+                              <th>Paid from</th>
+                              <th>Amount applied</th>
                               <th>Status</th>
                               <th>Actions</th>
                             </tr>
@@ -3774,8 +3828,8 @@ export default function Documents({
                             {(allocList.length ? allocList : (detailData?.allocations || [])).map((alloc: any) => (
                               <tr key={alloc._id || alloc.id}>
                                 <td>{dateLabel(alloc.date || alloc.effectiveDate || record.date)}</td>
-                                <td>Allocation: {alloc.allocationNumber || alloc._id || alloc.id}</td>
-                                <td>Advance / Direct</td>
+                                <td><strong>{alloc.sourceLabel || alloc.allocationNumber || alloc._id || alloc.id}</strong><small>{alloc.sourceReference || alloc.sourceMethod || ''}</small></td>
+                                <td>{alloc.sourceAccount || 'Supplier balance'}<small>{alloc.sourceMethod || ''}</small></td>
                                 <td>{money((alloc.amountPaise || 0) / 100)}</td>
                                 <td><Badge>{alloc.isReversed ? 'Reversed' : 'Active'}</Badge></td>
                                 <td>
@@ -3804,7 +3858,7 @@ export default function Documents({
                             {!(allocList.length || detailData?.allocations?.length) && (
                               <tr>
                                 <td colSpan={6} className="muted body-pad">
-                                  {allocLoading ? 'Loading payment allocations…' : 'No settlement allocations recorded for this bill.'}
+                                  {allocLoading ? 'Loading payments…' : 'No payment or supplier balance has been applied to this bill.'}
                                 </td>
                               </tr>
                             )}
@@ -3826,10 +3880,10 @@ export default function Documents({
               )}
 
               {detailTab === 'Returns' && (
-                <Card title="Linked Supplier Returns">
+                <Card title="Products returned to supplier">
                   <div className="body-pad" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
-                    <p className="muted" style={{ margin: 0 }}>Physical goods sent back to the supplier appear here. The bill due changes only after the supplier credit note is accepted.</p>
-                    <Link className="btn secondary" href={`/returns?reference=${id}`}>Record supplier return</Link>
+                    <p className="muted" style={{ margin: 0 }}>Returning products removes stock. Confirm the supplier bill reduction afterward to reduce the amount payable.</p>
+                    <Link className="btn secondary" href={`/suppliers/${(record as Purchase).supplierId}?tab=Returns&purchase=${id}`}>Return products</Link>
                   </div>
                   {retError ? (
                     <div className="body-pad stack">
@@ -3846,7 +3900,8 @@ export default function Documents({
                               <th>Date</th>
                               <th>Reason</th>
                               <th>Items</th>
-                              <th>Status</th>
+                              <th>Expected reduction</th>
+                              <th>Bill status</th>
                               <th>Actions</th>
                             </tr>
                           </thead>
@@ -3860,8 +3915,10 @@ export default function Documents({
                                   {ret.productName || detailData?.purchase?.lines?.find((line: any) => line.lineId === ret.purchaseLineId)?.productSnapshot?.name || ret.productId || 'Product'}: {ret.quantity || 0} unit(s)
                                   {ret.serials?.length > 0 && <div className="muted">Serials: {ret.serials.join(', ')}</div>}
                                 </td>
-                                <td><Badge>{ret.isReversed ? 'Reversed' : ret.status === 'PendingCreditAcceptance' ? 'Awaiting supplier credit' : ret.status === 'CreditAccepted' ? 'Credit accepted' : ret.status || 'Recorded'}</Badge></td>
+                                <td>{money(((ret.totalReturnCreditPaise ?? ret.estimatedCreditPaise) || 0) / 100)}</td>
+                                <td><Badge>{ret.isReversed ? 'Return cancelled' : ret.status === 'PendingCreditAcceptance' ? 'Waiting for supplier confirmation' : ret.status === 'CreditAccepted' ? 'Bill reduced' : ret.status || 'Recorded'}</Badge></td>
                                 <td>
+                                  {!ret.isReversed && ret.status === 'PendingCreditAcceptance' && <Link className="btn secondary" href={`/suppliers/${(record as Purchase).supplierId}?tab=Returns`}>Confirm bill reduction</Link>}
                                   {!ret.isReversed && (
                                     ret.canReverse ? (
                                       <Btn
@@ -3886,7 +3943,7 @@ export default function Documents({
                             ))}
                             {!(retList.length || detailData?.returns?.length) && (
                               <tr>
-                                <td colSpan={6} className="muted body-pad">
+                                  <td colSpan={7} className="muted body-pad">
                                   {retLoading ? 'Loading returns…' : 'No returns linked to this purchase.'}
                                 </td>
                               </tr>
@@ -3908,7 +3965,7 @@ export default function Documents({
                 </Card>
               )}
               {detailTab === 'Credit notes' && (
-                <Card title="Supplier credit notes">
+                <Card title="Confirmed bill reductions">
                   {cnError ? (
                     <div className="body-pad stack">
                       <p className="error">{cnError}</p>
@@ -3920,7 +3977,7 @@ export default function Documents({
                         <table>
                           <thead>
                             <tr>
-                              <th>Credit note</th>
+                              <th>Reference</th>
                               <th>Date</th>
                               <th>Return</th>
                               <th>Amount</th>
@@ -3933,14 +3990,14 @@ export default function Documents({
                                 <td>{note.creditNoteNumber || note.supplierCreditNoteNumber || note._id}</td>
                                 <td>{dateLabel(note.date)}</td>
                                 <td>{note.returnNumber || note.returnId || 'Standalone'}</td>
-                                <td>{money((note.amountPaise || 0) / 100)}</td>
+                                <td>{money((note.acceptedCreditPaise ?? note.totalCreditPaise ?? note.amountPaise ?? 0) / 100)}</td>
                                 <td><Badge>{note.isReversed ? 'Reversed' : 'Accepted'}</Badge></td>
                               </tr>
                             ))}
                             {!(cnList.length || detailData?.creditNotes?.length) && (
                               <tr>
                                 <td colSpan={5} className="muted body-pad">
-                                  {cnLoading ? 'Loading credit notes…' : 'No credit notes linked to this purchase.'}
+                                  {cnLoading ? 'Loading bill reductions…' : 'No supplier bill reduction has been confirmed for this purchase.'}
                                 </td>
                               </tr>
                             )}
@@ -3966,7 +4023,7 @@ export default function Documents({
           )}
 
           <div className="detail-grid spaced screen-only">
-            <Card title={quotation ? 'Quotation actions' : 'Payment history'}>
+            {!purchase && <Card title={quotation ? 'Quotation actions' : 'Payment history'}>
               {quotation ? (
                 <div className="body-pad actions">
                   <Link className="btn secondary" href={`/quotations/new?from=${record.id}`}>
@@ -4018,7 +4075,7 @@ export default function Documents({
                   )}
                 </>
               )}
-            </Card>
+            </Card>}
 
             <Card title="Related actions">
               <div className="body-pad stack">
@@ -4040,7 +4097,7 @@ export default function Documents({
                   Open {purchase ? 'supplier' : 'customer'} profile <ArrowUpRight size={15} />
                 </Link>
                 {!quotation && (
-                  <Link className="text-link" href={`/returns?reference=${record.id}`}>
+                  <Link className="text-link" href={purchase ? `/suppliers/${(record as Purchase).supplierId}?tab=Returns&purchase=${record.id}` : `/returns?reference=${record.id}`}>
                     Record {purchase ? 'supplier' : 'customer'} return <ArrowUpRight size={15} />
                   </Link>
                 )}
@@ -4049,7 +4106,7 @@ export default function Documents({
           </div>
         </>
       ) : (
-        <Card>
+        <Card className={purchase ? 'purchase-list-card' : ''}>
           <div className="toolbar" style={{ flexWrap: 'wrap', gap: '0.75rem' }}>
             <SearchBox value={q} onChange={setQ} placeholder="Search document or customer…" />
 
@@ -4060,9 +4117,9 @@ export default function Documents({
                   value={docStatusFilter}
                   onChange={(e) => setDocStatusFilter(e.target.value)}
                 >
-                  <option value="All">All doc states</option>
-                  <option value="Draft">Draft</option>
-                  <option value="Confirmed">Confirmed</option>
+                  <option value="All">All purchases</option>
+                  <option value="Draft">Draft purchases</option>
+                  <option value="Confirmed">Confirmed purchases</option>
                   <option value="Cancelled">Cancelled</option>
                 </select>
 
@@ -4071,9 +4128,9 @@ export default function Documents({
                   value={billStatusFilter}
                   onChange={(e) => setBillStatusFilter(e.target.value)}
                 >
-                  <option value="All">All bill states</option>
-                  <option value="NotPosted">Not posted</option>
-                  <option value="Posted">Posted</option>
+                  <option value="All">Any supplier bill status</option>
+                  <option value="NotPosted">Bill not recorded</option>
+                  <option value="Posted">Bill recorded</option>
                 </select>
 
                 <select
@@ -4081,11 +4138,11 @@ export default function Documents({
                   value={receiptStatusFilter}
                   onChange={(e) => setReceiptStatusFilter(e.target.value)}
                 >
-                  <option value="All">All receipt states</option>
-                  <option value="NotReceived">Not received</option>
-                  <option value="PartlyReceived">Partly received</option>
-                  <option value="Received">Received</option>
-                  <option value="ClosedPartlyReceived">Closed partly received</option>
+                  <option value="All">Any stock status</option>
+                  <option value="NotReceived">Stock not received</option>
+                  <option value="PartlyReceived">Stock partly received</option>
+                  <option value="Received">Stock received</option>
+                  <option value="ClosedPartlyReceived">Receipt closed early</option>
                 </select>
 
                 <select
@@ -4093,8 +4150,8 @@ export default function Documents({
                   value={paymentStatusFilter}
                   onChange={(e) => setPaymentStatusFilter(e.target.value)}
                 >
-                  <option value="All">All payment states</option>
-                  <option value="Unpaid">Unpaid</option>
+                  <option value="All">Any payment status</option>
+                  <option value="Unpaid">Payment due</option>
                   <option value="PartlyPaid">Partly paid</option>
                   <option value="Paid">Paid</option>
                 </select>
@@ -4172,9 +4229,9 @@ export default function Documents({
                   <th>Document</th>
                   <th>{purchase ? 'Supplier' : 'Customer'}</th>
                   <th>Date</th>
-                  <th>Total</th>
-                  {!quotation && <th>Balance due</th>}
-                  <th>Status</th>
+                  <th>{purchase ? 'Original bill' : 'Total'}</th>
+                  {!quotation && <th>{purchase ? 'Remaining' : 'Balance due'}</th>}
+                  <th>{purchase ? 'Progress' : 'Status'}</th>
                   <th />
                 </tr>
               </thead>
@@ -4191,7 +4248,7 @@ export default function Documents({
                       </Link>
                       <small>
                         {purchase
-                          ? (b as Purchase).reference || 'No ref'
+                          ? ((b as Purchase).reference ? `Supplier bill: ${(b as Purchase).reference}` : 'Supplier bill not recorded')
                           : (b as Bill).kind + ' · ' + (b as Bill).category}
                       </small>
                     </td>
@@ -4206,24 +4263,18 @@ export default function Documents({
                     <td>
                       {purchase ? (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', alignItems: 'flex-start' }}>
-                          <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
-                            <span title="Document lifecycle state"><Badge>{(b as Purchase).documentStatus || 'Confirmed'}</Badge></span>
-                            <span title="Supplier bill status"><Badge>{(b as Purchase).billStatus || 'Posted'}</Badge></span>
-                          </div>
-                          <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
-                            <span title="Physical stock receipt"><Badge>{(b as Purchase).receiptStatus || 'Received'}</Badge></span>
-                            <span title="Supplier payment settlement">
-                              <Badge>
-                                {(b as Purchase).paymentStatus || (
-                                  (b as Purchase).dueAmount === 0 || balance(state, b) === 0
-                                    ? 'Paid'
-                                    : ((b as any).paidAmount || paid(state, b.id)) > 0
-                                      ? 'PartlyPaid'
-                                      : 'Unpaid'
-                                )}
-                              </Badge>
-                            </span>
-                          </div>
+                          <Badge>{
+                            (b as Purchase).documentStatus === 'Draft' ? 'Draft' :
+                            (b as Purchase).documentStatus === 'Cancelled' ? 'Cancelled' :
+                            (b as Purchase).billStatus === 'NotPosted' ? 'Bill not recorded' :
+                            (b as Purchase).receiptStatus === 'NotReceived' ? 'Waiting for stock' :
+                            (b as Purchase).receiptStatus === 'PartlyReceived' ? 'Stock partly received' :
+                            ((b as Purchase).billStatus === 'FullyCredited') ? 'Settled by supplier credit' :
+                            ((b as Purchase).billStatus === 'Credited') ? 'Bill reduced by supplier credit' :
+                            ((b as Purchase).paymentStatus || ((b as Purchase).dueAmount === 0 || balance(state, b) === 0 ? 'Paid' : ((b as any).paidAmount || paid(state, b.id)) > 0 ? 'PartlyPaid' : 'Unpaid')) === 'PartlyPaid' ? 'Partly paid' :
+                            ((b as Purchase).paymentStatus || ((b as Purchase).dueAmount === 0 || balance(state, b) === 0 ? 'Paid' : 'Unpaid')) === 'Paid' ? 'Paid' : 'Payment due'
+                          }</Badge>
+                          {(b as Purchase).receiptStatus === 'Received' && <small>Stock received</small>}
                         </div>
                       ) : (
                         <Badge>
@@ -4457,6 +4508,6 @@ export default function Documents({
           }}
         />
       )}
-    </>
+    </div>
   );
 }

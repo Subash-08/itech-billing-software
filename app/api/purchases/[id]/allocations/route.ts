@@ -38,9 +38,36 @@ export async function GET(request: Request, context: {params: Promise<{id: strin
       })
     );
 
+    const paymentIds = [...new Set(allocations.filter(a => a.sourceType === 'Payment').map(a => a.sourceId))];
+    const advanceIds = [...new Set(allocations.filter(a => a.sourceType === 'Advance').map(a => a.sourceId))];
+    const [payments, advances] = await Promise.all([
+      paymentIds.length ? col<any>(db, 'supplierPayments').find(
+        {tenantId: identity.tenantId, _id: {$in: paymentIds}},
+        {projection: {_id: 1, paymentNumber: 1, components: 1, totalAmountPaise: 1, isReversed: 1}}
+      ).toArray() : [],
+      advanceIds.length ? col<any>(db, 'supplierAdvances').find(
+        {tenantId: identity.tenantId, _id: {$in: advanceIds}},
+        {projection: {_id: 1, advanceNumber: 1, sourceType: 1}}
+      ).toArray() : [],
+    ]);
+    const paymentById = new Map(payments.map(p => [p._id, p]));
+    const advanceById = new Map(advances.map(a => [a._id, a]));
+    const records = enriched.map(a => {
+      const payment = a.sourceType === 'Payment' ? paymentById.get(a.sourceId) : undefined;
+      const advance = a.sourceType === 'Advance' ? advanceById.get(a.sourceId) : undefined;
+      const components = payment?.components || [];
+      return {
+        ...a,
+        sourceLabel: payment?.paymentNumber || advance?.advanceNumber || (a.sourceType === 'CreditNote' ? 'Supplier credit' : a.sourceId),
+        sourceAccount: components.map((c: any) => c.account).join(' + ') || (advance ? 'Supplier balance' : 'Supplier credit'),
+        sourceMethod: components.map((c: any) => c.method).join(' + ') || (advance?.sourceType === 'CreditNoteExcess' ? 'Return credit' : advance ? 'Advance / available balance' : 'Credit'),
+        sourceReference: components.map((c: any) => c.reference).filter(Boolean).join(', '),
+      };
+    });
+
     return {
-      records: enriched,
-      allocations: enriched,
+      records,
+      allocations: records,
       total,
       page,
       limit,

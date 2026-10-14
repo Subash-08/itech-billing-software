@@ -120,17 +120,17 @@ export default function Dashboard() {
   const companyName = state.settings.name || (isLive ? 'Company setup required' : 'iTech Computers');
   const userName = companySession?.user?.name || 'Store Manager';
 
-  if (isLive && !liveData) return <>
+  if (isLive && !liveData) return <div className="dashboard-page">
     <PageHead title="Dashboard" description={loadError || 'Loading the latest company summary…'}/>
     {loadError ? <button className="btn" onClick={() => setRevision(v => v + 1)}>Retry</button> : (
       <div className="dashboard-loading-grid" aria-label="Loading dashboard">
         {Array.from({length: 8}, (_, index) => <div className="dashboard-skeleton" key={index}/>) }
       </div>
     )}
-  </>;
+  </div>;
 
   return (
-    <>
+    <div className="dashboard-page">
       <PageHead
         title="Dashboard"
         description="A clear view of your store, all in one place."
@@ -148,21 +148,33 @@ export default function Dashboard() {
         }
       />
 
-      <div className="welcome-strip">
-        <div>
-          <span className="sun-icon">☀</span>
+      <section className="welcome-strip dashboard-hero" aria-label="Today at a glance">
+        <div className="dashboard-hero-copy">
+          <span className="sun-icon" aria-hidden="true">☀</span>
           <div>
-            <strong>Welcome, {userName}</strong>
-            <p>Here’s what’s happening at {companyName} today.</p>
+            <span className="dashboard-hero-kicker">Today at a glance</span>
+            <strong>Welcome back, {userName}</strong>
+            <p>{companyName} · Review sales, balances and work waiting for action.</p>
           </div>
         </div>
-        <Link href="/register">
-          Open cash & account <ArrowUpRight size={17} />
-        </Link>
-      </div>
+        <div className="dashboard-hero-actions">
+          <Link href="/dues" className="dashboard-hero-link">Review dues</Link>
+          <Link href="/register">
+            Cash & account <ArrowUpRight size={17} />
+          </Link>
+        </div>
+      </section>
 
       {refreshing && <div className="dashboard-refreshing" role="status">Refreshing dashboard…</div>}
 
+      <section className="dashboard-section dashboard-money-section" aria-labelledby="money-overview-title">
+        <div className="dashboard-section-head">
+          <div>
+            <span>Business snapshot</span>
+            <h2 id="money-overview-title">Money overview</h2>
+          </div>
+          <p>Sales, collections and available balances.</p>
+        </div>
       <div className="dashboard-kpi-grid">
         <Stat
           label="Today’s sales"
@@ -193,16 +205,43 @@ export default function Dashboard() {
         />
         <Stat label="Bank balance" value={shortMoney(bankBalance)} detail="Current account balance" icon={<Landmark size={20}/>} />
       </div>
+      </section>
 
+      <section className="dashboard-section dashboard-action-section" aria-labelledby="attention-title">
+        <div className="dashboard-section-head">
+          <div>
+            <span>Action centre</span>
+            <h2 id="attention-title">Needs attention</h2>
+          </div>
+          <p>Open only the work that needs a decision today.</p>
+        </div>
       <div className="dashboard-attention-grid">
         <Link href="/dues" className="attention-card"><HandCoins size={20}/><div><span>Customer dues</span><strong>{shortMoney(customerDues)}</strong><small>Amount still to collect</small></div><ArrowUpRight size={17}/></Link>
         <Link href="/dues" className="attention-card"><ArrowOut size={20}/><div><span>Supplier dues</span><strong>{shortMoney(supplierDues)}</strong><small>Amount still to pay</small></div><ArrowUpRight size={17}/></Link>
         <Link href="/services" className="attention-card"><Wrench size={20}/><div><span>Service work</span><strong>{String(activeJobsCount).padStart(2, '0')}</strong><small>{readyJobsCount} ready for collection</small></div><ArrowUpRight size={17}/></Link>
         <Link href="/inventory" className="attention-card"><Package size={20}/><div><span>Low stock</span><strong>{String(lowStockCount).padStart(2, '0')}</strong><small>Products at reorder level</small></div><ArrowUpRight size={17}/></Link>
       </div>
+      </section>
 
-      {isLive ? <LiveSalesChart rows={liveData?.salesTrend || []} today={liveData?.todayDate || TODAY}/> : <Analytics />}
+      <section className="dashboard-analytics-region" aria-labelledby="performance-title">
+        <div className="dashboard-section-head">
+          <div>
+            <span>Performance</span>
+            <h2 id="performance-title">Sales activity</h2>
+          </div>
+          <p>See how issued sales are moving over time.</p>
+        </div>
+        {isLive ? <LiveSalesChart rows={liveData?.salesTrend || []} today={liveData?.todayDate || TODAY}/> : <Analytics />}
+      </section>
 
+      <section className="dashboard-records-region" aria-labelledby="activity-title">
+        <div className="dashboard-section-head">
+          <div>
+            <span>Recent activity</span>
+            <h2 id="activity-title">Latest business records</h2>
+          </div>
+          <p>Invoices and money movements from today.</p>
+        </div>
       <div className="dashboard-bottom">
         <Card
           title="Recent invoices"
@@ -289,6 +328,7 @@ export default function Dashboard() {
           </Link>
         </Card>
       </div>
-    </>
+      </section>
+    </div>
   );
 }

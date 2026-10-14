@@ -17,7 +17,6 @@ const DocumentComposer = dynamic(
 );
 const Services = dynamic(() => import('./service'), {loading});
 const Enquiries = dynamic(() => import('./enquiries'), {loading});
-const Reservations = dynamic(() => import('./reservations'), {loading});
 const WarrantyPage = dynamic(() => import('./warranty'), {loading});
 const Returns = dynamic(() => import('./returns'), {loading});
 const Dues = dynamic(() => import('./finance').then((module) => module.Dues), {loading});
@@ -81,7 +80,6 @@ export default function Workspace() {
       : <Documents purchase id={id}/>;
     case 'services': return <Services key={routeKey} id={id}/>;
     case 'enquiries': return <Enquiries/>;
-    case 'reservations': return <Reservations/>;
     case 'returns': return <Returns/>;
     case 'warranty': return <WarrantyPage/>;
     case 'register':

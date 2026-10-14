@@ -4,9 +4,10 @@ import {AppError} from './db';
 import {Identity} from './security';
 import {recordAudit} from './audit';
 import {uid} from '../lib/domain';
+import {cumulativeCostSlice} from '../lib/pricing-helper';
 import {todayInKolkata} from './purchase-schema';
 import {canonicalSerialKey, resolveSerialUnit, transitionSerialUnit} from './serial-identity';
-import {sumSalePaise, prorateSaleReturnComponents} from './sales-calculations';
+import {sumSalePaise, prorateSaleReturnComponents, prorateSaleReturnPaise} from './sales-calculations';
 import {
   CreateCustomerReturnSchema,
   CreateCustomerReturnInput,
@@ -50,6 +51,8 @@ export type CustomerReturnDocument = {
   igstPaise: number;
   taxPaise: number;
   refundPaise: number;
+  returnedCostPaise?: number;
+  profitAdjustmentPaise?: number | null;
   creditToInvoice?: number;
   eligibleRefundPaise?: number;
   lotRestorations?: Array<{lotId: string; qty: number}>;
@@ -128,6 +131,19 @@ export async function createCustomerReturn(
         returnQuantity: input.quantity,
       });
 
+      const priorReturnedCostPaise = priorReturns.reduce((sum, r) => sum + (r.returnedCostPaise || 0), 0);
+      let returnedCostPaise = Number.isSafeInteger(line.costOfGoodsPaise)
+        ? prorateSaleReturnPaise({
+            originalLineTotalPaise: line.costOfGoodsPaise,
+            originalQuantity: line.quantity,
+            alreadyReturnedQuantity,
+            alreadyCreditedPaise: priorReturnedCostPaise,
+            returnQuantity: input.quantity,
+          })
+        : 0;
+      let profitAdjustmentPaise = Number.isSafeInteger(line.costOfGoodsPaise)
+        ? -(prorated.taxableBasePaise - returnedCostPaise)
+        : null;
       const refundPaise = prorated.totalPaise;
       const now = new Date();
       const year = input.date.slice(0, 4);
@@ -240,6 +256,33 @@ export async function createCustomerReturn(
           if (remaining !== 0) {
             throw new AppError(409, 'Issued source lots cannot cover this return. No stock was changed.');
           }
+        }
+
+        // New invoices persist exact cost on every stock allocation. Use those
+        // source-lot costs for a partial return; averaging a mixed-cost line would
+        // distort both inventory value and profit. Legacy invoices keep the safe
+        // line-level proration above.
+        const allocationCostByLot = new Map<string, {quantity: number; costPaise: number; exact: boolean}>();
+        for (const allocation of allocations) {
+          const current = allocationCostByLot.get(allocation.lotId) || {quantity: 0, costPaise: 0, exact: true};
+          current.quantity += allocation.quantity;
+          if (Number.isSafeInteger((allocation as any).costOfGoodsPaise)) current.costPaise += (allocation as any).costOfGoodsPaise;
+          else current.exact = false;
+          allocationCostByLot.set(allocation.lotId, current);
+        }
+        if (lotRestorations.length && lotRestorations.every(({lotId}) => allocationCostByLot.get(lotId)?.exact)) {
+          let exactReturnedCost = 0;
+          for (const {lotId, qty} of lotRestorations) {
+            const source = allocationCostByLot.get(lotId)!;
+            exactReturnedCost += cumulativeCostSlice(
+              source.costPaise,
+              source.quantity,
+              returnedPerLot.get(lotId) || 0,
+              qty
+            );
+          }
+          returnedCostPaise = exactReturnedCost;
+          profitAdjustmentPaise = -(prorated.taxableBasePaise - returnedCostPaise);
         }
 
         const restock = input.stockDisposition === 'RestockSellable';
@@ -632,6 +675,8 @@ export async function createCustomerReturn(
         igstPaise: prorated.igstPaise,
         taxPaise: prorated.taxPaise,
         refundPaise,
+        returnedCostPaise,
+        profitAdjustmentPaise,
         creditToInvoice,
         eligibleRefundPaise,
         lotRestorations,
@@ -654,7 +699,8 @@ export async function createCustomerReturn(
           {_id: invoice._id, tenantId},
           {
             $set: {manualProfitPaise: null, profitInvalidatedReason: `Customer return ${returnNumber}`, updatedAt: now},
-            $inc: {version: 1},
+            ...(profitAdjustmentPaise === null ? {} : {$inc: {calculatedProfitPaise: profitAdjustmentPaise, version: 1}}),
+            ...(profitAdjustmentPaise === null ? {$inc: {version: 1}} : {}),
           },
           {session}
         );
@@ -674,8 +720,8 @@ export async function createCustomerReturn(
               originalDocumentNumber: invoice.invoiceNumber || invoice._id,
               triggerType: 'CustomerReturn',
               triggerReference: returnId,
-              signedAdjustmentPaise: null,
-              status: 'Pending',
+              signedAdjustmentPaise: profitAdjustmentPaise,
+              status: profitAdjustmentPaise === null ? 'Pending' : 'Automatic',
               reason: `Customer return ${returnNumber} on closed invoice ${invoice.invoiceNumber || invoice._id}`,
               createdAt: now,
               createdBy: identity.userId,

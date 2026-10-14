@@ -2,7 +2,6 @@ import {z} from 'zod';
 import {endpoint, requireIdentity} from '@/server/auth';
 import {database, AppError} from '@/server/db';
 import {col} from '@/server/purchase-service';
-import {todayInKolkata} from '@/server/purchase-schema';
 
 export const runtime = 'nodejs';
 
@@ -29,8 +28,7 @@ export async function GET(request: Request) {
     );
     if (!product) throw new AppError(404, 'Product not found or archived.');
 
-    const [lots, reservations] = await Promise.all([
-      col(db, 'stockLots')
+    const lots = await col(db, 'stockLots')
         .find(
           {tenantId, productId: params.productId, quantitySellable: {$gt: 0}},
           {projection: {_id: 1, batchNumber: 1, lotNumber: 1, receivedDate: 1, createdAt: 1,
@@ -38,20 +36,7 @@ export async function GET(request: Request) {
         )
         .sort({receivedDate: 1, createdAt: 1, _id: 1})
         .limit(100)
-        .toArray(),
-      params.customerId
-        ? col(db, 'stockReservations')
-            .find(
-              {tenantId, customerId: params.customerId, productId: params.productId,
-                status: 'Active', expiresAt: {$gte: todayInKolkata()}},
-              {projection: {_id: 1, reservationNumber: 1, lotId: 1, remainingQuantity: 1,
-                quantity: 1, qty: 1, serials: 1, expiresAt: 1, createdAt: 1}}
-            )
-            .sort({createdAt: 1, _id: 1})
-            .limit(100)
-            .toArray()
-        : Promise.resolve([]),
-    ]);
+        .toArray();
 
     const lotIds = lots.map((lot: any) => lot._id);
     const serials = product.isSerialTracked && lotIds.length
@@ -68,9 +53,9 @@ export async function GET(request: Request) {
     return {
       product: {_id: product._id, name: product.name, isSerialTracked: !!product.isSerialTracked},
       lots,
-      reservations,
+      reservations: [],
       serials,
-      limits: {lots: 100, reservations: 100, serials: 1000},
+      limits: {lots: 100, reservations: 0, serials: 1000},
     };
   });
 }

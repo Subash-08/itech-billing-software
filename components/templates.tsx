@@ -340,6 +340,14 @@ export function PrintDialog({bills, onClose}: {bills: Bill[]; onClose: () => voi
   const {state, notify} = useStore();
   const [busy, setBusy] = useState(false);
   const previewRefs = useRef(new Map<string, HTMLDivElement>());
+  const activeTemplates = state.templates.filter((candidate) => candidate.status !== 'Archived');
+  const initialTemplateId =
+    activeTemplates.find((candidate) => candidate.id === bills[0]?.templateId)?.id ||
+    activeTemplates.find((candidate) => candidate.id === state.defaultTemplateId)?.id ||
+    activeTemplates[0]?.id ||
+    '';
+  const [templateId, setTemplateId] = useState(initialTemplateId);
+  const template = activeTemplates.find((candidate) => candidate.id === templateId);
 
   async function download() {
     setBusy(true);
@@ -367,30 +375,30 @@ export function PrintDialog({bills, onClose}: {bills: Bill[]; onClose: () => voi
     }
   }
 
-  const [templateId, setTemplateId] = useState(bills[0]?.templateId || state.defaultTemplateId);
-  const template = state.templates.find((t) => t.id === templateId) || state.templates[0];
-
   return (
     <Modal title="Print documents" onClose={onClose} wide>
       <div className="toolbar screen-only">
         <Field label="Print template">
-          <select value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
-            {state.templates.map((t) => (
+          <select value={templateId} onChange={(e) => setTemplateId(e.target.value)} disabled={!activeTemplates.length}>
+            {!activeTemplates.length && <option value="">No active templates</option>}
+            {activeTemplates.map((t) => (
               <option value={t.id} key={t.id}>
                 {t.name}
               </option>
             ))}
           </select>
         </Field>
-        <span>
-          {template.paper} · {template.orientation} · {bills.length} document(s)
-        </span>
+        {template && <span>{template.paper} · {template.orientation} · {bills.length} document(s)</span>}
         <Link className="text-link" href="/templates" onClick={onClose}>
           Edit templates
         </Link>
       </div>
+      <p className="notice screen-only">
+        The selected template changes this print or download only. Issued document numbers, parties, items, tax and payment
+        snapshots remain unchanged.
+      </p>
       <div className="batch-print">
-        {bills.map((b) => (
+        {template && bills.map((b) => (
           <div
             key={b.id}
             ref={(node) => {
@@ -398,19 +406,22 @@ export function PrintDialog({bills, onClose}: {bills: Bill[]; onClose: () => voi
               else previewRefs.current.delete(b.id);
             }}
           >
-            <TemplateInvoice bill={b} templateId={templateId} />
+            <TemplateInvoice bill={b} template={template} />
           </div>
         ))}
+        {!template && <div className="notice">Create or restore an active invoice template before printing.</div>}
       </div>
       <div className="form-actions">
         <Btn secondary onClick={onClose}>
           Cancel
         </Btn>
-        <Btn disabled={busy} onClick={download}>
+        <Btn disabled={busy || !template} onClick={download}>
           {busy ? 'Preparing…' : bills.length === 1 ? 'Download PDF' : 'Download ZIP'}
         </Btn>
         <Btn
+          disabled={!template}
           onClick={() => {
+            if (!template) return;
             const style = document.createElement('style');
             style.textContent = `@media print { @page { size: ${template.paper} ${template.orientation}; margin: 12mm; } }`;
             document.head.appendChild(style);

@@ -10,6 +10,7 @@ import {Product, TODAY, available, reserved, uid, money, activeReservation, date
 import {useStore} from './store';
 import {PageHead, Card, Btn, Modal, Field, SearchBox, Badge, Empty, csvDownload} from './ui';
 import {mapProductFromApi} from '@/lib/mappers';
+import PricingHelper from './pricing-helper';
 
 export const categories = [
   'Laptops',
@@ -65,6 +66,7 @@ export function ProductForm({product, onClose, page = false}: {product?: Product
       stock: 0,
       low: 2,
       serials: [],
+      isSerialTracked: true,
       warranty: 12,
       supplier: state.suppliers[0]?.id || '',
     }
@@ -95,7 +97,7 @@ export function ProductForm({product, onClose, page = false}: {product?: Product
             .split(/[\n,]+/)
             .map((s) => s.trim())
             .filter(Boolean);
-          if (!product && ['Laptops', 'Monitors', 'Prebuilt PCs', 'Printers'].includes(f.category) && f.stock !== serials.length) {
+          if (!product && f.isSerialTracked && f.stock !== serials.length) {
             setError('Enter one serial number per opening unit, or start with zero stock.');
             return;
           }
@@ -128,7 +130,7 @@ export function ProductForm({product, onClose, page = false}: {product?: Product
                 warranty: f.warranty,
                 low: f.low,
                 supplier: f.supplier || undefined,
-                isSerialTracked: ['Laptops', 'Monitors', 'Prebuilt PCs', 'Printers'].includes(f.category),
+                isSerialTracked: !!f.isSerialTracked,
               },
               product?.id
             );
@@ -185,6 +187,24 @@ export function ProductForm({product, onClose, page = false}: {product?: Product
                 <option>Used</option>
               </select>
             </Field>
+            <Field
+              label="Inventory tracking"
+              hint="Choose serial tracking when every physical unit has its own manufacturer or shop serial number."
+            >
+              <select
+                value={f.isSerialTracked ? 'serial' : 'quantity'}
+                onChange={(e) => set('isSerialTracked', e.target.value === 'serial')}
+              >
+                <option value="quantity">Quantity tracked — no serial per unit</option>
+                <option value="serial">Serial tracked — serial required per unit</option>
+              </select>
+            </Field>
+            <div className="notice">
+              {f.isSerialTracked
+                ? 'Every receipt, sale, stock adjustment and return must identify the exact serial number.'
+                : 'Receipts and sales use quantities and stock lots. No serial number is requested.'}
+              {product && ' Tracking mode cannot be changed after this product is used in stock or a business document.'}
+            </div>
             <Field label="HSN">
               <input required value={f.hsn} onChange={(e) => set('hsn', e.target.value)} />
             </Field>
@@ -194,7 +214,7 @@ export function ProductForm({product, onClose, page = false}: {product?: Product
                 <option value="excl">Exclusive of GST</option>
               </select>
             </Field>
-            <Field label="Purchase cost (reference)">
+            <Field label="Purchase price entered">
               <input type="number" min="0" step="0.01" required value={f.cost} onChange={(e) => set('cost', +e.target.value)} />
             </Field>
             <Field label="Selling price entry">
@@ -209,7 +229,15 @@ export function ProductForm({product, onClose, page = false}: {product?: Product
             <Field label="GST rate %">
               <input type="number" min="0" max="100" required value={f.tax} onChange={(e) => set('tax', +e.target.value)} />
             </Field>
-            <div className="full grid-3">
+            <div className="full">
+              <PricingHelper line={{qty: 1, rate: f.price, tax: f.tax, discount: 0}} inclusive={priceInclusive} fixedCost={costCalc.base}
+                alwaysVisible
+                showLockedHint
+                showEstimateSummary={false}
+                referenceNote="This is a catalogue estimate. Issued invoice profit uses the exact cost of the stock lot selected for sale."
+                onApply={(exclusiveRate, inclusiveRate) => set('price', priceInclusive ? inclusiveRate : exclusiveRate)} />
+            </div>
+            <div className="full" style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 18}}>
               <div className="summary-box">
                 <p>Price without GST</p>
                 <h2>{money(priceCalc.base)}</h2>
@@ -222,6 +250,12 @@ export function ProductForm({product, onClose, page = false}: {product?: Product
                 <p>Customer pays</p>
                 <h2>{money(priceCalc.total)}</h2>
               </div>
+              <div className="summary-box">
+                <p>Profit before GST</p>
+                <h2 style={{color: priceCalc.base - costCalc.base < 0 ? 'var(--danger, #c34453)' : 'var(--success, #159b79)'}}>
+                  {money(priceCalc.base - costCalc.base)}
+                </h2>
+              </div>
             </div>
             <div className="full notice">
               Purchase reference: {money(costCalc.base)} + GST {money(costCalc.tax)} = {money(costCalc.total)}. Changing
@@ -231,7 +265,7 @@ export function ProductForm({product, onClose, page = false}: {product?: Product
             <Field label="Warranty in months">
               <input type="number" min="0" max="120" required value={f.warranty} onChange={(e) => set('warranty', +e.target.value)} />
             </Field>
-            <Field label="Reorder level">
+            <Field label="Low stock warning at" hint="Shows a low-stock warning when available quantity reaches this number. Use 0 to warn only when out of stock.">
               <input type="number" min="0" required value={f.low} onChange={(e) => set('low', +e.target.value)} />
             </Field>
             <Field label="Supplier">
@@ -249,9 +283,11 @@ export function ProductForm({product, onClose, page = false}: {product?: Product
                 <Field label="Opening stock quantity">
                   <input type="number" min="0" required value={f.stock} onChange={(e) => set('stock', +e.target.value)} />
                 </Field>
-                <Field label="Opening serials" hint="One per line for laptops, monitors, printers and prebuilt PCs.">
-                  <textarea value={serialText} onChange={(e) => setSerialText(e.target.value)} />
-                </Field>
+                {f.isSerialTracked && (
+                  <Field label="Opening serials" hint="Enter exactly one unique serial number per opening unit.">
+                    <textarea value={serialText} onChange={(e) => setSerialText(e.target.value)} />
+                  </Field>
+                )}
               </>
             )}
             {!product && isLive && (
@@ -365,6 +401,17 @@ export default function Inventory({id}: {id?: string}) {
   const [reason, setReason] = useState('');
   const [serialText, setSerialText] = useState('');
   const [adjusting, setAdjusting] = useState(false);
+  const [adjustCostMode, setAdjustCostMode] = useState<'Inclusive' | 'Exclusive'>('Inclusive');
+  const [adjustUnitCost, setAdjustUnitCost] = useState<number | ''>('');
+
+  const openStockAdjustment = () => {
+    setDelta(1);
+    setReason('Missed opening stock / physical count correction');
+    setSerialText('');
+    setAdjustCostMode('Inclusive');
+    setAdjustUnitCost(p?.cost ?? '');
+    setAdjust(true);
+  };
 
   const loadLots = () => {
     if (!isLive || !id || id === 'new') return;
@@ -519,15 +566,15 @@ export default function Inventory({id}: {id?: string}) {
       )}
       <PageHead
         title={p?.name || 'Inventory'}
-        description={p ? `${p.id} · ${p.model}` : 'Know what’s in stock, what’s reserved and what needs reordering.'}
+        description={p ? `${p.id} · ${p.model}` : 'Know what’s in stock, what is available to sell and what needs reordering.'}
         actions={
           <>
             <Btn
               secondary
               onClick={() =>
                 csvDownload('inventory.csv', [
-                  ['Product', 'Model', 'Condition', 'On hand', 'Reserved', 'Available', 'Price'],
-                  ...list.map((p) => [p.name, p.model, p.condition, p.stock, reserved(state, p.id), available(state, p), p.price]),
+                  ['Product', 'Model', 'Condition', 'On hand', 'Available', 'Price'],
+                  ...list.map((p) => [p.name, p.model, p.condition, p.stock, available(state, p), p.price]),
                 ])
               }
             >
@@ -600,10 +647,6 @@ export default function Inventory({id}: {id?: string}) {
                       <strong>{p.stock}</strong>
                     </div>
                     <div>
-                      <small>Reserved</small>
-                      <strong>{reserved(state, p.id)}</strong>
-                    </div>
-                    <div>
                       <small>Available to sell</small>
                       <strong className="positive">{available(state, p)}</strong>
                     </div>
@@ -620,12 +663,9 @@ export default function Inventory({id}: {id?: string}) {
                     <Link className="btn" href="/purchases/new">
                       Receive through purchase
                     </Link>
-                    <Btn secondary onClick={() => setAdjust(true)}>
+                    <Btn secondary onClick={openStockAdjustment}>
                       Adjust stock
                     </Btn>
-                    <Link className="btn secondary" href="/reservations">
-                      Reserve stock
-                    </Link>
                   </div>
                 </Card>
                 <Card title="Warranty coverage">
@@ -644,6 +684,7 @@ export default function Inventory({id}: {id?: string}) {
                       Category: p.category,
                       Brand: p.brand,
                       Condition: p.condition,
+                      'Inventory tracking': p.isSerialTracked ? 'Serial tracked' : 'Quantity tracked',
                       HSN: p.hsn,
                       'Selling price': money(p.price),
                       GST: p.tax + '%',
@@ -678,7 +719,6 @@ export default function Inventory({id}: {id?: string}) {
                           <th>Lot Number</th>
                           <th>Sellable</th>
                           <th>Defective</th>
-                          <th>Reserved</th>
                           <th>On Hand</th><th>Removed / written off</th>
                           <th>Unit Cost</th>
                           <th>Actions</th>
@@ -695,7 +735,6 @@ export default function Inventory({id}: {id?: string}) {
                             <td style={{color: (lot.quantityDefective || 0) > 0 ? 'var(--error, #e53935)' : undefined}}>
                               {lot.quantityDefective || 0}
                             </td>
-                            <td>{lot.quantityReserved || 0}</td>
                             <td>{(lot.quantitySellable ?? lot.quantityRemaining ?? 0) + (lot.quantityReserved || 0) + (lot.quantityDefective || 0)}</td><td>{lot.quantityRemoved ?? 0}</td>
                             <td>{money((lot.costPaise || 0) / 100)}</td>
                             <td>
@@ -711,7 +750,7 @@ export default function Inventory({id}: {id?: string}) {
                                       setQuarantineModal({open: true, lot});
                                     }}
                                   >
-                                    Quarantine
+                                    Mark defective
                                   </button>
                                 )}
                                 {(lot.quantityDefective || 0) > 0 && (
@@ -779,7 +818,7 @@ export default function Inventory({id}: {id?: string}) {
                           const serial = typeof entry === 'string' ? entry : entry.serialOriginal;
                           const ref = typeof entry === 'string' ? '' : (entry.lot?.sourceReference || entry.sourceReference || '—');
                           const st = typeof entry === 'string'
-                            ? (state.reservations.some((r) => activeReservation(r) && r.serials.includes(serial)) ? 'Reserved' : 'Available')
+                            ? (state.reservations.some((r) => activeReservation(r) && r.serials.includes(serial)) ? 'Unavailable' : 'Available')
                             : entry.status;
                           return (
                             <tr key={entry._id || serial}>
@@ -792,7 +831,11 @@ export default function Inventory({id}: {id?: string}) {
                         {!(isLive ? liveSerials.length : p.serials?.length) && (
                           <tr>
                             <td colSpan={3} className="muted body-pad">
-                              {serialLoading ? 'Loading serials…' : 'No serial units recorded for this product.'}
+                              {serialLoading
+                                ? 'Loading serials…'
+                                : p.isSerialTracked
+                                  ? 'No serial units have been received for this product yet.'
+                                  : 'This product uses quantity tracking, so it has no per-unit serial records.'}
                             </td>
                           </tr>
                         )}
@@ -1019,9 +1062,6 @@ export default function Inventory({id}: {id?: string}) {
               <b>{state.products.reduce((a, p) => a + p.stock, 0)}</b> units on hand
             </span>
             <span>
-              <b>{state.reservations.filter(activeReservation).reduce((a, r) => a + r.qty, 0)}</b> reserved
-            </span>
-            <span>
               <b>{state.products.filter((p) => available(state, p) <= p.low).length}</b> low stock
             </span>
           </div>
@@ -1049,7 +1089,6 @@ export default function Inventory({id}: {id?: string}) {
                     <th>Condition</th>
                     <th>Price incl. GST</th>
                     <th>On hand</th>
-                    <th>Reserved</th>
                     <th>Available</th>
                     <th />
                   </tr>
@@ -1074,7 +1113,6 @@ export default function Inventory({id}: {id?: string}) {
                       </td>
                       <td className="amount">{money(p.price)}</td>
                       <td>{p.stock}</td>
-                      <td>{reserved(state, p.id)}</td>
                       <td>
                         <Badge>{available(state, p) <= p.low ? `${available(state, p)} · Low` : String(available(state, p))}</Badge>
                       </td>
@@ -1123,21 +1161,29 @@ export default function Inventory({id}: {id?: string}) {
                 return;
               }
               if (!Number.isInteger(delta) || delta === 0 || p.stock + delta < reserved(state, p.id)) {
-                notify('Adjustment must keep reserved stock available.');
+                notify('Adjustment cannot remove stock that is already unavailable.');
+                return;
+              }
+              const adjustmentCost = delta > 0
+                ? lineTotal({qty: 1, rate: Number(adjustUnitCost), tax: p.tax || 0, discount: 0}, adjustCostMode === 'Inclusive')
+                : null;
+              if (delta > 0 && (adjustUnitCost === '' || !Number.isFinite(Number(adjustUnitCost)) || Number(adjustUnitCost) < 0)) {
+                notify('Enter the actual unit cost for the stock being added.');
                 return;
               }
               const serials = serialText
                 .split(/[\n,]+/)
                 .map((s) => s.trim())
                 .filter(Boolean);
-              const tracked = (p.serials || []).length > 0 || ['Laptops', 'Monitors', 'Printers', 'Prebuilt PCs'].includes(p.category);
+              const tracked = !!p.isSerialTracked;
               if (tracked && (serials.length !== Math.abs(delta) || new Set(serials).size !== serials.length)) {
                 notify('Enter one unique serial number for each unit adjusted.');
                 return;
               }
               setAdjusting(true);
               if (isLive) {
-                const ok = await adjustProductStockApi(p.id, delta, serials, reason);
+                const ok = await adjustProductStockApi(p.id, delta, serials, reason,
+                  adjustmentCost ? {unitCostPaise: Math.round(adjustmentCost.base * 100)} : undefined);
                 setAdjusting(false);
                 if (ok) setAdjust(false);
                 return;
@@ -1149,7 +1195,7 @@ export default function Inventory({id}: {id?: string}) {
                   ? serials.some((n) => !p.serials.includes(n) || held.includes(n))
                   : serials.some((n) => state.products.some((x) => x.serials.includes(n))))
               ) {
-                notify('Check serial availability. Reserved serials cannot be removed.');
+                notify('Check serial availability. Unavailable serials cannot be removed.');
                 setAdjusting(false);
                 return;
               }
@@ -1179,9 +1225,26 @@ export default function Inventory({id}: {id?: string}) {
             }}
           >
             <div className="form-body stack">
-              <Field label="Quantity change" hint="Positive adds genuinely new stock. Negative records physical removal / write-off of available stock; it does not reduce supplier dues. Use supplier return for goods sent back, or Quarantine for items still in the shop but defective.">
+              <Field label="Quantity change" hint="Positive adds genuinely new stock. Negative records physical removal / write-off of available stock; it does not reduce supplier dues. Use supplier return for goods sent back, or Mark defective for damaged items still in the shop.">
                 <input required type="number" value={delta} onChange={(e) => setDelta(+e.target.value)} />
               </Field>
+              {delta > 0 && (
+                <div className="form-grid">
+                  <Field label="Unit cost type" hint="Choose how the amount on your old bill or stock record is written.">
+                    <select value={adjustCostMode} onChange={(e) => setAdjustCostMode(e.target.value as 'Inclusive' | 'Exclusive')}>
+                      <option value="Inclusive">Includes GST</option>
+                      <option value="Exclusive">Before GST</option>
+                    </select>
+                  </Field>
+                  <Field label="Actual unit cost (₹)" hint="This creates stock only. It does not create a supplier due or payment.">
+                    <input required type="number" min="0" step="0.01" value={adjustUnitCost}
+                      onChange={(e) => setAdjustUnitCost(e.target.value === '' ? '' : +e.target.value)} />
+                  </Field>
+                  <p className="muted full">
+                    Cost used for profit: <b>{money(lineTotal({qty: 1, rate: Number(adjustUnitCost) || 0, tax: p.tax || 0, discount: 0}, adjustCostMode === 'Inclusive').base)}</b> before GST per unit.
+                  </p>
+                </div>
+              )}
               <Field label="Affected serial numbers">
                 <textarea
                   value={serialText}
@@ -1207,7 +1270,7 @@ export default function Inventory({id}: {id?: string}) {
 
       {quarantineModal.open && quarantineModal.lot && (
         <Modal
-          title={`Quarantine stock · Lot ${quarantineModal.lot.lotNumber || quarantineModal.lot._id}`}
+          title={`Mark defective · Lot ${quarantineModal.lot.lotNumber || quarantineModal.lot._id}`}
           onClose={() => setQuarantineModal({open: false, lot: null})}
         >
           <form
@@ -1228,7 +1291,7 @@ export default function Inventory({id}: {id?: string}) {
                   reason: conditionReason.trim(),
                 });
                 if (res.success) {
-                  notify('Stock quarantined into defective condition.');
+                  notify('Stock marked as defective and removed from sellable quantity.');
                   setQuarantineModal({open: false, lot: null});
                   loadLots();
                   loadMovements();
@@ -1242,10 +1305,10 @@ export default function Inventory({id}: {id?: string}) {
           >
             <div className="form-body stack">
               <p className="notice">
-                Quarantining isolates stock into defective condition. Sellable quantity decreases while overall on-hand remains unchanged until returned.
+                Use this when an item is damaged or fails inspection but is still physically in the shop. It cannot be sold until restored or returned to the supplier.
               </p>
               <Field
-                label="Quantity to quarantine *"
+                label="Quantity to mark defective *"
                 hint={`Max sellable available: ${quarantineModal.lot.quantitySellable ?? quarantineModal.lot.quantityRemaining ?? 0}`}
               >
                 <input
@@ -1264,7 +1327,7 @@ export default function Inventory({id}: {id?: string}) {
                   placeholder="Enter specific serials to isolate if serialized..."
                 />
               </Field>
-              <Field label="Reason for quarantine *">
+              <Field label="Reason *">
                 <input
                   required
                   placeholder="Damaged in transit, failed QA, factory defect..."
@@ -1278,7 +1341,7 @@ export default function Inventory({id}: {id?: string}) {
                 Cancel
               </Btn>
               <Btn danger type="submit" disabled={conditionBusy}>
-                {conditionBusy ? 'Quarantining…' : 'Confirm quarantine'}
+                {conditionBusy ? 'Saving…' : 'Mark defective'}
               </Btn>
             </div>
           </form>

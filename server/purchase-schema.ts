@@ -165,6 +165,7 @@ export const PurchaseLineInputSchema = z.object({
   discountType: DiscountTypeEnum.default('Percentage'),
   discountValue: z.number().int().min(0).max(MAX_UNIT_RATE_PAISE).default(0), // Basis points (0..10000) or paise
   taxBasisPoints: z.number().int().min(0).max(10000).default(1800), // e.g. 1800 = 18.00%
+  inputTaxCreditEligible: z.boolean().default(true),
 });
 
 export type PurchaseLineInput = z.infer<typeof PurchaseLineInputSchema>;
@@ -325,6 +326,8 @@ export const PaymentAllocationInputSchema = z.object({
 });
 
 export const RecordSupplierPaymentSchema = z.object({
+  allocationMode: z.enum(['Manual', 'OldestFirst', 'SelectedBills']).optional(),
+  selectedBillIds: z.array(z.string().min(1)).max(500).optional(),
   supplierId: z.string().trim().min(1, 'Supplier ID is required'),
   date: CalendarDateSchema.default(() => todayInKolkata()),
   components: z.array(PaymentComponentInputSchema).min(1, 'At least one payment component is required'),
@@ -516,6 +519,7 @@ export interface PurchaseProductLine {
   discountType: DiscountType;
   discountValue: number;
   taxBasisPoints: number;
+  inputTaxCreditEligible: boolean;
   taxableBasePaise: number;
   taxAmountPaise: number;
   cgstPaise: number;
@@ -582,6 +586,9 @@ export interface StockLotDocument {
   purchaseReceiptId?: string;
   receivedDate: string;
   costPaise: number;
+  /** Exact economic cost of this lot. costPaise is the rounded display amount. */
+  costTotalPaise?: number;
+  costBasis?: 'ExcludingRecoverableGST' | 'IncludingGST' | 'LegacyUnitCost';
   sourceReference: string;
 
   quantityReceived: number;

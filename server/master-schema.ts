@@ -138,6 +138,8 @@ export const StockAdjustmentInputSchema = z.object({
   delta: z.number().int().min(-10000).max(10000).refine((n) => n !== 0, 'Quantity delta cannot be zero'),
   serials: z.array(z.string().trim().min(1)).optional().default([]),
   reason: z.string().trim().min(1, 'Reason is required').max(200),
+  // GST-exclusive economic cost per added unit. It is deliberately absent on removals.
+  unitCostPaise: z.number().int().min(0).max(1_000_000_000_00).optional(),
   idempotencyKey: z.string().trim().min(1).max(100).optional(),
 }).strict();
 

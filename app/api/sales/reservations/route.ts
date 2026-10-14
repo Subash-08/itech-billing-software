@@ -1,7 +1,6 @@
-import {endpoint, requireIdentity, checkOrigin, jsonBody} from '@/server/auth';
-import {database} from '@/server/db';
-import {createStockReservation, listStockReservations} from '@/server/stock-reservations';
-import {CreateStockReservationSchema} from '@/server/sales-schema';
+import {endpoint, requireIdentity, checkOrigin} from '@/server/auth';
+import {database, AppError} from '@/server/db';
+import {listStockReservations} from '@/server/stock-reservations';
 
 export const runtime = 'nodejs';
 
@@ -19,9 +18,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   return endpoint(async () => {
     checkOrigin(request);
-    const identity = await requireIdentity();
-    const db = await database();
-    const body = CreateStockReservationSchema.parse(await jsonBody(request));
-    return createStockReservation(db, identity, body);
+    await requireIdentity();
+    throw new AppError(410, 'Stock holds are no longer available. Select stock when issuing the invoice.');
   });
 }

@@ -22,7 +22,7 @@ import {
 import {seed} from '@/lib/seed';
 import {useStore} from './store';
 import {PageHead, Card, Btn, Field, Modal, Badge, download} from './ui';
-import {money} from '@/lib/domain';
+import {lineTotal, money} from '@/lib/domain';
 
 type DraftReceivableRow = {
   customerId: string;
@@ -344,6 +344,9 @@ export default function Settings() {
     (acc, l) => acc + (Number(l.quantity) || 0) * (Number(l.unitCostRupees) || 0),
     0
   );
+  const openingUnitCost = (product: any) => product
+    ? lineTotal({qty: 1, rate: Number(product.cost) || 0, tax: Number(product.tax) || 0, discount: 0}, true).base
+    : '';
   const netOpeningAssets = totalCash + totalBank + totalReceivables + totalStockValue - totalPayables;
 
   function buildDraftPayload() {
@@ -570,7 +573,7 @@ export default function Settings() {
                     <div className="notice" style={{backgroundColor: '#fff7ed', borderColor: '#fdba74', color: '#9a3412'}}>
                       <AlertCircle size={18} style={{display: 'inline', marginRight: 6, verticalAlign: 'text-bottom'}} />
                       This cutoff prevents posting documents today. If no sales, purchases, receipts, payments, returns, service jobs,
-                      stock holds or daily closings were recorded, correct it to <b>{previousDate}</b>.
+                      stock movements or daily closings were recorded, correct it to <b>{previousDate}</b>.
                       <div style={{marginTop: 10}}>
                         <Btn secondary onClick={() => setCorrectCutoffConfirm(true)}>Correct cutoff to {previousDate}</Btn>
                       </div>
@@ -938,7 +941,7 @@ export default function Settings() {
                             batchNumber: 'OPEN-01',
                             receivedDate: cutoffDate,
                             quantity: 1,
-                            unitCostRupees: openingProducts[0]?.cost || '',
+                            unitCostRupees: openingUnitCost(openingProducts[0]),
                             serialsText: '',
                           },
                         ])
@@ -956,7 +959,7 @@ export default function Settings() {
                           <th>Product</th>
                           <th>Batch / Lot</th>
                           <th>Qty</th>
-                          <th>Unit Cost (₹)</th>
+                          <th>Unit cost before GST (₹)</th>
                           <th>Total Value</th>
                           <th>Serial Numbers (if tracked)</th>
                           {!isFinalized && <th style={{width: 40}} />}
@@ -981,7 +984,7 @@ export default function Settings() {
                                       const selectedP = openingProducts.find((p) => p.id === e.target.value);
                                       next[i].productId = e.target.value;
                                       if (selectedP && next[i].unitCostRupees === '') {
-                                        next[i].unitCostRupees = selectedP.cost || 0;
+                                        next[i].unitCostRupees = openingUnitCost(selectedP);
                                       }
                                       setDraftStockLots(next);
                                     }}
@@ -1513,7 +1516,7 @@ export default function Settings() {
             </p>
             <div className="notice" style={{backgroundColor: '#fff7ed', borderColor: '#fdba74', color: '#9a3412'}}>
               The server will refuse this correction if any operational sale, purchase bill, receipt, payment, return,
-              service job, stock hold, stock movement or daily closing exists.
+              service job, stock movement or daily closing exists.
             </div>
           </div>
           <div className="form-actions">

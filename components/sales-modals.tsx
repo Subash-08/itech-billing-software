@@ -327,7 +327,6 @@ export function StockAllocationModal({
   const [loadError, setLoadError] = useState('');
   const [reload, setReload] = useState(0);
   const [lots, setLots] = useState<any[]>([]);
-  const [reservations, setReservations] = useState<any[]>([]);
   const [serialsInStock, setSerialsInStock] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [allocRows, setAllocRows] = useState<
@@ -336,7 +335,7 @@ export function StockAllocationModal({
     if ((line as any).stockAllocations && (line as any).stockAllocations.length > 0) {
       return (line as any).stockAllocations.map((a: any) => ({
         lotId: a.lotId,
-        reservationId: a.reservationId || undefined,
+        reservationId: undefined,
         quantity: a.quantity || 1,
         serials: a.serials || [],
       }));
@@ -360,33 +359,18 @@ export function StockAllocationModal({
       })
       .then((payload: any) => {
       const lotRows: any[] = payload.lots || [];
-      const holds: any[] = payload.reservations || [];
       const serialRows: any[] = payload.serials || [];
       if (!active) return;
       const availableLots = lotRows.filter(l => l.quantitySellable > 0).sort((a, b) =>
         String(a.receivedDate ?? '').localeCompare(String(b.receivedDate ?? '')) || String(a._id ?? a.id).localeCompare(String(b._id ?? b.id)));
       setLots(availableLots);
-      setReservations(holds); setSerialsInStock(serialRows);
+      setSerialsInStock(serialRows);
 
-      // Open the picker ready for use. Customer-specific holds are consumed
-      // first, followed by the oldest sellable lots. For serial-tracked stock
-      // the rows are prepared but the cashier still chooses the exact serials.
+      // Open the picker with the oldest sellable lots. For serial-tracked
+      // stock the cashier still chooses the exact physical units.
       if (!((line as any).stockAllocations || []).length) {
         let remaining = qtyRequired;
         const suggested: Array<{lotId: string; reservationId?: string; quantity: number; serials: string[]}> = [];
-        for (const hold of holds) {
-          if (remaining <= 0) break;
-          const capacity = hold.remainingQuantity ?? hold.qty ?? 0;
-          const take = Math.min(remaining, capacity);
-          if (take <= 0 || !hold.lotId) continue;
-          suggested.push({
-            lotId: hold.lotId,
-            reservationId: hold._id || hold.id,
-            quantity: take,
-            serials: (hold.serials || []).slice(0, take),
-          });
-          remaining -= take;
-        }
         for (const lot of availableLots) {
           if (remaining <= 0) break;
           const take = Math.min(remaining, lot.quantitySellable || 0);
@@ -404,25 +388,21 @@ export function StockAllocationModal({
   if (!isOpen) return null;
 
   const totalAllocated = allocRows.reduce((sum, r) => sum + (r.quantity || 0), 0);
-  const isSerialTracked = !!((line as any).isSerialTracked || lots.some(l => l.product?.isSerialTracked) || serialsInStock.length || reservations.some(r => r.serials?.length));
+  const isSerialTracked = !!((line as any).isSerialTracked || lots.some(l => l.product?.isSerialTracked) || serialsInStock.length);
 
   const addAllocationRow = () => {
-    if (!lots.length && !reservations.length) {
-      notify('No available lots or reservations found for this product.');
+    if (!lots.length) {
+      notify('No available stock lots found for this product.');
       return;
     }
-    const usedKeys = new Set(allocRows.map(r => r.reservationId ? `hold:${r.reservationId}` : `lot:${r.lotId}`));
+    const usedKeys = new Set(allocRows.map(r => `lot:${r.lotId}`));
     const nextLot = lots.find(l => !usedKeys.has(`lot:${l._id || l.id}`));
     const defaultLot = nextLot?._id || nextLot?.id || '';
-    const hold = !defaultLot
-      ? reservations.find(r => (r.remainingQuantity ?? r.qty) > 0 && !usedKeys.has(`hold:${r._id || r.id}`))
-      : undefined;
-    if (!defaultLot && !hold) {
+    if (!defaultLot) {
       notify('Every available stock source is already listed. Increase a listed quantity or choose another source.');
       return;
     }
-    setAllocRows((rows) => [...rows, {lotId: defaultLot || hold?.lotId || '',
-      reservationId: hold ? hold._id || hold.id : undefined, quantity: 1, serials: []}]);
+    setAllocRows((rows) => [...rows, {lotId: defaultLot, quantity: 1, serials: []}]);
   };
 
   const autoAllocate = () => {
@@ -458,11 +438,11 @@ export function StockAllocationModal({
       return;
     }
     // Merge duplicate UI rows before submitting. The server intentionally
-    // rejects repeated allocations for the same lot/hold because otherwise a
+    // rejects repeated allocations for the same lot because otherwise a
     // retry could consume the same physical stock twice.
     const mergedBySource = new Map<string, typeof allocRows[number]>();
     for (const row of allocRows) {
-      const key = row.reservationId ? `hold:${row.reservationId}` : `lot:${row.lotId}`;
+      const key = `lot:${row.lotId}`;
       const previous = mergedBySource.get(key);
       if (previous) {
         mergedBySource.set(key, {
@@ -478,9 +458,9 @@ export function StockAllocationModal({
     const used = new Map<string, number>();
     for (const r of normalizedRows) {
       if (!Number.isInteger(r.quantity) || r.quantity <= 0) { notify('Enter a positive whole quantity.'); return; }
-      const source = r.reservationId ? reservations.find(h => (h._id || h.id) === r.reservationId) : lots.find(l => (l._id || l.id) === r.lotId);
-      const capacity = r.reservationId ? source?.remainingQuantity ?? source?.qty ?? 0 : source?.quantitySellable ?? 0;
-      const sourceKey = r.reservationId ? `hold:${r.reservationId}` : `lot:${r.lotId}`;
+      const source = lots.find(l => (l._id || l.id) === r.lotId);
+      const capacity = source?.quantitySellable ?? 0;
+      const sourceKey = `lot:${r.lotId}`;
       used.set(sourceKey, (used.get(sourceKey) ?? 0) + r.quantity);
       if (!source || used.get(sourceKey)! > capacity) { notify('Selected quantity exceeds available stock. Reload the picker.'); return; }
 
@@ -529,7 +509,7 @@ export function StockAllocationModal({
 
         {loadError && <div role="alert" className="notice">{loadError} <Btn secondary onClick={() => setReload(n => n + 1)}>Retry stock loading</Btn></div>}
         {loading ? (
-          <p>Loading available lots and reservations…</p>
+          <p>Loading available stock lots…</p>
         ) : (
           <>
             <div style={{display: 'flex', gap: '0.5rem', justifyContent: 'flex-end'}}>
@@ -541,14 +521,14 @@ export function StockAllocationModal({
               </Btn>
             </div>
             <p className="muted" style={{margin: 0}}>
-              FIFO suggests the oldest received stock. You may select a different lot or serial before confirming. Active stock holds for this customer are suggested first.
+              FIFO suggests the oldest received stock. You may select a different lot or serial before confirming.
             </p>
 
             <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Stock Lot / Reservation</th>
+                    <th>Stock lot</th>
                     <th>Available</th>
                     <th>Allocate Qty</th>
                     {isSerialTracked && <th>Serials</th>}
@@ -562,34 +542,12 @@ export function StockAllocationModal({
                       <tr key={idx}>
                         <td>
                           <select
-                            value={row.reservationId ? `RES:${row.reservationId}` : row.lotId}
+                            value={row.lotId}
                             onChange={(e) => {
                               const val = e.target.value;
-                              if (val.startsWith('RES:')) {
-                                const resId = val.slice(4);
-                                const resObj = reservations.find((r) => (r._id || r.id) === resId);
-                                setAllocRows((rs) =>
-                                  rs.map((r, i) =>
-                                    i === idx
-                                      ? {
-                                          ...r,
-                                          reservationId: resId,
-                                          lotId: resObj?.lotId || r.lotId,
-                                          quantity: Math.min(r.quantity, resObj?.remainingQuantity || r.quantity),
-                                          serials: resObj?.serials || [],
-                                        }
-                                      : r
-                                  )
-                                );
-                              } else {
-                                setAllocRows((rs) =>
-                                  rs.map((r, i) =>
-                                    i === idx
-                                      ? {...r, lotId: val, reservationId: undefined, serials: []}
-                                      : r
-                                  )
-                                );
-                              }
+                              setAllocRows((rs) =>
+                                rs.map((r, i) => i === idx ? {...r, lotId: val, reservationId: undefined, serials: []} : r)
+                              );
                             }}
                           >
                             <optgroup label="Available Stock Lots">
@@ -599,15 +557,6 @@ export function StockAllocationModal({
                                 </option>
                               ))}
                             </optgroup>
-                            {reservations.length > 0 && (
-                              <optgroup label="Active Customer Holds">
-                                {reservations.map((res) => (
-                                  <option key={res._id || res.id} value={`RES:${res._id || res.id}`}>
-                                    Hold {res.reservationNumber || res.id} (Held: {res.remainingQuantity ?? res.qty})
-                                  </option>
-                                ))}
-                              </optgroup>
-                            )}
                           </select>
                           {!row.reservationId && lot && (
                             <small className="muted">
@@ -615,7 +564,7 @@ export function StockAllocationModal({
                             </small>
                           )}
                         </td>
-                        <td>{row.reservationId ? 'From hold' : lot ? lot.quantitySellable : '—'}</td>
+                        <td>{lot ? lot.quantitySellable : '—'}</td>
                         <td>
                           <input
                             type="number"
@@ -633,10 +582,7 @@ export function StockAllocationModal({
                         {isSerialTracked && (
                           <td>
                             <div className="stack">
-                              {(row.reservationId
-                                ? (reservations.find(h => (h._id || h.id) === row.reservationId)?.serials ?? [])
-                                : serialsInStock.filter(s => s.lotId === row.lotId).map(s => s.serialOriginal ?? s.serial ?? s.serialNormalized)
-                              ).map((serial: string) => <label key={serial}>
+                              {serialsInStock.filter(s => s.lotId === row.lotId).map(s => s.serialOriginal ?? s.serial ?? s.serialNormalized).map((serial: string) => <label key={serial}>
                                 <input type="checkbox" checked={row.serials.includes(serial)} onChange={event => {
                                   const checked = event.target.checked;
                                   setAllocRows(rows => rows.map((r, i) => i === idx ? {...r, serials: checked

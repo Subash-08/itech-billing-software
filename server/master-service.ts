@@ -32,6 +32,7 @@ import {
   transitionSerialUnit,
   assertSerialsAvailableForCreation,
 } from './serial-identity';
+import {costWithoutRecoverableGst} from '../lib/pricing-helper';
 
 export const uid = (prefix: string) =>
   `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
@@ -950,12 +951,34 @@ export async function updateProduct(identity: Identity, id: string, input: Produ
           : existing.isSerialTracked;
 
       if (targetTracking !== existing.isSerialTracked) {
-        const hasStockHistory = await col(db, 'stockLots').countDocuments({
-          tenantId: identity.tenantId,
-          productId: id,
-        }, {session});
-        if (hasStockHistory > 0) {
-          throw new AppError(400, 'Cannot change serial tracking mode for a product with existing stock history.');
+        // Tracking mode is part of every document's immutable product snapshot.
+        // Do not create a mixed identity where an older draft expects quantities
+        // while a later receipt or sale expects per-unit serials (or vice versa).
+        const referencedCollections: Array<{name: string; filter: Record<string, unknown>}> = [
+          {name: 'stockLots', filter: {productId: id}},
+          {name: 'stockMovements', filter: {productId: id}},
+          {name: 'stockReservations', filter: {productId: id}},
+          {name: 'purchases', filter: {'lines.productId': id}},
+          {name: 'invoices', filter: {'lines.productId': id}},
+          {name: 'quotations', filter: {'lines.productId': id}},
+          {name: 'serviceJobs', filter: {'parts.productId': id}},
+        ];
+        let isReferenced = false;
+        for (const reference of referencedCollections) {
+          const match = await col(db, reference.name).findOne(
+            {tenantId: identity.tenantId, ...reference.filter},
+            {session, projection: {_id: 1}}
+          );
+          if (match) {
+            isReferenced = true;
+            break;
+          }
+        }
+        if (isReferenced) {
+          throw new AppError(
+            409,
+            'Serial tracking cannot be changed after this product is used in stock or a business document. Create a new product with the required tracking mode.'
+          );
         }
       }
 
@@ -1120,6 +1143,7 @@ export async function adjustProductStock(identity: Identity, id: string, input: 
           const requestedSerials = [...(input.serials || [])].map(canonicalSerialKey).sort();
           const existingSerials = [...(existing.serials || [])].map(canonicalSerialKey).sort();
           const sameRequest = existing.productId === id && existing.qty === input.delta && existing.reason === input.reason &&
+            (input.delta < 0 || (existing.requestedUnitCostPaise ?? null) === (input.unitCostPaise ?? null)) &&
             JSON.stringify(existingSerials) === JSON.stringify(requestedSerials);
           if (!sameRequest) {
             throw new AppError(409, 'This idempotency key was already used for a different stock adjustment.');
@@ -1160,6 +1184,12 @@ export async function adjustProductStock(identity: Identity, id: string, input: 
         }
 
         const lotId = uid('LOT');
+        const unitCostPaise = input.unitCostPaise ?? costWithoutRecoverableGst(
+          product.costPaise || 0,
+          product.taxBasisPoints || 0
+        );
+        const costTotalPaise = unitCostPaise * input.delta;
+        if (!Number.isSafeInteger(costTotalPaise)) throw new AppError(400, 'Stock cost is too large.');
         await col(db, 'stockLots').insertOne(
           {
             _id: lotId,
@@ -1175,7 +1205,9 @@ export async function adjustProductStock(identity: Identity, id: string, input: 
             quantitySold: 0,
             quantityReturned: 0,
             quantityRemoved: 0,
-            costPaise: product.costPaise,
+            costPaise: unitCostPaise,
+            costTotalPaise,
+            costBasis: 'ExcludingRecoverableGST',
             sourceReference: input.reason,
             createdAt: new Date(),
           },
@@ -1218,6 +1250,9 @@ export async function adjustProductStock(identity: Identity, id: string, input: 
             reason: input.reason,
             reference: 'Manual adjustment',
             idempotencyKey: input.idempotencyKey || undefined,
+            requestedUnitCostPaise: input.unitCostPaise,
+            unitCostPaise,
+            costTotalPaise,
             serials: input.serials || [],
             createdAt: new Date(),
             createdBy: identity.userId,
@@ -1261,7 +1296,8 @@ export async function adjustProductStock(identity: Identity, id: string, input: 
         action: 'Adjusted product stock',
         entityType: 'product',
         entityId: id,
-        after: {productId: id, delta: input.delta, reason: input.reason, serials: input.serials},
+        after: {productId: id, delta: input.delta, reason: input.reason, serials: input.serials,
+          ...(input.delta > 0 ? {unitCostPaise: input.unitCostPaise} : {})},
         detail: `Stock adjustment of ${input.delta > 0 ? '+' : ''}${input.delta} on product ${product.name} (${id})`,
       }, session);
 
@@ -1797,6 +1833,12 @@ export async function finalizeOpeningSetup(identity: Identity, options?: Finaliz
         if (!prod.isSerialTracked && lot.serials?.length)
           throw new AppError(400, `Product "${prod.name}" does not accept serial numbers.`);
         const lotId = uid('LOT');
+        const openingUnitCostPaise = lot.costPaise ?? costWithoutRecoverableGst(
+          prod.costPaise || 0,
+          prod.taxBasisPoints || 0
+        );
+        const openingCostTotalPaise = openingUnitCostPaise * lot.qty;
+        if (!Number.isSafeInteger(openingCostTotalPaise)) throw new AppError(400, `Opening stock cost is too large for product "${prod.name}".`);
         const lotDoc = {
           _id: lotId,
           tenantId: identity.tenantId,
@@ -1811,7 +1853,9 @@ export async function finalizeOpeningSetup(identity: Identity, options?: Finaliz
           quantitySold: 0,
           quantityReturned: 0,
           quantityRemoved: 0,
-          costPaise: lot.costPaise ?? prod.costPaise,
+          costPaise: openingUnitCostPaise,
+          costTotalPaise: openingCostTotalPaise,
+          costBasis: 'ExcludingRecoverableGST',
           sourceReference: 'OPENING-SETUP',
           createdAt: new Date(),
         };

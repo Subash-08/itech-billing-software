@@ -1,5 +1,6 @@
 'use client';
 import ProfitAccess from './profit-access';
+import AttentionMenu from './attention-menu';
 import Link from 'next/link';
 import {usePathname, useRouter} from 'next/navigation';
 import {useEffect, useRef, useState, ReactNode} from 'react';
@@ -54,8 +55,7 @@ const groups = [
       ['/inventory', 'Inventory', Package],
       ['/purchases', 'Purchases', Truck],
       ['/suppliers', 'Suppliers', Users],
-      ['/reservations', 'Stock holds', CalendarClock],
-      ['/returns', 'Returns & refunds', ArrowLeftRight],
+      ['/returns', 'Customer returns', ArrowLeftRight],
     ],
   },
   {
@@ -168,7 +168,17 @@ export default function Shell({children}: {children: ReactNode}) {
     : [];
 
   return (
-    <div className="app">
+    <div className="app" onFocusCapture={(event) => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement && target.type === 'number' && /^-?0(?:\.0*)?$/.test(target.value)) {
+        target.select();
+      }
+    }} onWheelCapture={(event) => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement && target.type === 'number' && document.activeElement === target) {
+        target.blur();
+      }
+    }}>
       <aside className={`sidebar ${mobile ? 'open' : ''}`}>
         <Link href="/" className="brand">
           <div className="brand-icon">
@@ -302,7 +312,7 @@ export default function Shell({children}: {children: ReactNode}) {
               <span className="demo-pill">Demo workspace</span>
             ) : null}
             <ProfitAccess />
-            <div className="notification-wrap">
+            {isLive ? <AttentionMenu key={companySession?.user?.email || 'live'} /> : <div className="notification-wrap">
             <button
               className="icon-btn notification-button"
               aria-label="Notifications"
@@ -314,18 +324,10 @@ export default function Shell({children}: {children: ReactNode}) {
             {notifications && (
               <div className="notification-panel">
                 <strong>Needs your attention</strong>
-                <Link href="/inventory" onClick={() => setNotifications(false)}>
-                  2 products are running low
-                </Link>
-                <Link href="/services/JOB-041" onClick={() => setNotifications(false)}>
-                  HP Pavilion ready for collection
-                </Link>
-                <Link href="/profit" onClick={() => setNotifications(false)}>
-                  Complete today’s profit entries
-                </Link>
+                <p>Sign in to see your company's reminders.</p>
               </div>
             )}
-            </div>
+            </div>}
             <div className="account-menu-wrap" ref={accountRef}>
             <button
               className="user-menu"

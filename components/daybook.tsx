@@ -406,10 +406,10 @@ export default function Daybook() {
   };
 
   return (
-    <>
+    <div className="daily-closing-page">
       <PageHead
         title={date ? 'Daily Closing · ' + date : 'Daily Closing'}
-        description="Review sales, enter profit and reconcile cash and the bank account before closing."
+        description="Review sales, profit, cash and Bank/GPay before finishing the business day."
         actions={
           <>
             {date ? (
@@ -418,11 +418,11 @@ export default function Daybook() {
               </Link>
             ) : (
               <Btn secondary onClick={() => setSchedule(true)}>
-                Plan shop holiday
+                Plan a holiday
               </Btn>
             )}
             <Link className="btn secondary" href="/register">
-              Cash & bank register
+              Cashbook
             </Link>
           </>
         }
@@ -524,7 +524,7 @@ export default function Daybook() {
             read-only. Corrections belong to the current open day.
           </div>
 
-          <Card title="Business Day Audit & Closings">
+          <Card title="Closing history">
             {isLoading ? (
               <div className="body-pad" style={{textAlign: 'center', color: '#64748b'}}>
                 Loading closing history…
@@ -539,7 +539,7 @@ export default function Daybook() {
                       <th>Cash Closing</th>
                       <th>Bank Closing</th>
                       <th>Expenses</th>
-                      <th>Entered Profit</th>
+                      <th>Profit review</th>
                       <th>Status</th>
                       <th />
                     </tr>
@@ -723,7 +723,7 @@ export default function Daybook() {
             </Card>
           </div>
 
-          <Card title="Sales, Service and Line Profit">
+          <Card title="Sales and profit review">
             <div className="table-wrap">
               <table>
                 <thead>
@@ -732,7 +732,7 @@ export default function Daybook() {
                     <th>Invoice Amount</th>
                     <th>Outstanding Due</th>
                     <th>Payment Status</th>
-                    <th>Manual Profit (₹)</th>
+                    <th>Profit review (₹)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -753,33 +753,29 @@ export default function Daybook() {
                           </td>
                           <td>
                             {isClosed ? (
-                              <span>
-                                {inv.manualProfitPaise !== null && inv.manualProfitPaise !== undefined
-                                  ? money(inv.manualProfitPaise / 100)
-                                  : 'Locked'}
-                              </span>
-                            ) : !inv.isProfitPending && (inv.manualProfitPaise === null || inv.manualProfitPaise === undefined) ? (
-                              <span className="muted">Entered · unlock profit to view or edit</span>
-                            ) : (
+                              <span>{inv.effectiveProfitPaise != null ? money(inv.effectiveProfitPaise / 100) : 'Locked'}</span>
+                            ) : inv.isProfitPending ? (
                               <input
                                 aria-label={'Profit ' + inv._id}
                                 type="number"
                                 step="0.01"
-                                placeholder="Pending"
-                                value={
-                                  draftProfits[inv._id] !== undefined
-                                    ? draftProfits[inv._id]
-                                    : inv.manualProfitPaise !== null && inv.manualProfitPaise !== undefined
-                                    ? (inv.manualProfitPaise / 100).toFixed(2)
-                                    : ''
-                                }
-                                onChange={e =>
-                                  setDraftProfits({
-                                    ...draftProfits,
-                                    [inv._id]: e.target.value,
-                                  })
-                                }
+                                placeholder="Enter direct profit — cost is missing"
+                                value={draftProfits[inv._id] ?? ''}
+                                onChange={e => setDraftProfits({...draftProfits, [inv._id]: e.target.value})}
                               />
+                            ) : (
+                              <div>
+                                <strong>{inv.effectiveProfitPaise != null ? money(inv.effectiveProfitPaise / 100) : 'Calculated'}</strong>
+                                <small>{inv.manualProfitPaise != null ? 'Owner override' : 'Automatic from taxable sale value − stock/direct cost'}</small>
+                                <input
+                                  aria-label={'Override profit ' + inv._id}
+                                  type="number"
+                                  step="0.01"
+                                  placeholder="Optional override"
+                                  value={draftProfits[inv._id] ?? ''}
+                                  onChange={e => setDraftProfits({...draftProfits, [inv._id]: e.target.value})}
+                                />
+                              </div>
                             )}
                           </td>
                         </tr>
@@ -868,7 +864,7 @@ export default function Daybook() {
             )}
           </Card>
 
-          <Card title="Reconcile Cash and Bank Accounts">
+          <Card title="Check cash and Bank/GPay">
             <div className="table-wrap">
               <table>
                 <thead>
@@ -1046,7 +1042,7 @@ export default function Daybook() {
                         }
                       }}
                     />
-                    Close as shop holiday (zero business activity allowed)
+                    Close as shop holiday (only when there was no business activity)
                   </label>
 
                   {holiday && (
@@ -1059,10 +1055,10 @@ export default function Daybook() {
 
                   <div className="form-actions" style={{display: 'flex', gap: '1rem'}}>
                     <Btn secondary onClick={handleSaveDraft} disabled={isSubmitting}>
-                      Save Draft Counts
+                      Save counts
                     </Btn>
                     <Btn onClick={handleCloseDay} disabled={isSubmitting}>
-                      {isSubmitting ? 'Verifying & Closing…' : 'Reconcile & Close Day'}
+                      {isSubmitting ? 'Verifying & Closing…' : 'Finish daily closing'}
                     </Btn>
                   </div>
                 </>
@@ -1133,7 +1129,7 @@ export default function Daybook() {
                 placeholder="Weekly holiday, festival, etc."
               />
             </Field>
-            <Btn onClick={handleScheduleHoliday}>Plan shop holiday</Btn>
+            <Btn onClick={handleScheduleHoliday}>Plan a holiday</Btn>
           </div>
         </Modal>
       )}
@@ -1296,6 +1292,6 @@ export default function Daybook() {
           </div>
         </Modal>
       )}
-    </>
+    </div>
   );
 }

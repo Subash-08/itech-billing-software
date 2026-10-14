@@ -7,6 +7,9 @@ import {useStore} from './store';
 import {money, roundedTotal, credits, dateLabel, TODAY} from '@/lib/domain';
 import {purchaseLineBalances} from '@/lib/settlement';
 import SupplierSettlement from './supplier-settlement';
+import SupplierReturnForm from './supplier-return-form';
+import SupplierDeadline from './supplier-deadline';
+import {useSearchParams} from 'next/navigation';
 import {Card, Btn, Badge, Field, Modal, csvDownload} from './ui';
 import {mapPurchaseFromApi} from '@/lib/mappers';
 
@@ -29,6 +32,14 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
 
   const [tab, setTab] = useState(supplier ? 'Overview' : 'Overview');
   const [pay, setPay] = useState(false);
+  const [returnPurchase, setReturnPurchase] = useState<string | null>(null);
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    const target = searchParams.get('tab');
+    if (supplier && ['Purchases', 'Returns', 'Payables', 'Advances & credits'].includes(target || '')) setTab(target!);
+    const purchaseId = searchParams.get('purchase');
+    if (supplier && target === 'Returns' && purchaseId) setReturnPurchase(purchaseId);
+  }, [supplier, searchParams]);
 
   // Supplier Statement Tab State
   const [statementData, setStatementData] = useState<any>(null);
@@ -92,7 +103,6 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
   const [acceptCnNumber, setAcceptCnNumber] = useState('');
   const [acceptCnAmount, setAcceptCnAmount] = useState('');
   const [acceptCnDate, setAcceptCnDate] = useState(TODAY);
-  const [acceptCnAllocate, setAcceptCnAllocate] = useState(true);
   const [acceptCnBusy, setAcceptCnBusy] = useState(false);
   const acceptAttempt = useRef<{fingerprint: string; key: string} | null>(null);
   const acceptSubmitting = useRef(false);
@@ -448,7 +458,7 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
         supplierCreditNoteNumber: acceptCnNumber.trim() || undefined,
         date: acceptCnDate || TODAY,
         acceptedCreditPaise: Math.round(amt * 100),
-        allocateToBillDue: acceptCnAllocate,
+        allocateToBillDue: true,
       };
       const fingerprint = JSON.stringify({returnId, ...payload});
       if (acceptAttempt.current?.fingerprint !== fingerprint)
@@ -503,7 +513,7 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
       <div className="tabs">
         {availableTabs.map((t) => (
           <button key={t} type="button" className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
-            {t}
+            {t === 'Payables' ? 'Unpaid bills' : t === 'Advances & credits' ? 'Supplier balance' : t === 'Returns' ? 'Product returns' : t}
           </button>
         ))}
       </div>
@@ -529,7 +539,7 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
         supplier ? (
           <Card
             title="Purchased products and payment allocation"
-            actions={<Btn onClick={() => setPay(true)}>Pay selected products</Btn>}
+            actions={<Btn onClick={() => setPay(true)}>Pay supplier</Btn>}
           >
             <div className="table-wrap">
               <table>
@@ -607,7 +617,10 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
                   <th>Bill</th>
                   <th>Receipt</th>
                   <th>Payment</th>
-                  <th>Total</th>
+                  <th>Original bill</th>
+                  <th>Remaining</th>
+                  <th>Payment deadline</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -615,14 +628,17 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
                   <tr key={p._id || p.id}>
                     <td><Link href={`/purchases/${p._id || p.id}`}>{p.purchaseNumber || p.id}</Link></td>
                     <td>{dateLabel(p.orderDate || p.date)}</td>
-                    <td><Badge>{p.billStatus || p.status}</Badge></td>
-                    <td><Badge>{p.receiptStatus || '—'}</Badge></td>
-                    <td><Badge>{p.paymentStatus || '—'}</Badge></td>
+                    <td><Badge>{p.billStatus === 'FullyCredited' ? 'Settled by credit' : p.billStatus === 'Credited' ? 'Reduced by supplier credit' : p.billStatus || p.status}</Badge></td>
+                    <td><Badge>{p.receiptStatus || '—'}</Badge>{(p.lines || []).some((line: any) => Number(line.quantityReturned || 0) > 0) && <small>Product returned</small>}</td>
+                    <td><Badge>{p.paymentStatus === 'PartlyPaid' ? 'Partly paid' : p.paymentStatus || '—'}</Badge></td>
                     <td>{money((p.totalPaise ?? Math.round(roundedTotal(p) * 100)) / 100)}</td>
+                    <td>{money(Number(p.dueAmount ?? ((p.duePaise || 0) / 100)))}</td>
+                    <td>{p.promisedPaymentDate || p.dueDate || '—'}{p.promisedPaymentDate && p.promisedPaymentDate !== p.dueDate && <small>Original: {p.dueDate}</small>}</td>
+                    <td><div className="actions">{p.receiptStatus !== 'NotReceived' && p.receiptStatus !== 'Reversed' && <Btn secondary onClick={() => setReturnPurchase(p._id || p.id)}>Return products</Btn>}{Number(p.duePaise ?? p.dueAmount ?? 0) > 0 && <SupplierDeadline purchaseId={p._id || p.id} onSaved={loadPurchases} />}</div></td>
                   </tr>
                 ))}
                 {!(isLive ? livePurchases : purchases).length && (
-                  <tr><td colSpan={6} className="muted body-pad">No purchases found.</td></tr>
+                  <tr><td colSpan={9} className="muted body-pad">No purchases found.</td></tr>
                 )}
               </tbody>
             </table>
@@ -701,7 +717,10 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
       )}
 
       {supplier && tab === 'Returns' && (
-        <Card title="Supplier returns and credit status">
+        <Card title="Supplier returns and credit status" actions={<Btn onClick={() => setReturnPurchase('')}>Return products</Btn>}>
+          <div className="body-pad notice" style={{margin: 12}}>
+            Returning products removes stock first. Confirming the supplier reduction then lowers the unpaid bill. The original bill total stays unchanged for audit history.
+          </div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -709,9 +728,10 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
                   <th>Return</th>
                   <th>Date</th>
                   <th>Purchase</th>
-                  <th>Condition</th>
+                  <th>Product</th>
                   <th>Quantity</th>
-                  <th>Credit status</th>
+                  <th>Expected reduction</th>
+                  <th>Bill status</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -721,9 +741,10 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
                     <td>{r.returnNumber || r._id}</td>
                     <td>{dateLabel(r.date)}</td>
                     <td><Link href={`/purchases/${r.purchaseId}`}>{r.purchaseNumber || r.purchaseId}</Link></td>
-                    <td>{r.condition}</td>
+                    <td>{r.productName || r.productId || 'Product'}<small>{r.condition === 'Defective' ? 'Defective stock' : 'Available stock'}</small></td>
                     <td>{r.quantity}</td>
-                    <td><Badge>{r.creditStatus || (r.creditNoteId ? 'Accepted' : 'Awaiting credit')}</Badge></td>
+                    <td>{returnCreditPaise(r) == null ? '—' : money(returnCreditPaise(r) / 100)}</td>
+                    <td><Badge>{r.isReversed ? 'Return cancelled' : r.creditNoteId || r.status === 'CreditAccepted' ? 'Bill reduced' : 'Waiting for supplier confirmation'}</Badge></td>
                     <td>
                       <div style={{display: 'flex', gap: '0.35rem', flexWrap: 'wrap'}}>
                         {r.creditStatus !== 'Accepted' && !r.creditNoteId && !r.isReversed && (
@@ -733,13 +754,12 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
                             onClick={() => {
                               setAcceptCnModal({open: true, returnDoc: r});
                               setAcceptCnAmount(returnCreditPaise(r) == null ? '' : (returnCreditPaise(r) / 100).toFixed(2));
-                              setAcceptCnAllocate(true);
                               setAcceptCnDate(currentBusinessDate());
                               acceptAttempt.current = null;
                               setAcceptCnNumber('');
                             }}
                           >
-                            Confirm supplier credit
+                            Confirm bill reduction
                           </Btn>
                         )}
                         {r.canReverse && !r.isReversed && (
@@ -764,7 +784,7 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
                     </td>
                   </tr>
                 ))}
-                {!liveReturns.length && <tr><td colSpan={7} className="muted body-pad">No supplier returns found.</td></tr>}
+                {!liveReturns.length && <tr><td colSpan={8} className="muted body-pad">No supplier returns found.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -943,17 +963,17 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
       {/* Phase 3.5: Advances Tab */}
       {tab === 'Advances & credits' && (
         <Card
-          title="Supplier advances and prepayments"
-          actions={<Btn onClick={() => setCreditNoteModal(true)}>Record credit note</Btn>}
+          title="Available supplier balance"
+          actions={<Btn onClick={() => setCreditNoteModal(true)}>Add supplier adjustment</Btn>}
         >
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Advance ID</th>
+                  <th>Reference</th>
                   <th>Date</th>
-                  <th>Total Advance</th>
-                  <th>Consumed</th>
+                  <th>Original amount</th>
+                  <th>Used / refunded</th>
                   <th>Available</th>
                   <th>Status</th>
                   <th>Actions</th>
@@ -964,7 +984,7 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
                   const availablePaise = adv.remainingAmountPaise ?? Math.max(0, (adv.originalAmountPaise || 0) - (adv.allocatedPaise || 0) - (adv.refundedPaise || 0));
                   return (
                     <tr key={adv._id || adv.id || adv.advanceNumber}>
-                      <td><strong>{adv.advanceNumber || adv._id || adv.id}</strong></td>
+                      <td><strong>{adv.advanceNumber || adv._id || adv.id}</strong><small>{adv.sourceType === 'CreditNoteExcess' ? 'Return / supplier credit' : adv.sourceType === 'PaymentOverpay' ? 'Extra payment' : adv.sourceType === 'ReversalCredit' ? 'Released payment' : 'Advance paid'}</small></td>
                       <td>{dateLabel(String(adv.date || adv.effectiveDate || adv.createdAt || TODAY).slice(0, 10))}</td>
                       <td>{money((adv.originalAmountPaise || 0) / 100)}</td>
                       <td>{money(((adv.allocatedPaise || 0) + (adv.refundedPaise || 0)) / 100)}</td>
@@ -1008,7 +1028,7 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
                 {!advancesData.length && (
                   <tr>
                     <td colSpan={7} className="muted body-pad">
-                      {advancesLoading ? 'Loading advances...' : 'No advance payments recorded for this supplier.'}
+                      {advancesLoading ? 'Loading supplier balance...' : 'No unused advance or return credit for this supplier.'}
                     </td>
                   </tr>
                 )}
@@ -1074,7 +1094,7 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
                     </td>
                     <td>{bill.supplierInvoiceNumber || bill.reference || '—'}<small>{bill.description || ''}</small></td>
                     <td>{dateLabel(bill.date)}</td>
-                    <td>—</td>
+                    <td>{bill.dueDate || '—'}{bill.originalDueDate && bill.originalDueDate !== bill.dueDate && <small>Original: {bill.originalDueDate}</small>}</td>
                     <td>{money((bill.originalAmountPaise || 0) / 100)}</td>
                     <td>
                       <strong style={{color: 'var(--error, #e53935)'}}>
@@ -1225,13 +1245,13 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
       {/* Standalone Credit Note Modal */}
       {creditNoteModal && (
         <Modal
-          title="Record Supplier Credit Note"
+          title="Add supplier adjustment"
           onClose={() => setCreditNoteModal(false)}
         >
           <form onSubmit={handleCreateCreditNote}>
             <div className="form-body stack">
               <p className="notice">
-                Issue a financial credit note from the supplier (rate difference, discount, rebate, settlement).
+                Use this only for a supplier-approved discount, rate difference or rebate that is not a product return.
               </p>
               <Field label="Reason *">
                 <select
@@ -1305,7 +1325,7 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
                 Cancel
               </Btn>
               <Btn type="submit" disabled={cnBusy}>
-                {cnBusy ? 'Recording…' : 'Issue credit note'}
+                {cnBusy ? 'Recording…' : 'Save supplier adjustment'}
               </Btn>
             </div>
           </form>
@@ -1321,7 +1341,7 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
           <form onSubmit={handleAcceptReturnCreditNote}>
             <div className="form-body stack">
               <p className="notice">
-                No payment is made here. Confirm how much the supplier agrees to deduct for the returned goods. The suggested amount comes from the original purchase, including its discount and tax. If credit exceeds the amount still owed on this line, the excess becomes supplier credit; it is not a cash refund.
+                No money is paid here. Confirm the value the supplier agreed to remove from the bill. The suggested value comes from the original purchase, including discount and tax. Any amount above the remaining bill becomes available supplier balance.
               </p>
               <Field label="Supplier credit note number (optional)">
                 <input
@@ -1330,7 +1350,7 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
                   onChange={(e) => setAcceptCnNumber(e.target.value)}
                 />
               </Field>
-              <Field label="Supplier-agreed bill reduction (₹) *" hint="Keep the suggested return value unless the supplier agrees a smaller amount. Do not enter money paid.">
+              <Field label="Bill reduction agreed by supplier (₹) *" hint="Keep the suggested value unless the supplier approved a different, smaller value. This is not a payment.">
                 <input
                   required
                   type="number"
@@ -1350,21 +1370,14 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
                   onChange={(e) => setAcceptCnDate(e.target.value)}
                 />
               </Field>
-              <label style={{display: 'flex', gap: '0.5rem', alignItems: 'center', cursor: 'pointer', marginTop: '0.25rem'}}>
-                <input
-                  type="checkbox"
-                  checked={acceptCnAllocate}
-                  onChange={(e) => setAcceptCnAllocate(e.target.checked)}
-                />
-                <span>Reduce the original purchase-line due (recommended). Uncheck only to keep all of this amount as supplier credit for later use.</span>
-              </label>
+              <p className="muted">The original bill balance will be reduced first. Any extra becomes available supplier balance for another bill or a Cash/Bank refund.</p>
             </div>
             <div className="form-actions">
               <Btn secondary onClick={() => setAcceptCnModal({open: false, returnDoc: null})}>
                 Cancel
               </Btn>
               <Btn type="submit" disabled={acceptCnBusy}>
-                {acceptCnBusy ? 'Confirming…' : 'Confirm credit — no payment'}
+                {acceptCnBusy ? 'Confirming…' : 'Confirm bill reduction'}
               </Btn>
             </div>
           </form>
@@ -1404,7 +1417,8 @@ export default function AccountHistory({id, supplier = false, profile}: {id: str
         </Modal>
       )}
 
-      {pay && <SupplierSettlement supplierId={id} onClose={() => setPay(false)} />}
+      {pay && <SupplierSettlement supplierId={id} onClose={() => {setPay(false); void loadPurchases(); void loadPayments(); loadAdvances();}} />}
+      {returnPurchase !== null && <SupplierReturnForm supplierId={id} initialPurchaseId={returnPurchase} onClose={() => {setReturnPurchase(null); void loadReturns(); void loadPurchases(); window.dispatchEvent(new Event('itech:attention-refresh'));}} />}
     </div>
   );
 }

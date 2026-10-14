@@ -4,7 +4,7 @@ import {useStore} from './store';
 import {Btn, Modal, Field} from './ui';
 
 export default function ProfitAccess() {
-  const {role, setRole, notify, isLive} = useStore();
+  const {role, setRole, notify, isLive, setProfitUnlocked} = useStore();
   const [open, setOpen] = useState(false);
   const [password, setPassword] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -18,6 +18,7 @@ export default function ProfitAccess() {
       }
     }
     setRole('Staff');
+    setProfitUnlocked(false);
     notify('Profit totals locked.');
   };
 
@@ -34,6 +35,7 @@ export default function ProfitAccess() {
         return;
       }
       setRole('Owner');
+      setProfitUnlocked(true);
       setPassword('');
       setOpen(false);
       notify('Profit totals unlocked.');
@@ -53,6 +55,7 @@ export default function ProfitAccess() {
       }
 
       setRole('Owner');
+      setProfitUnlocked(true, data.unlockedUntil);
       setPassword('');
       setOpen(false);
       notify('Profit totals unlocked. Session valid for 10 minutes.');

@@ -6,25 +6,25 @@ import {money, uid} from '@/lib/domain';
 import {useStore} from './store';
 import {Btn, Field, Modal} from './ui';
 
-async function read(url: string, signal: AbortSignal) {
-  const res = await fetch(url, {signal, cache: 'no-store'});
+async function read(url: string) {
+  const res = await fetch(url, {cache: 'no-store'});
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Could not load supplier stock.');
   return data;
 }
 
 // Never silently truncate a stock/serial selector.
-async function readPages(url: string, signal: AbortSignal) {
+async function readPages(url: string) {
   const records: any[] = [];
   for (let page = 1; page <= 20; page++) {
-    const data = await read(`${url}&limit=100&page=${page}`, signal);
+    const data = await read(`${url}&limit=100&page=${page}`);
     records.push(...(data.records || []));
     if (page >= (data.totalPages || 1)) return records;
   }
   throw new Error('More than 2,000 records match. A narrower stock selector is required; no partial stock list was used.');
 }
 
-export default function SupplierReturnForm({initialPurchaseId, onClose}: {initialPurchaseId: string; onClose: () => void}) {
+export default function SupplierReturnForm({initialPurchaseId, supplierId, onClose}: {initialPurchaseId: string; supplierId?: string; onClose: () => void}) {
   const {recordSupplierReturnApi} = useStore();
   const [purchaseId, setPurchaseId] = useState(initialPurchaseId);
   const [search, setSearch] = useState('');
@@ -53,46 +53,47 @@ export default function SupplierReturnForm({initialPurchaseId, onClose}: {initia
   const tracked = !!line?.productSnapshot?.isSerialTracked;
 
   useEffect(() => {
-    const controller = new AbortController();
-    read(`/api/purchases?search=${encodeURIComponent(search)}&page=${page}&limit=25`, controller.signal)
-      .then(data => { setBills(data.records || []); setPages(data.totalPages || 1); })
-      .catch(e => { if (e.name !== 'AbortError') setError(e.message); });
-    return () => { try { if (!controller.signal.aborted) controller.abort('supplier-bill-search-replaced'); } catch {} };
-  }, [search, page]);
+    let active = true;
+    const timer = setTimeout(() => { void read(`/api/purchases?search=${encodeURIComponent(search)}&page=${page}&limit=25${supplierId ? `&supplierId=${encodeURIComponent(supplierId)}` : ''}`)
+      .then(data => { if (active) { setBills(data.records || []); setPages(data.totalPages || 1); } })
+      .catch(e => { if (active) setError(e.message); }); }, 250);
+    return () => { active = false; clearTimeout(timer); };
+  }, [search, page, supplierId]);
 
   useEffect(() => {
-    const controller = new AbortController();
+    let active = true;
     setPurchase(null); setLineId(''); setLots([]); setLotId(''); setSerials([]); setError('');
-    if (!purchaseId) return () => { try { if (!controller.signal.aborted) controller.abort('no-purchase-selected'); } catch {} };
+    if (!purchaseId) return () => { active = false; };
     setLoading(true);
-    read(`/api/purchases/${encodeURIComponent(purchaseId)}`, controller.signal)
-      .then(data => setPurchase(data.purchase))
-      .catch(e => { if (e.name !== 'AbortError') setError(e.message); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => { try { if (!controller.signal.aborted) controller.abort('purchase-selection-replaced'); } catch {} };
-  }, [purchaseId, reload]);
+    read(`/api/purchases/${encodeURIComponent(purchaseId)}`)
+      .then(data => { if (!active) return; if (supplierId && data.purchase?.supplierId !== supplierId) throw new Error('Choose a bill from this supplier.'); setPurchase(data.purchase); })
+      .catch(e => { if (active) setError(e.message); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [purchaseId, reload, supplierId]);
 
   useEffect(() => {
-    const controller = new AbortController();
+    let active = true;
     setLots([]); setLotId(''); setSerials([]); setUnits([]);
-    if (!line?.productId) return () => { try { if (!controller.signal.aborted) controller.abort('no-product-line-selected'); } catch {} };
-    readPages(`/api/inventory/lots?productId=${encodeURIComponent(line.productId)}`, controller.signal)
+    if (!line?.productId) return () => { active = false; };
+    readPages(`/api/inventory/lots?productId=${encodeURIComponent(line.productId)}`)
       .then(data => {
+        if (!active) return;
         const matched = data.filter(l => l.purchaseId === purchaseId && l.purchaseLineId === lineId);
         setLots(matched);
         if (matched.length === 1) setLotId(matched[0]._id);
       })
-      .catch(e => { if (e.name !== 'AbortError') setError(e.message); });
-    return () => { try { if (!controller.signal.aborted) controller.abort('purchase-line-replaced'); } catch {} };
+      .catch(e => { if (active) setError(e.message); });
+    return () => { active = false; };
   }, [purchaseId, lineId, line?.productId]);
 
   useEffect(() => {
-    const controller = new AbortController();
+    let active = true;
     setUnits([]); setSerials([]);
-    if (!tracked || !lotId) return () => { try { if (!controller.signal.aborted) controller.abort('serial-load-not-required'); } catch {} };
-    readPages(`/api/inventory/serials?lotId=${encodeURIComponent(lotId)}&status=${condition === 'Defective' ? 'Defective' : 'InStock'}`, controller.signal)
-      .then(setUnits).catch(e => { if (e.name !== 'AbortError') setError(e.message); });
-    return () => { try { if (!controller.signal.aborted) controller.abort('receipt-lot-replaced'); } catch {} };
+    if (!tracked || !lotId) return () => { active = false; };
+    readPages(`/api/inventory/serials?lotId=${encodeURIComponent(lotId)}&status=${condition === 'Defective' ? 'Defective' : 'InStock'}`)
+      .then(data => { if (active) setUnits(data); }).catch(e => { if (active) setError(e.message); });
+    return () => { active = false; };
   }, [lotId, condition, tracked]);
 
   async function submit(e: React.FormEvent) {
@@ -120,7 +121,7 @@ export default function SupplierReturnForm({initialPurchaseId, onClose}: {initia
       <h3>Stock returned · awaiting supplier credit</h3>
       <p>{done.returnNumber || done._id}: {quantity} unit(s) returned. Estimated credit: {money((done.totalReturnCreditPaise || 0) / 100)}.</p>
       <p>The return removes stock. Supplier dues change only after accepting the supplier credit note. No cash or account money moves at this step.</p>
-      <Link className="btn" href={`/suppliers/${purchase.supplierId}`}>Open supplier · accept credit note</Link>
+      <Link className="btn" href={`/suppliers/${purchase.supplierId}?tab=Returns`}>Open supplier returns · confirm bill reduction</Link>
       <Btn secondary onClick={onClose}>Close</Btn>
     </div> : <form onSubmit={submit} className="stack body-pad">
       {error && <div role="alert" className="notice">{error} <Btn secondary onClick={() => { setError(''); setReload(n => n + 1); }}>Reload stock and bill</Btn></div>}
@@ -144,7 +145,7 @@ export default function SupplierReturnForm({initialPurchaseId, onClose}: {initia
         <Field label="Stock condition"><select value={condition} onChange={e => setCondition(e.target.value)}><option value="Sellable">Available stock</option><option value="Defective">Defective stock</option></select></Field>
         <Field label={`Quantity to return * (${available} available in selected condition)`}><input type="number" required min={1} max={available} step={1} value={quantity} onChange={e => {setQuantity(Number(e.target.value)); setSerials([]);}} /></Field>
         {tracked && <Field label={`Serial numbers (${serials.length} / ${quantity})`}><div className="serial-list">{units.map(u => {const serial = u.serialNormalized || u.serial; return <label key={u._id}><input type="checkbox" checked={serials.includes(serial)} disabled={!serials.includes(serial) && serials.length >= quantity} onChange={e => setSerials(old => e.target.checked ? [...old, serial] : old.filter(s => s !== serial))} />{serial}</label>;})}{!units.length && <p>No eligible serial numbers in this condition.</p>}</div></Field>}
-        <p>Sold and reserved units cannot be returned directly. First record a genuine customer return or release the stock hold. For stock from multiple receipts, record each receipt lot separately.</p>
+        <p>Sold or otherwise unavailable units cannot be returned directly. Record a genuine customer return first when a sold item comes back. For stock from multiple receipts, record each receipt lot separately.</p>
         <p>Return credit is calculated by the server from the original line, discounts and tax. Accept the supplier credit note separately; do not enter a duplicate expense or payment.</p>
         <Field label="Reason *"><input required maxLength={500} value={reason} onChange={e => setReason(e.target.value)} /></Field>
         <div className="actions"><Btn secondary onClick={onClose}>Cancel</Btn><Btn type="submit" disabled={busy || loading || !lot || available < 1}>{busy ? 'Recording…' : 'Confirm stock return'}</Btn></div>
