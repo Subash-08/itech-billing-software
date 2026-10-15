@@ -1,10 +1,11 @@
 'use client';
 import {useState, useEffect, useCallback} from 'react';
 import Link from 'next/link';
-import {Plus, Pencil, ArrowUpRight, ChevronLeft, ChevronRight} from 'lucide-react';
+import {Plus, Pencil, ArrowUpRight, ChevronLeft, ChevronRight, UserPlus} from 'lucide-react';
 import {Enquiry, TODAY, uid, money} from '@/lib/domain';
 import {useStore, PaginationResult} from './store';
 import {PageHead, Card, SearchBox, Btn, Modal, Field, Badge, Empty} from './ui';
+import {PersonForm} from './people';
 
 const cats = ['New laptop', 'Used laptop', 'PC build', 'Accessories', 'Other'];
 
@@ -17,7 +18,14 @@ export default function Enquiries() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [newCustomer, setNewCustomer] = useState(false);
   const [liveData, setLiveData] = useState<PaginationResult<Enquiry> | null>(null);
+
+  const categoryOptions = Array.from(new Set([
+    ...cats,
+    ...state.enquiries.map((item) => item.category).filter(Boolean),
+    ...(liveData?.records || []).map((item) => item.category).filter(Boolean),
+  ])).sort((a, b) => a.localeCompare(b));
 
   const loadLiveEnquiries = useCallback(async () => {
     if (!isLive) return;
@@ -140,19 +148,19 @@ export default function Enquiries() {
             }}
             placeholder="Search customer or requirement…"
           />
-          <select
+          <input
             aria-label="Enquiry category"
-            value={cat}
+            list="enquiry-filter-categories"
+            value={cat === 'All' ? '' : cat}
             onChange={(e) => {
-              setCat(e.target.value);
+              setCat(e.target.value.trim() || 'All');
               setPage(1);
             }}
-          >
-            <option>All</option>
-            {cats.map((c) => (
-              <option key={c}>{c}</option>
-            ))}
-          </select>
+            placeholder="All categories"
+          />
+          <datalist id="enquiry-filter-categories">
+            {categoryOptions.map((c) => <option key={c} value={c} />)}
+          </datalist>
           <select
             aria-label="Enquiry status"
             value={status}
@@ -274,28 +282,37 @@ export default function Enquiries() {
           <form onSubmit={handleSave}>
             <div className="form-body form-grid">
               <Field label="Customer">
-                <select
-                  required
-                  value={form.customerId}
-                  onChange={(e) => setForm({...form, customerId: e.target.value})}
-                >
-                  <option value="">Select customer</option>
-                  {state.customers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} {c.phone ? `(${c.phone})` : ''}
-                    </option>
-                  ))}
-                </select>
+                <div className="field-with-action">
+                  <select
+                    required
+                    value={form.customerId}
+                    onChange={(e) => setForm({...form, customerId: e.target.value})}
+                  >
+                    <option value="">Select customer</option>
+                    {state.customers.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} {c.phone ? `(${c.phone})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="button" className="btn secondary" onClick={() => setNewCustomer(true)}>
+                    <UserPlus size={15} /> Add customer
+                  </button>
+                </div>
               </Field>
               <Field label="Category">
-                <select
+                <input
+                  required
+                  list="enquiry-form-categories"
                   value={form.category}
                   onChange={(e) => setForm({...form, category: e.target.value})}
-                >
-                  {cats.map((c) => (
-                    <option key={c}>{c}</option>
-                  ))}
-                </select>
+                  placeholder="Choose or type a category"
+                  maxLength={80}
+                />
+                <datalist id="enquiry-form-categories">
+                  {categoryOptions.map((c) => <option key={c} value={c} />)}
+                </datalist>
+                <small className="muted">Choose a suggestion or type a new category.</small>
               </Field>
               <div className="full">
                 <Field label="What are they looking for?">
@@ -364,6 +381,14 @@ export default function Enquiries() {
             </div>
           </form>
         </Modal>
+      )}
+      {newCustomer && (
+        <PersonForm
+          onClose={() => setNewCustomer(false)}
+          onSuccess={(person) => {
+            if (person?.id && form) setForm({...form, customerId: person.id});
+          }}
+        />
       )}
     </>
   );

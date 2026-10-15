@@ -22,19 +22,38 @@ import {useStore} from './store';
 import {Card, Stat, PageHead, Badge} from './ui';
 import {TODAY, roundedTotal, money, shortMoney, accountBalance, balance} from '@/lib/domain';
 
+function shiftDate(date: string, days: number) {
+  return new Date(new Date(date + 'T12:00:00').getTime() + days * 86400000).toISOString().slice(0, 10);
+}
+
 export default function Dashboard() {
   const {state, isLive, companySession} = useStore();
   const [liveData, setLiveData] = useState<any>(null);
   const [loadError, setLoadError] = useState('');
   const [revision, setRevision] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [dashboardDate, setDashboardDate] = useState(TODAY);
+  const [summaryPreset, setSummaryPreset] = useState<'today' | '7d' | 'custom'>('today');
+  const [customFrom, setCustomFrom] = useState(TODAY);
+  const [customTo, setCustomTo] = useState(TODAY);
   const lastLoadedAt = useRef(0);
+  const summaryFrom = summaryPreset === 'today' ? dashboardDate : summaryPreset === '7d' ? shiftDate(dashboardDate, -6) : customFrom;
+  const summaryTo = summaryPreset === 'custom' ? customTo : dashboardDate;
+
+  const changeDashboardDate = (value: string) => {
+    const nextDate = value || TODAY;
+    setDashboardDate(nextDate);
+    setSummaryPreset('today');
+    setCustomFrom(nextDate);
+    setCustomTo(nextDate);
+  };
 
   useEffect(() => {
     if (!isLive) return;
     let active = true;
     setLoadError(''); setRefreshing(true);
-    fetch('/api/company/dashboard', {cache: 'no-store'})
+    const params = new URLSearchParams({from: summaryFrom, to: summaryTo});
+    fetch(`/api/company/dashboard?${params.toString()}`, {cache: 'no-store'})
       .then(async res => { const data = await res.json(); if (!res.ok || data.error) throw new Error(data.error || 'Dashboard unavailable.'); return data; })
       .then((data) => {
         if (active && data && !data.error) {
@@ -47,7 +66,7 @@ export default function Dashboard() {
     return () => {
       active = false;
     };
-  }, [isLive, revision, companySession?.company?.name]);
+  }, [isLive, revision, companySession?.company?.name, companySession?.profitUnlocked, summaryFrom, summaryTo]);
 
   useEffect(() => {
     const refresh = () => {
@@ -59,24 +78,8 @@ export default function Dashboard() {
 
   // Demo fallbacks
   const demoSales = state.bills.filter((b) => b.kind !== 'Quotation' && b.status === 'Issued');
-  const demoToday = demoSales.filter((b) => b.date === TODAY);
   const demoLow = state.products.filter((p) => p.stock <= p.low);
 
-  const todaySalesTotal = isLive && liveData
-    ? (liveData.sales?.todayTotalPaise || 0) / 100
-    : demoToday.reduce((a, b) => a + roundedTotal(b), 0);
-
-  const todaySalesCount = isLive && liveData
-    ? (liveData.sales?.todayCount || 0)
-    : demoToday.length;
-
-  const cashBalance = isLive && liveData
-    ? (liveData.cash?.balancePaise || 0) / 100
-    : accountBalance(state, 'Cash');
-
-  const bankBalance = isLive && liveData ? (liveData.bank?.balancePaise || 0) / 100 : accountBalance(state, 'Bank account');
-  const moneyInToday = isLive && liveData ? (liveData.moneyToday?.inPaise || 0) / 100 : 0;
-  const moneyOutToday = isLive && liveData ? (liveData.moneyToday?.outPaise || 0) / 100 : 0;
   const customerDues = isLive && liveData ? (liveData.dues?.customerOutstandingPaise || 0) / 100 : 0;
   const supplierDues = isLive && liveData ? (liveData.dues?.supplierOutstandingPaise || 0) / 100 : 0;
 
@@ -117,6 +120,53 @@ export default function Dashboard() {
           amountPaise: Math.round(p.amount * 100),
         }));
 
+  const demoPeriodBills = demoSales.filter(b => b.date >= summaryFrom && b.date <= summaryTo);
+  const demoPeriodPayments = state.payments.filter(p => p.date >= summaryFrom && p.date <= summaryTo);
+  const demoCashIn = demoPeriodPayments.filter(p => p.direction === 'In' && p.account === 'Cash').reduce((sum, p) => sum + p.amount, 0);
+  const demoBankIn = demoPeriodPayments.filter(p => p.direction === 'In' && p.account !== 'Cash').reduce((sum, p) => sum + p.amount, 0);
+  const demoCashOut = demoPeriodPayments.filter(p => p.direction === 'Out' && p.account === 'Cash').reduce((sum, p) => sum + p.amount, 0);
+  const demoBankOut = demoPeriodPayments.filter(p => p.direction === 'Out' && p.account !== 'Cash').reduce((sum, p) => sum + p.amount, 0);
+  const periodSummary = isLive && liveData?.periodSummary
+    ? liveData.periodSummary
+    : {
+        dateFrom: summaryFrom,
+        dateTo: summaryTo,
+        sales: {
+          totalPaise: Math.round(demoPeriodBills.reduce((sum, bill) => sum + roundedTotal(bill), 0) * 100),
+          invoiceCount: demoPeriodBills.length,
+          newGoodsPaise: Math.round(demoPeriodBills.filter(b => b.category === 'New goods').reduce((sum, bill) => sum + roundedTotal(bill), 0) * 100),
+          usedGoodsPaise: Math.round(demoPeriodBills.filter(b => b.category === 'Used goods').reduce((sum, bill) => sum + roundedTotal(bill), 0) * 100),
+          servicePaise: Math.round(demoPeriodBills.filter(b => b.category === 'Service').reduce((sum, bill) => sum + roundedTotal(bill), 0) * 100),
+          cashReceivedPaise: Math.round(demoCashIn * 100),
+          bankReceivedPaise: Math.round(demoBankIn * 100),
+        },
+        expenses: {cashPaise: Math.round(demoCashOut * 100), bankPaise: Math.round(demoBankOut * 100), totalPaise: Math.round((demoCashOut + demoBankOut) * 100)},
+        collections: {cashPaise: Math.round(demoCashIn * 100), bankPaise: Math.round(demoBankIn * 100), totalPaise: Math.round((demoCashIn + demoBankIn) * 100)},
+        supplierPayments: {cashPaise: 0, bankPaise: 0, totalPaise: 0},
+        customerRefunds: {cashPaise: 0, bankPaise: 0, totalPaise: 0},
+        accountPosition: {
+          openingCashPaise: Math.round(accountBalance(state, 'Cash', summaryFrom) * 100),
+          openingBankPaise: Math.round(accountBalance(state, 'Bank account', summaryFrom) * 100),
+          openingCombinedPaise: Math.round((accountBalance(state, 'Cash', summaryFrom) + accountBalance(state, 'Bank account', summaryFrom)) * 100),
+          cashInPaise: Math.round(demoCashIn * 100), bankInPaise: Math.round(demoBankIn * 100),
+          cashOutPaise: Math.round(demoCashOut * 100), bankOutPaise: Math.round(demoBankOut * 100),
+          closingCashPaise: Math.round(accountBalance(state, 'Cash', summaryTo) * 100),
+          closingBankPaise: Math.round(accountBalance(state, 'Bank account', summaryTo) * 100),
+          closingCombinedPaise: Math.round((accountBalance(state, 'Cash', summaryTo) + accountBalance(state, 'Bank account', summaryTo)) * 100),
+        },
+        profit: {unlocked: false, tradingProfitPaise: null, netProfitPaise: null, pendingCount: 0},
+      };
+
+  const overviewSalesTotal = (periodSummary.sales.totalPaise || 0) / 100;
+  const overviewSalesCount = periodSummary.sales.invoiceCount || 0;
+  const overviewMoneyIn = ((periodSummary.accountPosition.cashInPaise || 0) + (periodSummary.accountPosition.bankInPaise || 0)) / 100;
+  const overviewMoneyOut = ((periodSummary.accountPosition.cashOutPaise || 0) + (periodSummary.accountPosition.bankOutPaise || 0)) / 100;
+  const overviewCashBalance = (periodSummary.accountPosition.closingCashPaise || 0) / 100;
+  const overviewBankBalance = (periodSummary.accountPosition.closingBankPaise || 0) / 100;
+  const overviewPeriod = periodSummary.dateFrom === periodSummary.dateTo
+    ? periodSummary.dateTo
+    : `${periodSummary.dateFrom} to ${periodSummary.dateTo}`;
+
   const companyName = state.settings.name || (isLive ? 'Company setup required' : 'iTech Computers');
   const userName = companySession?.user?.name || 'Store Manager';
 
@@ -136,10 +186,17 @@ export default function Dashboard() {
         description="A clear view of your store, all in one place."
         actions={
           <>
-            <span className="date-chip">
+            <label className="date-chip dashboard-date-picker" title="Choose the business date used by the financial summary below">
               <CalendarDays size={16} />
-              {isLive ? liveData?.todayDate : '10 September 2026'}
-            </span>
+              <span className="sr-only">Dashboard date</span>
+              <input
+                aria-label="Dashboard date"
+                type="date"
+                value={dashboardDate}
+                max={isLive ? (liveData?.todayDate || TODAY) : TODAY}
+                onChange={event => changeDashboardDate(event.target.value)}
+              />
+            </label>
             <Link className="btn" href="/sales/new">
               <Plus size={17} />
               New invoice
@@ -173,38 +230,68 @@ export default function Dashboard() {
             <span>Business snapshot</span>
             <h2 id="money-overview-title">Money overview</h2>
           </div>
-          <p>Sales, collections and available balances.</p>
+          <p>Sales and account activity for {overviewPeriod}.</p>
         </div>
-      <div className="dashboard-kpi-grid">
-        <Stat
-          label="Today’s sales"
-          value={shortMoney(todaySalesTotal)}
-          detail={`${todaySalesCount} invoices issued today`}
-          icon={<IndianRupee size={20} />}
-        />
-        <Stat
-          label="Money received today"
-          value={shortMoney(moneyInToday)}
-          detail="Cash and bank inflows"
-          icon={<ArrowDownCircle size={20} />}
-          accent="green"
-        />
-        <Stat
-          label="Money paid today"
-          value={shortMoney(moneyOutToday)}
-          detail="Expenses, suppliers and refunds"
-          icon={<ArrowUpCircle size={20} />}
-          accent="orange"
-        />
-        <Stat
-          label="Cash in drawer"
-          value={shortMoney(cashBalance)}
-          detail="Current physical cash balance"
-          icon={<Wallet size={20} />}
-          accent="blue"
-        />
-        <Stat label="Bank balance" value={shortMoney(bankBalance)} detail="Current account balance" icon={<Landmark size={20}/>} />
-      </div>
+        <div className="dashboard-kpi-grid">
+          <Stat label="Sales billed" value={shortMoney(overviewSalesTotal)} detail={`${overviewSalesCount} invoice${overviewSalesCount === 1 ? '' : 's'} in this period`} icon={<IndianRupee size={20} />} />
+          <Stat label="Money received" value={shortMoney(overviewMoneyIn)} detail="All cash and bank inflows" icon={<ArrowDownCircle size={20} />} accent="green" />
+          <Stat label="Money paid" value={shortMoney(overviewMoneyOut)} detail="All cash and bank outflows" icon={<ArrowUpCircle size={20} />} accent="orange" />
+          <Stat label="Cash in drawer" value={shortMoney(overviewCashBalance)} detail={`Closing balance on ${periodSummary.dateTo}`} icon={<Wallet size={20} />} accent="blue" />
+          <Stat label="Bank balance" value={shortMoney(overviewBankBalance)} detail={`Closing balance on ${periodSummary.dateTo}`} icon={<Landmark size={20}/>} />
+        </div>
+      </section>
+
+      <section className="dashboard-section dashboard-finance-summary" aria-labelledby="dashboard-summary-title">
+        <div className="dashboard-section-head dashboard-summary-heading">
+          <div>
+            <span>Financial summary</span>
+            <h2 id="dashboard-summary-title">Sales, spending and funds</h2>
+          </div>
+          <div className="dashboard-summary-filters" aria-label="Summary period">
+            <button className={summaryPreset === 'today' ? 'active' : ''} onClick={() => setSummaryPreset('today')}>Today</button>
+            <button className={summaryPreset === '7d' ? 'active' : ''} onClick={() => setSummaryPreset('7d')}>7D</button>
+            <button className={summaryPreset === 'custom' ? 'active' : ''} onClick={() => setSummaryPreset('custom')}>Custom</button>
+          </div>
+        </div>
+
+        <div className="dashboard-date-scope">
+          <CalendarDays size={18} aria-hidden="true" />
+          <div>
+            <span>Selected business date</span>
+            <strong>{dashboardDate}</strong>
+          </div>
+          <p>{summaryPreset === 'today' ? 'Showing this date only.' : summaryPreset === '7d' ? 'The 7-day summary ends on this date.' : 'Showing the custom range selected below.'}</p>
+        </div>
+
+        {summaryPreset === 'custom' && (
+          <div className="dashboard-summary-custom">
+            <label>From<input type="date" value={customFrom} max={customTo} onChange={event => setCustomFrom(event.target.value || dashboardDate)} /></label>
+            <label>To<input type="date" value={customTo} min={customFrom} max={dashboardDate} onChange={event => setCustomTo(event.target.value || dashboardDate)} /></label>
+          </div>
+        )}
+
+        <div className="dashboard-summary-period">{periodSummary.dateFrom} to {periodSummary.dateTo}</div>
+        <div className="dashboard-finance-grid">
+          <article><h3>Overall sales</h3><dl><div><dt>Cash received</dt><dd>{money(periodSummary.sales.cashReceivedPaise / 100)}</dd></div><div><dt>GPay / Bank received</dt><dd>{money(periodSummary.sales.bankReceivedPaise / 100)}</dd></div><div><dt>Outstanding on these invoices</dt><dd>{money((periodSummary.sales.outstandingPaise || 0) / 100)}</dd></div><div className="total"><dt>Sales billed</dt><dd>{money(periodSummary.sales.totalPaise / 100)}</dd></div></dl></article>
+          <article><h3>Expenses</h3><dl><div><dt>Cash</dt><dd>{money(periodSummary.expenses.cashPaise / 100)}</dd></div><div><dt>GPay / Bank</dt><dd>{money(periodSummary.expenses.bankPaise / 100)}</dd></div><div className="total"><dt>Total expenses</dt><dd>{money(periodSummary.expenses.totalPaise / 100)}</dd></div></dl></article>
+          <article><h3>Grand total</h3><dl><div><dt>Cash in drawer</dt><dd>{money(periodSummary.accountPosition.closingCashPaise / 100)}</dd></div><div><dt>GPay / Bank</dt><dd>{money(periodSummary.accountPosition.closingBankPaise / 100)}</dd></div><div className="total"><dt>Total funds</dt><dd>{money(periodSummary.accountPosition.closingCombinedPaise / 100)}</dd></div></dl></article>
+          <article><h3>Profit</h3><dl><div><dt>Trading profit</dt><dd>{periodSummary.profit.unlocked ? money((periodSummary.profit.tradingProfitPaise || 0) / 100) : 'Hidden'}</dd></div><div><dt>Shop expenses</dt><dd>{money(periodSummary.expenses.totalPaise / 100)}</dd></div><div className="total"><dt>Net profit</dt><dd>{periodSummary.profit.unlocked ? money((periodSummary.profit.netProfitPaise || 0) / 100) : 'Hidden'}</dd></div></dl></article>
+        </div>
+
+        <div className="dashboard-summary-categories">
+          <span>Invoices <b>{periodSummary.sales.invoiceCount}</b></span><span>New <b>{money(periodSummary.sales.newGoodsPaise / 100)}</b></span><span>Used <b>{money(periodSummary.sales.usedGoodsPaise / 100)}</b></span><span>Service <b>{money(periodSummary.sales.servicePaise / 100)}</b></span>
+        </div>
+        <div className="dashboard-summary-flow">
+          <article><span>Customer collections</span><strong>{money(periodSummary.collections.totalPaise / 100)}</strong><small>Cash {money(periodSummary.collections.cashPaise / 100)} · Bank/GPay {money(periodSummary.collections.bankPaise / 100)}</small></article>
+          <article><span>Supplier payments</span><strong>{money(periodSummary.supplierPayments.totalPaise / 100)}</strong><small>Cash {money(periodSummary.supplierPayments.cashPaise / 100)} · Bank/GPay {money(periodSummary.supplierPayments.bankPaise / 100)}</small></article>
+          <article><span>Customer refunds</span><strong>{money(periodSummary.customerRefunds.totalPaise / 100)}</strong><small>Cash {money(periodSummary.customerRefunds.cashPaise / 100)} · Bank/GPay {money(periodSummary.customerRefunds.bankPaise / 100)}</small></article>
+          <article><span>Net account movement</span><strong>{money((periodSummary.accountPosition.cashInPaise + periodSummary.accountPosition.bankInPaise - periodSummary.accountPosition.cashOutPaise - periodSummary.accountPosition.bankOutPaise) / 100)}</strong><small>All receipts less all payments</small></article>
+        </div>
+        <div className="dashboard-summary-position">
+          <article><span>Opening funds</span><strong>{money(periodSummary.accountPosition.openingCombinedPaise / 100)}</strong><small>Cash {money(periodSummary.accountPosition.openingCashPaise / 100)} · Bank/GPay {money(periodSummary.accountPosition.openingBankPaise / 100)}</small></article>
+          <article><span>Money moved</span><strong>{money((periodSummary.accountPosition.cashInPaise + periodSummary.accountPosition.bankInPaise - periodSummary.accountPosition.cashOutPaise - periodSummary.accountPosition.bankOutPaise) / 100)}</strong><small>In {money((periodSummary.accountPosition.cashInPaise + periodSummary.accountPosition.bankInPaise) / 100)} · Out {money((periodSummary.accountPosition.cashOutPaise + periodSummary.accountPosition.bankOutPaise) / 100)}</small></article>
+          <article><span>Closing funds</span><strong>{money(periodSummary.accountPosition.closingCombinedPaise / 100)}</strong><small>Cash {money(periodSummary.accountPosition.closingCashPaise / 100)} · Bank/GPay {money(periodSummary.accountPosition.closingBankPaise / 100)}</small></article>
+        </div>
       </section>
 
       <section className="dashboard-section dashboard-action-section" aria-labelledby="attention-title">

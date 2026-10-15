@@ -282,6 +282,7 @@ export async function ensureIndexes() {
         safeCreateIndex(db.collection('stockMovements'), {tenantId: 1, lotId: 1, date: -1}),
 
         safeCreateIndex(db.collection('accountMovements'), {tenantId: 1, account: 1, date: -1}),
+        safeCreateIndex(db.collection('accountMovements'), {tenantId: 1, date: -1, account: 1}),
 
         safeCreateIndex(db.collection('openingSetups'), {tenantId: 1}, {unique: true}),
         safeCreateIndex(db.collection('openingReceivables'), {tenantId: 1, customerId: 1, status: 1}),

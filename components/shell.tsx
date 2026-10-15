@@ -45,6 +45,7 @@ const groups = [
     label: 'Customers & service',
     items: [
       ['/customers', 'Customers', Users],
+      ['/returns', 'Customer returns', ArrowLeftRight],
       ['/service-catalog', 'Service catalogue', Wrench],
       ['/warranty', 'Warranty', ShieldCheck],
     ],
@@ -55,7 +56,6 @@ const groups = [
       ['/inventory', 'Inventory', Package],
       ['/purchases', 'Purchases', Truck],
       ['/suppliers', 'Suppliers', Users],
-      ['/returns', 'Customer returns', ArrowLeftRight],
     ],
   },
   {

@@ -125,11 +125,12 @@ export async function GET(request: Request) {
           suppMap.get(p.supplierId) || 'Supplier',
           p.receiptStatus || 'Received',
           (p.totalPaise || 0) / 100,
+          (p.creditedLiabilityPaise || 0) / 100,
           (p.allocatedPaidPaise || 0) / 100,
           (p.duePaise || 0) / 100,
         ]);
         return {
-          headers: ['Purchase', 'Date', 'Supplier', 'Receipt status', 'Total', 'Paid', 'Due'],
+          headers: ['Purchase', 'Date', 'Supplier', 'Receipt status', 'Original total', 'Supplier credits', 'Paid', 'Due'],
           rows,
         };
       }
@@ -284,6 +285,7 @@ export async function GET(request: Request) {
             r.date,
             r.quantity ?? r.lines?.reduce((q: number, l: any) => q + (l.quantity || 0), 0) ?? 0,
             (r.refundPaise || 0) / 100,
+            r.status || 'Recorded',
           ]),
           ...suppReturns.map((r) => [
             r.returnNumber || r._id,
@@ -292,10 +294,11 @@ export async function GET(request: Request) {
             r.date,
             r.quantity || 1,
             (r.totalReturnCreditPaise || 0) / 100,
+            r.isReversed ? 'Reversed' : r.status || r.creditStatus || 'Recorded',
           ]),
         ];
         return {
-          headers: ['Adjustment', 'Type', 'Original bill', 'Date', 'Quantity', 'Refund / supplier credit'],
+          headers: ['Adjustment', 'Type', 'Original bill', 'Date', 'Quantity', 'Refund / supplier credit', 'Status'],
           rows,
         };
       }

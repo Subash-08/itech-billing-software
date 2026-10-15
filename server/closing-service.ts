@@ -999,9 +999,44 @@ export async function listClosings(
   const holidayMap = new Map<string, any>();
   for (const h of holidays) holidayMap.set(h.date, h);
 
+  // One batched ledger read supplies the extra audit columns without adding
+  // per-day database queries to the closing-history page.
+  const pageMovements = await col(db, 'accountMovements')
+    .find({tenantId, date: {$in: pagedDays}})
+    .project({date: 1, account: 1, sourceType: 1, qty: 1, amountPaise: 1, direction: 1})
+    .toArray();
+  const movementByDate = new Map<string, {
+    cashDeltaPaise: number;
+    bankDeltaPaise: number;
+    customerCollectionsPaise: number;
+    supplierPaymentsPaise: number;
+  }>();
+  for (const movement of pageMovements) {
+    const summary = movementByDate.get(movement.date) || {
+      cashDeltaPaise: 0,
+      bankDeltaPaise: 0,
+      customerCollectionsPaise: 0,
+      supplierPaymentsPaise: 0,
+    };
+    const signed = signedAccountMovementPaise(movement);
+    if (movement.account === 'Cash') summary.cashDeltaPaise += signed;
+    else summary.bankDeltaPaise += signed;
+    if (movement.sourceType === 'CustomerReceipt') summary.customerCollectionsPaise += signed;
+    if (movement.sourceType === 'CustomerReceiptReversal') summary.customerCollectionsPaise += signed;
+    if (movement.sourceType === 'SupplierPayment') summary.supplierPaymentsPaise += Math.max(0, -signed);
+    if (movement.sourceType === 'SupplierPaymentReversal') summary.supplierPaymentsPaise -= Math.max(0, signed);
+    movementByDate.set(movement.date, summary);
+  }
+
   const results = await Promise.all(
     pagedDays.map(async date => {
       const c = closingMap.get(date);
+      const movement = movementByDate.get(date) || {
+        cashDeltaPaise: 0,
+        bankDeltaPaise: 0,
+        customerCollectionsPaise: 0,
+        supplierPaymentsPaise: 0,
+      };
       if (c) {
         return {
           date,
@@ -1010,6 +1045,10 @@ export async function listClosings(
           cashPaise: c.snapshot.cashClosingPaise,
           bankPaise: c.snapshot.bankClosingPaise,
           expensesPaise: c.snapshot.operatingExpensesPaise,
+          openingCashPaise: c.snapshot.cashClosingPaise - movement.cashDeltaPaise,
+          openingBankPaise: c.snapshot.bankClosingPaise - movement.bankDeltaPaise,
+          customerCollectionsPaise: movement.customerCollectionsPaise,
+          supplierPaymentsPaise: movement.supplierPaymentsPaise,
           tradingProfitPaise: profitUnlocked ? c.snapshot.tradingProfitPaise : null,
           isClosed: true,
         };
@@ -1025,6 +1064,10 @@ export async function listClosings(
           cashPaise: dash.closing.snapshot.cashClosingPaise,
           bankPaise: dash.closing.snapshot.bankClosingPaise,
           expensesPaise: dash.closing.snapshot.operatingExpensesPaise,
+          openingCashPaise: dash.closing.snapshot.cashClosingPaise - movement.cashDeltaPaise,
+          openingBankPaise: dash.closing.snapshot.bankClosingPaise - movement.bankDeltaPaise,
+          customerCollectionsPaise: movement.customerCollectionsPaise,
+          supplierPaymentsPaise: movement.supplierPaymentsPaise,
           tradingProfitPaise: profitUnlocked ? dash.closing.snapshot.tradingProfitPaise : null,
           isClosed: true,
         };
@@ -1037,6 +1080,10 @@ export async function listClosings(
         cashPaise: dash.accounts?.cash.expectedClosingPaise || 0,
         bankPaise: dash.accounts?.bank.expectedClosingPaise || 0,
         expensesPaise: dash.summary?.operatingExpensesPaise || 0,
+        openingCashPaise: dash.accounts?.cash.openingPaise || 0,
+        openingBankPaise: dash.accounts?.bank.openingPaise || 0,
+        customerCollectionsPaise: movement.customerCollectionsPaise,
+        supplierPaymentsPaise: movement.supplierPaymentsPaise,
         tradingProfitPaise: profitUnlocked ? (dash.summary?.tradingProfitPaise ?? null) : null,
         pendingProfitCount: dash.pendingProfitCount || 0,
         isClosed: false,

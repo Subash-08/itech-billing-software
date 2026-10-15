@@ -1,5 +1,5 @@
 'use client';
-import {useState, useEffect, useCallback, useRef} from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import {
   ArrowDownToLine,
@@ -7,20 +7,16 @@ import {
   ArrowUpFromLine,
   CalendarCheck,
   Download,
-  Landmark,
-  ReceiptText,
   Repeat2,
-  ShoppingCart,
-  TrendingUp,
   Truck,
   Undo2,
   UserRound,
 } from 'lucide-react';
-import {useStore} from './store';
-import {TODAY, money, accountBalance, uid} from '@/lib/domain';
+import { useStore } from './store';
+import { TODAY, money, uid } from '@/lib/domain';
 import SupplierSettlement from './supplier-settlement';
 import CustomerSettlement from './customer-settlement';
-import {Card, Btn, Modal, Field, SearchBox, Badge, Empty, csvDownload} from './ui';
+import { Card, Btn, Modal, Field, SearchBox, Badge, Empty, csvDownload } from './ui';
 
 interface MovementRow {
   _id: string;
@@ -81,10 +77,10 @@ interface RegisterResponse {
       cashReceivedPaise: number;
       bankReceivedPaise: number;
     };
-    collections: {cashPaise: number; bankPaise: number; totalPaise: number};
-    expenses: {cashPaise: number; bankPaise: number; totalPaise: number};
-    supplierPayments: {cashPaise: number; bankPaise: number; totalPaise: number};
-    customerRefunds: {cashPaise: number; bankPaise: number; totalPaise: number};
+    collections: { cashPaise: number; bankPaise: number; totalPaise: number };
+    expenses: { cashPaise: number; bankPaise: number; totalPaise: number };
+    supplierPayments: { cashPaise: number; bankPaise: number; totalPaise: number };
+    customerRefunds: { cashPaise: number; bankPaise: number; totalPaise: number };
     profit: {
       unlocked: boolean;
       tradingProfitPaise: number | null;
@@ -128,7 +124,7 @@ export function MoneyEntryModal({
   onClose: () => void;
   onSuccess: () => void;
 }) {
-  const {state, notify, isLive} = useStore();
+  const { state, notify, isLive } = useStore();
   const [purpose, setPurpose] = useState(
     kind === 'in' ? 'Customer collection' : kind === 'out' ? 'Shop expense' : 'Cash to account'
   );
@@ -270,7 +266,7 @@ export function MoneyEntryModal({
 
       const res = await fetch('/api/money', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
 
@@ -491,12 +487,12 @@ export function MoneyEntryModal({
             {isSubmitting
               ? 'Processing…'
               : isCustomer
-              ? 'Select Customer Dues →'
-              : isSupplier
-              ? 'Select Bills to Pay →'
-              : kind === 'transfer'
-              ? 'Transfer Funds'
-              : 'Record Transaction'}
+                ? 'Select Customer Dues →'
+                : isSupplier
+                  ? 'Select Bills to Pay →'
+                  : kind === 'transfer'
+                    ? 'Transfer Funds'
+                    : 'Record Transaction'}
           </Btn>
         </div>
       </form>
@@ -513,7 +509,7 @@ export function ReversalModal({
   onClose: () => void;
   onSuccess: () => void;
 }) {
-  const {notify} = useStore();
+  const { notify } = useStore();
   const [reason, setReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -531,8 +527,8 @@ export function ReversalModal({
     try {
       const res = await fetch(`/api/money/${movement._id}/reverse`, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({reason: reason.trim(), idempotencyKey}),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: reason.trim(), idempotencyKey }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -586,7 +582,7 @@ export function ReversalModal({
 }
 
 export default function MoneyDesk() {
-  const {state, isLive} = useStore();
+  const { state, isLive, notify } = useStore();
   const [date, setDate] = useState(TODAY);
   const [account, setAccount] = useState('All');
   const [q, setQ] = useState('');
@@ -596,6 +592,7 @@ export default function MoneyDesk() {
 
   const [registerData, setRegisterData] = useState<RegisterResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [loadError, setLoadError] = useState('');
 
   // Stale request guard
@@ -659,123 +656,130 @@ export default function MoneyDesk() {
   const liveList = registerData?.movements || [];
   const displayMovements = isLive ? liveList : offlineList;
 
-  // In live mode, NEVER substitute offline demo state
-  const liveCashPaise = registerData?.liveBalances?.cashPaise;
-  const liveBankPaise = registerData?.liveBalances?.bankPaise;
-
-  const cashBalDisplay = isLive
-    ? liveCashPaise !== undefined
-      ? money(liveCashPaise / 100)
-      : isLoading
-      ? 'Loading…'
-      : '—'
-    : money(accountBalance(state, 'Cash', date));
-
-  const bankBalDisplay = isLive
-    ? liveBankPaise !== undefined
-      ? money(liveBankPaise / 100)
-      : isLoading
-      ? 'Loading…'
-      : '—'
-    : money(accountBalance(state, 'Bank account', date));
-
-  const combinedBalDisplay = isLive
-    ? liveCashPaise !== undefined && liveBankPaise !== undefined
-      ? money((liveCashPaise + liveBankPaise) / 100)
-      : isLoading
-      ? 'Loading…'
-      : '—'
-    : money(accountBalance(state, 'Cash', date) + accountBalance(state, 'Bank account', date));
-
   const hist = registerData?.historicalPosition;
   const day = registerData?.daySummary;
   const isHistoricalDate = date !== TODAY;
 
+  async function exportRegister() {
+    setIsExporting(true);
+    try {
+      if (!isLive) {
+        csvDownload(
+          `cash-account-${date}.csv`,
+          [
+            ['Cashbook activity', date],
+            ['Date', 'Purpose', 'Account', 'Direction', 'Amount', 'Reference', 'Details'],
+            ...offlineList.map(p => [p.date, p.purpose, p.account, p.direction, p.amount, p.reference, p.note]),
+          ]
+        );
+        return;
+      }
+
+      if (!registerData || !day || !hist) throw new Error('Cashbook data is still loading. Please try again.');
+
+      const params = new URLSearchParams({date, page: '1', limit: '5000'});
+      if (account !== 'All') params.set('account', account);
+      if (q.trim()) params.set('search', q.trim());
+      const response = await fetch(`/api/money?${params.toString()}`, {cache: 'no-store'});
+      const fullRegister: RegisterResponse = await response.json();
+      if (!response.ok) throw new Error((fullRegister as any).error || 'Could not prepare the Cashbook export.');
+
+      const rows: (string | number)[][] = [
+        ['Cashbook summary', date],
+        ['Section', 'Cash / Opening', 'GPay / Bank', 'Total / Closing'],
+        ['Overall sales', (day.sales.cashReceivedPaise / 100).toFixed(2), (day.sales.bankReceivedPaise / 100).toFixed(2), (day.sales.totalPaise / 100).toFixed(2)],
+        ['Expenses', (day.expenses.cashPaise / 100).toFixed(2), (day.expenses.bankPaise / 100).toFixed(2), (day.expenses.totalPaise / 100).toFixed(2)],
+        ['Grand total', (hist.expectedClosingCashPaise / 100).toFixed(2), (hist.expectedClosingBankPaise / 100).toFixed(2), (hist.expectedClosingCombinedPaise / 100).toFixed(2)],
+        ['Profit', day.profit.unlocked ? ((day.profit.tradingProfitPaise || 0) / 100).toFixed(2) : 'Hidden', (day.expenses.totalPaise / 100).toFixed(2), day.profit.unlocked ? ((day.profit.netProfitPaise || 0) / 100).toFixed(2) : 'Hidden'],
+        [],
+        ['Sales details'],
+        ['Invoices', day.sales.invoiceCount],
+        ['New goods', (day.sales.newGoodsPaise / 100).toFixed(2)],
+        ['Used goods', (day.sales.usedGoodsPaise / 100).toFixed(2)],
+        ['Service', (day.sales.servicePaise / 100).toFixed(2)],
+        [],
+        ['Money flow', 'Cash', 'GPay / Bank', 'Total'],
+        ['Customer collections', (day.collections.cashPaise / 100).toFixed(2), (day.collections.bankPaise / 100).toFixed(2), (day.collections.totalPaise / 100).toFixed(2)],
+        ['Supplier payments', (day.supplierPayments.cashPaise / 100).toFixed(2), (day.supplierPayments.bankPaise / 100).toFixed(2), (day.supplierPayments.totalPaise / 100).toFixed(2)],
+        ['Customer refunds', (day.customerRefunds.cashPaise / 100).toFixed(2), (day.customerRefunds.bankPaise / 100).toFixed(2), (day.customerRefunds.totalPaise / 100).toFixed(2)],
+        ['Net account movement', ((hist.dayCashInPaise - hist.dayCashOutPaise) / 100).toFixed(2), ((hist.dayBankInPaise - hist.dayBankOutPaise) / 100).toFixed(2), ((hist.dayCashInPaise + hist.dayBankInPaise - hist.dayCashOutPaise - hist.dayBankOutPaise) / 100).toFixed(2)],
+        [],
+        ['Account position', 'Cash', 'GPay / Bank', 'Total'],
+        ['Opening funds', (hist.openingCashPaise / 100).toFixed(2), (hist.openingBankPaise / 100).toFixed(2), (hist.openingCombinedPaise / 100).toFixed(2)],
+        ['Closing funds', (hist.expectedClosingCashPaise / 100).toFixed(2), (hist.expectedClosingBankPaise / 100).toFixed(2), (hist.expectedClosingCombinedPaise / 100).toFixed(2)],
+        [],
+        ['Sales invoices'],
+        ['Invoice', 'Customer', 'Category', 'Invoice amount', 'Cash received', 'GPay / Bank', 'Outstanding', 'Payment status'],
+        ...day.invoices.map(invoice => [invoice.invoiceNumber, invoice.customerName, categoryLabel(invoice.businessCategory), (invoice.totalPaise / 100).toFixed(2), (invoice.cashReceivedPaise / 100).toFixed(2), (invoice.bankReceivedPaise / 100).toFixed(2), (invoice.duePaise / 100).toFixed(2), invoice.paymentStatus]),
+        [],
+        ['Cashbook activity'],
+        ['Date', 'Activity', 'Category', 'Account', 'Direction', 'Amount', 'Payment method', 'Reference', 'Party'],
+        ...fullRegister.movements.map(m => [m.date, m.reason || m.category, m.category, m.account, m.direction, (m.amountPaise / 100).toFixed(2), m.paymentMethod || '', m.reference || '', m.partyName || '']),
+      ];
+
+      csvDownload(`cashbook-${date}.csv`, rows);
+      notify(`Exported the ${date} Cashbook summary, invoices and ${fullRegister.movements.length} matching movement(s).`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Cashbook export failed.');
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
   return (
     <div className="cashbook-page">
-      <header className="cashbook-hero">
-        <div className="cashbook-hero-copy">
-          <div>
-            <h1>Cashbook</h1>
-            <p>See every cash and Bank/GPay movement in one place. Sales receipts, expenses, transfers and settlements update here automatically.</p>
+      <section className="cashbook-command-section" aria-label="Cashbook controls">
+        <header className="cashbook-hero">
+          <div className="cashbook-hero-copy">
+            <div>
+              <h1>Cashbook</h1>
+              <p>See every cash and Bank/GPay movement in one place. Sales receipts, expenses, transfers and settlements update here automatically.</p>
+            </div>
+          </div>
+          <div className="cashbook-hero-actions" aria-label="Cashbook actions">
+            <Btn onClick={() => setKind('in')}><ArrowDownToLine size={15} />Receive money</Btn>
+            <Btn secondary onClick={() => setKind('out')}><ArrowUpFromLine size={15} />Record payment</Btn>
+            <Btn secondary onClick={() => setKind('transfer')}><ArrowRightLeft size={15} />Move cash &amp; bank</Btn>
+          </div>
+        </header>
+
+        <div className="toolbar cashbook-date-toolbar">
+          <Field label="Date">
+            <input
+              type="date"
+              max={TODAY}
+              value={date}
+              onChange={e => {
+                setDate(e.target.value || TODAY);
+                setPage(1);
+              }}
+            />
+          </Field>
+          <Link className="btn secondary" href={'/profit?date=' + date}>
+            <CalendarCheck size={15} />Daily closing
+          </Link>
+          <Btn
+            secondary
+            disabled={isExporting || isLoading}
+            onClick={exportRegister}
+          >
+            <Download size={15} />{isExporting ? 'Exporting…' : 'Export'}
+          </Btn>
+          <div className="cashbook-quick-date">
+            <span>Quick date</span>
+            <Btn
+              secondary={date !== TODAY}
+              className={date === TODAY ? 'is-current' : ''}
+              onClick={() => {
+                setDate(TODAY);
+                setPage(1);
+              }}
+            >
+              Today
+            </Btn>
           </div>
         </div>
-        <div className="cashbook-hero-actions" aria-label="Cashbook actions">
-          <Btn onClick={() => setKind('in')}><ArrowDownToLine size={15} />Receive money</Btn>
-          <Btn secondary onClick={() => setKind('out')}><ArrowUpFromLine size={15} />Record payment</Btn>
-          <Btn secondary onClick={() => setKind('transfer')}><ArrowRightLeft size={15} />Move cash &amp; bank</Btn>
-        </div>
-      </header>
-
-      <div className="toolbar cashbook-date-toolbar">
-        <Field label="Date">
-          <input
-            type="date"
-            max={TODAY}
-            value={date}
-            onChange={e => {
-              setDate(e.target.value || TODAY);
-              setPage(1);
-            }}
-          />
-        </Field>
-        <Link className="btn secondary" href={'/profit?date=' + date}>
-          <CalendarCheck size={15} />Daily closing
-        </Link>
-        <Btn
-          secondary
-          onClick={() => {
-            if (isLive && registerData) {
-              const rows = [
-                ['Date', 'Purpose', 'Category', 'Account', 'Direction', 'Amount (₹)', 'Payment Method', 'Reference', 'Details'],
-                ...registerData.movements.map(m => [
-                  m.date,
-                  m.reason,
-                  m.category,
-                  m.account,
-                  m.direction,
-                  (m.amountPaise / 100).toFixed(2),
-                  m.paymentMethod || '',
-                  m.reference || '',
-                  m.partyName || '',
-                ]),
-              ];
-              csvDownload(`account-register-${date}.csv`, rows);
-            } else {
-              csvDownload(
-                `cash-account-${date}.csv`,
-                [
-                  ['Date', 'Purpose', 'Account', 'Direction', 'Amount', 'Reference', 'Details'],
-                  ...offlineList.map(p => [
-                    p.date,
-                    p.purpose,
-                    p.account,
-                    p.direction,
-                    p.amount,
-                    p.reference,
-                    p.note,
-                  ]),
-                ]
-              );
-            }
-          }}
-        >
-          <Download size={15} />Export
-        </Btn>
-        <div className="cashbook-quick-date">
-          <span>Quick date</span>
-          <Btn
-            secondary={date !== TODAY}
-            className={date === TODAY ? 'is-current' : ''}
-            onClick={() => {
-              setDate(TODAY);
-              setPage(1);
-            }}
-          >
-            Today
-          </Btn>
-        </div>
-      </div>
+      </section>
 
       <section className="cashbook-section" aria-labelledby="daily-overview-title">
         <div className="cashbook-section-head">
@@ -789,68 +793,49 @@ export default function MoneyDesk() {
           </div>
         </div>
 
-        <div className="cashbook-overview-grid">
-          <article className="cashbook-overview-card sales-card">
-            <div className="cashbook-card-label"><span className="cashbook-card-icon purple"><ReceiptText size={16} /></span>Sales billed</div>
-            <strong className="cashbook-card-value">
-              {day ? money(day.sales.totalPaise / 100) : isLoading ? 'Loading…' : '—'}
-            </strong>
-            <div className="cashbook-card-lines">
-              <span><small>Cash received</small><b>{day ? money(day.sales.cashReceivedPaise / 100) : '—'}</b></span>
-              <span><small>Bank / GPay received</small><b>{day ? money(day.sales.bankReceivedPaise / 100) : '—'}</b></span>
-              <span><small>Invoices</small><b>{day?.sales.invoiceCount ?? '—'}</b></span>
-            </div>
-            <div className="cashbook-category-strip" aria-label="Sales by category">
-              <span>New {day ? money(day.sales.newGoodsPaise / 100) : '—'}</span>
-              <span>Used {day ? money(day.sales.usedGoodsPaise / 100) : '—'}</span>
-              <span>Service {day ? money(day.sales.servicePaise / 100) : '—'}</span>
-            </div>
+        <div className="cashbook-summary-grid">
+          <article className="cashbook-summary-card">
+            <h3>Overall sales</h3>
+            <dl>
+              <div><dt>Cash received</dt><dd>{day ? money(day.sales.cashReceivedPaise / 100) : '—'}</dd></div>
+              <div><dt>GPay / Bank received</dt><dd>{day ? money(day.sales.bankReceivedPaise / 100) : '—'}</dd></div>
+              <div className="summary-total"><dt>Sales billed</dt><dd>{day ? money(day.sales.totalPaise / 100) : isLoading ? 'Loading…' : '—'}</dd></div>
+            </dl>
           </article>
 
-          <article className="cashbook-overview-card expense-card">
-            <div className="cashbook-card-label"><span className="cashbook-card-icon orange"><ShoppingCart size={16} /></span>Shop expenses</div>
-            <strong className="cashbook-card-value">
-              {day ? money(day.expenses.totalPaise / 100) : isLoading ? 'Loading…' : '—'}
-            </strong>
-            <div className="cashbook-card-lines">
-              <span><small>Paid from cash</small><b>{day ? money(day.expenses.cashPaise / 100) : '—'}</b></span>
-              <span><small>Paid from Bank / GPay</small><b>{day ? money(day.expenses.bankPaise / 100) : '—'}</b></span>
-              <span><small>Supplier payments</small><b>{day ? money(day.supplierPayments.totalPaise / 100) : '—'}</b></span>
-            </div>
-            <p>Supplier payments settle bills and are shown separately from shop expenses.</p>
+          <article className="cashbook-summary-card">
+            <h3>Expenses</h3>
+            <dl>
+              <div><dt>Cash</dt><dd>{day ? money(day.expenses.cashPaise / 100) : '—'}</dd></div>
+              <div><dt>GPay / Bank</dt><dd>{day ? money(day.expenses.bankPaise / 100) : '—'}</dd></div>
+              <div className="summary-total"><dt>Total expenses</dt><dd>{day ? money(day.expenses.totalPaise / 100) : isLoading ? 'Loading…' : '—'}</dd></div>
+            </dl>
           </article>
 
-          <article className="cashbook-overview-card balance-card">
-            <div className="cashbook-card-label"><span className="cashbook-card-icon blue"><Landmark size={16} /></span>End-of-day funds</div>
-            <strong className="cashbook-card-value">
-              {hist ? money(hist.expectedClosingCombinedPaise / 100) : isLoading ? 'Loading…' : '—'}
-            </strong>
-            <div className="cashbook-card-lines">
-              <span><small>Cash drawer</small><b>{hist ? money(hist.expectedClosingCashPaise / 100) : '—'}</b></span>
-              <span><small>Bank / GPay</small><b>{hist ? money(hist.expectedClosingBankPaise / 100) : '—'}</b></span>
-              <span><small>Opening funds</small><b>{hist ? money(hist.openingCombinedPaise / 100) : '—'}</b></span>
-            </div>
-            <p>Opening funds plus all money in, less all money out.</p>
+          <article className="cashbook-summary-card">
+            <h3>Grand total</h3>
+            <dl>
+              <div><dt>Cash in drawer</dt><dd>{hist ? money(hist.expectedClosingCashPaise / 100) : '—'}</dd></div>
+              <div><dt>GPay / Bank</dt><dd>{hist ? money(hist.expectedClosingBankPaise / 100) : '—'}</dd></div>
+              <div className="summary-total"><dt>Total funds</dt><dd>{hist ? money(hist.expectedClosingCombinedPaise / 100) : isLoading ? 'Loading…' : '—'}</dd></div>
+            </dl>
           </article>
 
-          <article className="cashbook-overview-card profit-card">
-            <div className="cashbook-card-label"><span className="cashbook-card-icon green"><TrendingUp size={16} /></span>Profit after expenses</div>
-            <strong className="cashbook-card-value">
-              {day?.profit.unlocked
-                ? money((day.profit.netProfitPaise || 0) / 100)
-                : day
-                ? 'Hidden'
-                : isLoading
-                ? 'Loading…'
-                : '—'}
-            </strong>
-            <div className="cashbook-card-lines">
-              <span><small>Trading profit</small><b>{day?.profit.unlocked ? money((day.profit.tradingProfitPaise || 0) / 100) : 'Hidden'}</b></span>
-              <span><small>Less shop expenses</small><b>{day ? money(day.expenses.totalPaise / 100) : '—'}</b></span>
-              <span><small>Profit entries to review</small><b>{day?.profit.pendingCount ?? '—'}</b></span>
-            </div>
-            <p>{day?.profit.unlocked ? 'GST is excluded from product profit calculations.' : 'Use Unlock profit in the header to view profit totals.'}</p>
+          <article className="cashbook-summary-card">
+            <h3>Profit</h3>
+            <dl>
+              <div><dt>Trading profit</dt><dd>{day?.profit.unlocked ? money((day.profit.tradingProfitPaise || 0) / 100) : day ? 'Hidden' : '—'}</dd></div>
+              <div><dt>Shop expenses</dt><dd>{day ? money(day.expenses.totalPaise / 100) : '—'}</dd></div>
+              <div className="summary-total"><dt>Net profit</dt><dd>{day?.profit.unlocked ? money((day.profit.netProfitPaise || 0) / 100) : day ? 'Hidden' : isLoading ? 'Loading…' : '—'}</dd></div>
+            </dl>
           </article>
+        </div>
+
+        <div className="cashbook-summary-note">
+          <span>Invoices {day?.sales.invoiceCount ?? '—'}</span>
+          <span>New {day ? money(day.sales.newGoodsPaise / 100) : '—'}</span>
+          <span>Used {day ? money(day.sales.usedGoodsPaise / 100) : '—'}</span>
+          <span>Service {day ? money(day.sales.servicePaise / 100) : '—'}</span>
         </div>
 
         <div className="cashbook-flow-grid">
@@ -877,58 +862,36 @@ export default function MoneyDesk() {
         </div>
       </section>
 
-      {/* Historical Date Position Panel */}
-      {isLive && hist && isHistoricalDate && (
-        <div style={{marginBottom: '1rem', padding: '1rem', background: '#f1f5f9', borderRadius: '8px', border: '1px solid #cbd5e1'}}>
-          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem'}}>
-            <h3 style={{margin: 0, fontSize: '1rem', color: '#1e293b'}}>
-              Position on Historical Date: <strong>{date}</strong>
-            </h3>
-            <Badge>Historical Position</Badge>
+      {isLive && hist && (
+        <section className="cashbook-section cashbook-position" aria-labelledby="account-position-title">
+          {/* <div className="cashbook-section-head">
+            <div>
+              <span>{isHistoricalDate ? 'Selected date' : 'Today'}</span>
+              <h2 id="account-position-title">Account position for {date}</h2>
+            </div>
+            <small>{isHistoricalDate ? 'Balances reconstructed from movements on this date.' : 'Balances after all movements recorded today.'}</small>
+          </div> */}
+          <div className="cashbook-position-grid">
+            <article>
+              <span>Opening funds</span>
+              <strong>{money(hist.openingCombinedPaise / 100)}</strong>
+              <small>Cash {money(hist.openingCashPaise / 100)} · Bank/GPay {money(hist.openingBankPaise / 100)}</small>
+            </article>
+            <article>
+              <span>Money moved today</span>
+              <strong className={(hist.dayCashInPaise + hist.dayBankInPaise - hist.dayCashOutPaise - hist.dayBankOutPaise) >= 0 ? 'positive' : 'negative'}>
+                {(hist.dayCashInPaise + hist.dayBankInPaise - hist.dayCashOutPaise - hist.dayBankOutPaise) >= 0 ? '+' : ''}
+                {money((hist.dayCashInPaise + hist.dayBankInPaise - hist.dayCashOutPaise - hist.dayBankOutPaise) / 100)}
+              </strong>
+              <small>In {money((hist.dayCashInPaise + hist.dayBankInPaise) / 100)} · Out {money((hist.dayCashOutPaise + hist.dayBankOutPaise) / 100)}</small>
+            </article>
+            <article>
+              <span>Closing funds</span>
+              <strong>{money(hist.expectedClosingCombinedPaise / 100)}</strong>
+              <small>Cash {money(hist.expectedClosingCashPaise / 100)} · Bank/GPay {money(hist.expectedClosingBankPaise / 100)}</small>
+            </article>
           </div>
-          <div className="grid-3" style={{gap: '1rem'}}>
-            <div style={{background: '#ffffff', padding: '0.75rem', borderRadius: '6px', border: '1px solid #e2e8f0'}}>
-              <div style={{fontSize: '0.75rem', color: '#64748b', textTransform: 'uppercase', fontWeight: 600}}>
-                Opening Balances ({date})
-              </div>
-              <div style={{marginTop: '0.25rem', fontSize: '0.875rem'}}>
-                <div>Cash: <strong>{money(hist.openingCashPaise / 100)}</strong></div>
-                <div>Bank: <strong>{money(hist.openingBankPaise / 100)}</strong></div>
-                <div style={{borderTop: '1px solid #e2e8f0', marginTop: '0.25rem', paddingTop: '0.25rem'}}>
-                  Total: <strong>{money(hist.openingCombinedPaise / 100)}</strong>
-                </div>
-              </div>
-            </div>
-
-            <div style={{background: '#ffffff', padding: '0.75rem', borderRadius: '6px', border: '1px solid #e2e8f0'}}>
-              <div style={{fontSize: '0.75rem', color: '#64748b', textTransform: 'uppercase', fontWeight: 600}}>
-                Day Movements ({date})
-              </div>
-              <div style={{marginTop: '0.25rem', fontSize: '0.875rem'}}>
-                <div>Cash: <span style={{color: '#16a34a'}}>+{money(hist.dayCashInPaise / 100)}</span> / <span style={{color: '#dc2626'}}>-{money(hist.dayCashOutPaise / 100)}</span></div>
-                <div>Bank: <span style={{color: '#16a34a'}}>+{money(hist.dayBankInPaise / 100)}</span> / <span style={{color: '#dc2626'}}>-{money(hist.dayBankOutPaise / 100)}</span></div>
-                <div style={{borderTop: '1px solid #e2e8f0', marginTop: '0.25rem', paddingTop: '0.25rem'}}>
-                  Net Day Delta: <strong style={{color: (hist.dayCashInPaise + hist.dayBankInPaise - hist.dayCashOutPaise - hist.dayBankOutPaise) >= 0 ? '#16a34a' : '#dc2626'}}>
-                    {money((hist.dayCashInPaise + hist.dayBankInPaise - hist.dayCashOutPaise - hist.dayBankOutPaise) / 100)}
-                  </strong>
-                </div>
-              </div>
-            </div>
-
-            <div style={{background: '#ffffff', padding: '0.75rem', borderRadius: '6px', border: '1px solid #e2e8f0'}}>
-              <div style={{fontSize: '0.75rem', color: '#64748b', textTransform: 'uppercase', fontWeight: 600}}>
-                Expected Closing Balances ({date})
-              </div>
-              <div style={{marginTop: '0.25rem', fontSize: '0.875rem'}}>
-                <div>Cash: <strong>{money(hist.expectedClosingCashPaise / 100)}</strong></div>
-                <div>Bank: <strong>{money(hist.expectedClosingBankPaise / 100)}</strong></div>
-                <div style={{borderTop: '1px solid #e2e8f0', marginTop: '0.25rem', paddingTop: '0.25rem'}}>
-                  Total: <strong>{money(hist.expectedClosingCombinedPaise / 100)}</strong>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        </section>
       )}
 
       <section className="cashbook-section" aria-labelledby="sales-breakdown-title">
@@ -991,49 +954,20 @@ export default function MoneyDesk() {
         </Card>
       </section>
 
-      {/* Live Account Cards */}
-      <div className="cashbook-section-head cashbook-live-heading">
-        <div>
-          <span>Right now</span>
-          <h2>Current account balances</h2>
-        </div>
-        <small>These are live balances today, even when you review an older date.</small>
-      </div>
-      <div className="grid-3 spaced">
-        <Card title="Cash in shop">
-          <div className="body-pad">
-            <h1>{cashBalDisplay}</h1>
-            <p>Current physical cash balance</p>
-          </div>
-        </Card>
-        <Card title="Bank / GPay">
-          <div className="body-pad">
-            <h1>{bankBalDisplay}</h1>
-            <p>UPI, cards and bank transfer balance</p>
-          </div>
-        </Card>
-        <Card title="Total money available">
-          <div className="body-pad">
-            <h1>{combinedBalDisplay}</h1>
-            <p>Moving money between accounts does not change this total.</p>
-          </div>
-        </Card>
-      </div>
-
       {isLive && registerData && (
-        <div style={{marginTop: '0.75rem', marginBottom: '0.75rem', padding: '0.5rem 1rem', background: '#f8fafc', borderRadius: '6px', border: '1px solid #e2e8f0', display: 'flex', gap: '2rem', fontSize: '0.875rem', flexWrap: 'wrap'}}>
+        <div className="cashbook-filter-summary">
           <span>
             <strong>Filter Match:</strong> {registerData.filterSummary.count} entries
           </span>
-          <span style={{color: '#16a34a'}}>
+          <span style={{ color: '#16a34a' }}>
             <strong>Inflow:</strong> {money(registerData.filterSummary.totalInPaise / 100)}
           </span>
-          <span style={{color: '#dc2626'}}>
+          <span style={{ color: '#dc2626' }}>
             <strong>Outflow:</strong> {money(registerData.filterSummary.totalOutPaise / 100)}
           </span>
           <span>
             <strong>Net:</strong>{' '}
-            <span style={{color: registerData.filterSummary.netPaise >= 0 ? '#16a34a' : '#dc2626', fontWeight: 600}}>
+            <span style={{ color: registerData.filterSummary.netPaise >= 0 ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
               {registerData.filterSummary.netPaise >= 0 ? '+' : ''}
               {money(registerData.filterSummary.netPaise / 100)}
             </span>
@@ -1047,7 +981,7 @@ export default function MoneyDesk() {
       </div>
 
       {loadError && (
-        <div className="notice" style={{background: '#fef2f2', borderColor: '#fca5a5', color: '#b91c1c'}}>
+        <div className="notice" style={{ background: '#fef2f2', borderColor: '#fca5a5', color: '#b91c1c' }}>
           {loadError}
         </div>
       )}
@@ -1077,7 +1011,7 @@ export default function MoneyDesk() {
         </div>
 
         {isLoading ? (
-          <div className="body-pad" style={{textAlign: 'center', color: '#64748b'}}>
+          <div className="body-pad" style={{ textAlign: 'center', color: '#64748b' }}>
             Loading ledger entries…
           </div>
         ) : (
@@ -1097,113 +1031,113 @@ export default function MoneyDesk() {
               <tbody>
                 {isLive
                   ? liveList.map(m => {
-                      const isTransfer = m.category === 'Transfer';
-                      const isManual =
-                        m.sourceType === 'ManualMoneyEntry' ||
-                        m.sourceType === 'ManualTransfer' ||
-                        (!m.sourceType &&
-                          ['Expense', 'OtherReceipt', 'OwnerContribution', 'OwnerWithdrawal', 'Transfer'].includes(
-                            m.category
-                          ));
-                      const isReversal = Boolean(m.isReversed) || m.category.endsWith('Reversal') || (m.sourceType && m.sourceType.endsWith('Reversal'));
-                      const canReverse = !m.isReversed && !isReversal && isManual;
+                    const isTransfer = m.category === 'Transfer';
+                    const isManual =
+                      m.sourceType === 'ManualMoneyEntry' ||
+                      m.sourceType === 'ManualTransfer' ||
+                      (!m.sourceType &&
+                        ['Expense', 'OtherReceipt', 'OwnerContribution', 'OwnerWithdrawal', 'Transfer'].includes(
+                          m.category
+                        ));
+                    const isReversal = Boolean(m.isReversed) || m.category.endsWith('Reversal') || (m.sourceType && m.sourceType.endsWith('Reversal'));
+                    const canReverse = !m.isReversed && !isReversal && isManual;
 
-                      return (
-                        <tr key={m._id} style={m.isReversed ? {opacity: 0.5, textDecoration: 'line-through'} : undefined}>
-                          <td>
-                            <strong>{m.reason || m.category}</strong>
-                            {m.subCategory && (
-                              <div>
-                                <small style={{color: '#64748b'}}>{m.subCategory}</small>
-                              </div>
-                            )}
-                            {m.partyName && (
-                              <div>
-                                <small style={{color: '#475569'}}>{m.partyName}</small>
-                              </div>
-                            )}
-                            {m.isReversed && <Badge>Reversed</Badge>}
-                            {isReversal && !m.isReversed && <Badge>Reversal</Badge>}
-                          </td>
-                          <td>
-                            {m.account}
-                            {isTransfer && m.toAccount && <small> → {m.toAccount}</small>}
-                          </td>
-                          <td>
-                            {m.paymentMethod ? <Badge>{m.paymentMethod}</Badge> : <small style={{color: '#94a3b8'}}>—</small>}
-                          </td>
-                          <td className="positive" style={{fontWeight: 600}}>
-                            {m.direction === 'In' ? money(m.amountPaise / 100) : '—'}
-                          </td>
-                          <td style={{color: '#dc2626', fontWeight: 600}}>
-                            {m.direction === 'Out' ? money(m.amountPaise / 100) : '—'}
-                          </td>
-                          <td>
-                            {m.reference ? <code>{m.reference}</code> : '—'}
-                          </td>
-                          <td>
-                            {canReverse ? (
-                              <Btn
-                                secondary
-                                onClick={() => setReversingMovement(m)}
-                                style={{padding: '0.2rem 0.5rem', fontSize: '0.75rem'}}
-                              >
-                                Reverse
-                              </Btn>
-                            ) : m.isReversed ? (
-                              <small style={{color: '#94a3b8'}}>Reversed</small>
-                            ) : isReversal ? (
-                              <small style={{color: '#94a3b8'}}>Reversal</small>
-                            ) : (
-                              <small style={{color: '#64748b'}} title="Operational records use their own settlement reversal workflow">
-                                {m.sourceType || 'Ledger'}
-                              </small>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  : offlineList.map(p => (
-                      <tr key={p.id}>
+                    return (
+                      <tr key={m._id} style={m.isReversed ? { opacity: 0.5, textDecoration: 'line-through' } : undefined}>
                         <td>
-                          {p.purpose}
-                          <small>
-                            {state.customers.find(c => c.id === p.party)?.name ||
-                              state.suppliers.find(s => s.id === p.party)?.name ||
-                              p.party}
-                          </small>
+                          <strong>{m.reason || m.category}</strong>
+                          {m.subCategory && (
+                            <div>
+                              <small style={{ color: '#64748b' }}>{m.subCategory}</small>
+                            </div>
+                          )}
+                          {m.partyName && (
+                            <div>
+                              <small style={{ color: '#475569' }}>{m.partyName}</small>
+                            </div>
+                          )}
+                          {m.isReversed && <Badge>Reversed</Badge>}
+                          {isReversal && !m.isReversed && <Badge>Reversal</Badge>}
                         </td>
                         <td>
-                          {p.account}
-                          {p.toAccount && <small>→ {p.toAccount}</small>}
+                          {m.account}
+                          {isTransfer && m.toAccount && <small> → {m.toAccount}</small>}
                         </td>
                         <td>
-                          <Badge>{p.account === 'Cash' ? 'Cash' : 'Bank'}</Badge>
+                          {m.paymentMethod ? <Badge>{m.paymentMethod}</Badge> : <small style={{ color: '#94a3b8' }}>—</small>}
                         </td>
-                        <td className="positive">{p.direction === 'In' ? money(p.amount) : '—'}</td>
-                        <td>
-                          {p.direction === 'Out'
-                            ? money(p.amount)
-                            : p.direction === 'Transfer'
-                            ? money(p.amount) + ' transfer'
-                            : '—'}
+                        <td className="positive" style={{ fontWeight: 600 }}>
+                          {m.direction === 'In' ? money(m.amountPaise / 100) : '—'}
+                        </td>
+                        <td style={{ color: '#dc2626', fontWeight: 600 }}>
+                          {m.direction === 'Out' ? money(m.amountPaise / 100) : '—'}
                         </td>
                         <td>
-                          {state.bills.some(b => b.id === p.reference) ? (
-                            <Link className="text-link" href={'/sales/' + p.reference}>
-                              {p.reference}
-                            </Link>
-                          ) : state.purchases.some(b => b.id === p.reference) ? (
-                            <Link className="text-link" href={'/purchases/' + p.reference}>
-                              {p.reference}
-                            </Link>
+                          {m.reference ? <code>{m.reference}</code> : '—'}
+                        </td>
+                        <td>
+                          {canReverse ? (
+                            <Btn
+                              secondary
+                              onClick={() => setReversingMovement(m)}
+                              style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem' }}
+                            >
+                              Reverse
+                            </Btn>
+                          ) : m.isReversed ? (
+                            <small style={{ color: '#94a3b8' }}>Reversed</small>
+                          ) : isReversal ? (
+                            <small style={{ color: '#94a3b8' }}>Reversal</small>
                           ) : (
-                            p.reference
+                            <small style={{ color: '#64748b' }} title="Operational records use their own settlement reversal workflow">
+                              {m.sourceType || 'Ledger'}
+                            </small>
                           )}
                         </td>
-                        <td>—</td>
                       </tr>
-                    ))}
+                    );
+                  })
+                  : offlineList.map(p => (
+                    <tr key={p.id}>
+                      <td>
+                        {p.purpose}
+                        <small>
+                          {state.customers.find(c => c.id === p.party)?.name ||
+                            state.suppliers.find(s => s.id === p.party)?.name ||
+                            p.party}
+                        </small>
+                      </td>
+                      <td>
+                        {p.account}
+                        {p.toAccount && <small>→ {p.toAccount}</small>}
+                      </td>
+                      <td>
+                        <Badge>{p.account === 'Cash' ? 'Cash' : 'Bank'}</Badge>
+                      </td>
+                      <td className="positive">{p.direction === 'In' ? money(p.amount) : '—'}</td>
+                      <td>
+                        {p.direction === 'Out'
+                          ? money(p.amount)
+                          : p.direction === 'Transfer'
+                            ? money(p.amount) + ' transfer'
+                            : '—'}
+                      </td>
+                      <td>
+                        {state.bills.some(b => b.id === p.reference) ? (
+                          <Link className="text-link" href={'/sales/' + p.reference}>
+                            {p.reference}
+                          </Link>
+                        ) : state.purchases.some(b => b.id === p.reference) ? (
+                          <Link className="text-link" href={'/purchases/' + p.reference}>
+                            {p.reference}
+                          </Link>
+                        ) : (
+                          p.reference
+                        )}
+                      </td>
+                      <td>—</td>
+                    </tr>
+                  ))}
               </tbody>
             </table>
           </div>
@@ -1213,8 +1147,8 @@ export default function MoneyDesk() {
 
         {/* Real Pagination Controls */}
         {isLive && registerData && registerData.pagination.totalCount > 0 && (
-          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem', borderTop: '1px solid #e2e8f0', fontSize: '0.875rem'}}>
-            <span style={{color: '#64748b'}}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem', borderTop: '1px solid #e2e8f0', fontSize: '0.875rem' }}>
+            <span style={{ color: '#64748b' }}>
               Showing {(registerData.pagination.page - 1) * registerData.pagination.limit + 1} to{' '}
               {Math.min(
                 registerData.pagination.page * registerData.pagination.limit,
@@ -1222,23 +1156,23 @@ export default function MoneyDesk() {
               )}{' '}
               of <strong>{registerData.pagination.totalCount}</strong> matching movements
             </span>
-            <div style={{display: 'flex', gap: '0.5rem', alignItems: 'center'}}>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <Btn
                 secondary
                 disabled={page <= 1 || isLoading}
                 onClick={() => setPage(p => Math.max(1, p - 1))}
-                style={{padding: '0.3rem 0.75rem'}}
+                style={{ padding: '0.3rem 0.75rem' }}
               >
                 Previous
               </Btn>
-              <span style={{padding: '0 0.5rem', color: '#475569'}}>
+              <span style={{ padding: '0 0.5rem', color: '#475569' }}>
                 Page {registerData.pagination.page} of {registerData.pagination.totalPages}
               </span>
               <Btn
                 secondary
                 disabled={page >= registerData.pagination.totalPages || isLoading}
                 onClick={() => setPage(p => Math.min(registerData.pagination.totalPages, p + 1))}
-                style={{padding: '0.3rem 0.75rem'}}
+                style={{ padding: '0.3rem 0.75rem' }}
               >
                 Next
               </Btn>

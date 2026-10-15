@@ -1465,7 +1465,9 @@ export function DocumentComposer({
                   <option>Used goods</option>
                   <option>Service</option>
                 </select>
-                <span className="muted">Service bills repair work separately. Select a service from the catalogue or add a service line. Job-linked parts are billed from Service jobs.</span>
+                <span className="muted">
+                  This classifies the sale; it does not decide GST. For a legally non-GST sale—including an eligible used item—choose <strong>Non-GST</strong> in that item’s GST column. Service bills repair work separately.
+                </span>
               </Field>
             )}
 

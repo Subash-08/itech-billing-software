@@ -8,7 +8,7 @@ import {START_DATE, nextDate, isLocked, dayFacts, closeDay, assertOpen} from '@/
 import {PageHead, Card, Btn, Field, Badge, Modal} from './ui';
 
 export default function Daybook() {
-  const {state, run, role, notify, isLive} = useStore();
+  const {state, run, role, notify, isLive, companySession} = useStore();
   const params = useSearchParams();
   const date = params.get('date') || '';
 
@@ -69,7 +69,7 @@ export default function Daybook() {
     } finally {
       setIsLoading(false);
     }
-  }, [date, isLive]);
+  }, [date, isLive, companySession?.profitUnlocked]);
 
   const fetchList = useCallback(async () => {
     if (!isLive || date) return;
@@ -85,7 +85,7 @@ export default function Daybook() {
     } finally {
       setIsLoading(false);
     }
-  }, [page, date, isLive]);
+  }, [page, date, isLive, companySession?.profitUnlocked]);
 
   const fetchHolidays = useCallback(async () => {
     if (!isLive) return;
@@ -536,8 +536,10 @@ export default function Daybook() {
                     <tr>
                       <th>Date</th>
                       <th>Sales</th>
-                      <th>Cash Closing</th>
-                      <th>Bank Closing</th>
+                      <th>Opening funds</th>
+                      <th>Customer Collections</th>
+                      <th>Supplier Paid</th>
+                      <th>Closing funds</th>
                       <th>Expenses</th>
                       <th>Profit review</th>
                       <th>Status</th>
@@ -552,8 +554,16 @@ export default function Daybook() {
                               <strong>{d.date}</strong>
                             </td>
                             <td>{money(d.salesPaise / 100)}</td>
-                            <td>{money(d.cashPaise / 100)}</td>
-                            <td>{money(d.bankPaise / 100)}</td>
+                            <td>
+                              <strong>{money(((d.openingCashPaise || 0) + (d.openingBankPaise || 0)) / 100)}</strong>
+                              <small>Cash {money((d.openingCashPaise || 0) / 100)} · Bank {money((d.openingBankPaise || 0) / 100)}</small>
+                            </td>
+                            <td>{money((d.customerCollectionsPaise || 0) / 100)}</td>
+                            <td>{money((d.supplierPaymentsPaise || 0) / 100)}</td>
+                            <td>
+                              <strong>{money(((d.cashPaise || 0) + (d.bankPaise || 0)) / 100)}</strong>
+                              <small>Cash {money((d.cashPaise || 0) / 100)} · Bank {money((d.bankPaise || 0) / 100)}</small>
+                            </td>
                             <td>{money(d.expensesPaise / 100)}</td>
                             <td>
                               {d.tradingProfitPaise !== null && d.tradingProfitPaise !== undefined ? (
@@ -588,13 +598,15 @@ export default function Daybook() {
                             <tr key={d}>
                               <td>{d}</td>
                               <td>{money(v.sales)}</td>
-                              <td>{money(v.accounts.Cash.closing)}</td>
                               <td>
-                                {money(
-                                  Object.entries(v.accounts)
-                                    .filter(([a]) => a !== 'Cash')
-                                    .reduce((n, [, a]) => n + a.closing, 0)
-                                )}
+                                <strong>{money(Object.values(v.accounts).reduce((n, account) => n + account.opening, 0))}</strong>
+                                <small>Cash {money(v.accounts.Cash.opening)} · Bank {money(Object.entries(v.accounts).filter(([a]) => a !== 'Cash').reduce((n, [, a]) => n + a.opening, 0))}</small>
+                              </td>
+                              <td>{money(v.cashReceipts + v.bankReceipts)}</td>
+                              <td>{money(state.payments.filter(p => p.date === d && p.direction === 'Out' && /supplier/i.test(p.purpose)).reduce((sum, p) => sum + p.amount, 0))}</td>
+                              <td>
+                                <strong>{money(Object.values(v.accounts).reduce((n, account) => n + account.closing, 0))}</strong>
+                                <small>Cash {money(v.accounts.Cash.closing)} · Bank {money(Object.entries(v.accounts).filter(([a]) => a !== 'Cash').reduce((n, [, a]) => n + a.closing, 0))}</small>
                               </td>
                               <td>{money(v.expenses)}</td>
                               <td>{role === 'Owner' ? money(v.profit) : 'Locked'}</td>
