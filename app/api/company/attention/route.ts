@@ -11,7 +11,7 @@ type AttentionItem = {
   title: string;
   detail: string;
   href: string;
-  area: 'Setup' | 'Closing' | 'Supplier' | 'Customer' | 'Service' | 'Stock' | 'Enquiry' | 'Quotation' | 'Profit';
+  area: 'Setup' | 'Closing' | 'Supplier' | 'Customer' | 'Service' | 'Stock' | 'Enquiry' | 'Profit';
   occurredAt: string;
   key?: string;
   unread?: boolean;
@@ -29,9 +29,6 @@ export async function GET() {
     const {tenantId, userId} = identity;
     const db = await database();
     const today = todayInKolkata();
-    const quoteWindowDate = new Date(`${today}T00:00:00Z`);
-    quoteWindowDate.setUTCDate(quoteWindowDate.getUTCDate() + 3);
-    const quoteWindowEnd = quoteWindowDate.toISOString().slice(0, 10);
     const deadline = {$or: [
       {promisedPaymentDate: {$lte: today, $gte: '1900-01-01'}},
       {$and: [
@@ -40,7 +37,7 @@ export async function GET() {
       ]},
     ]};
 
-    const [purchases, invoices, jobs, returns, opening, gate, pendingProfit, enquiries, receipts, lowStock, quotations] = await Promise.all([
+    const [purchases, invoices, jobs, returns, opening, gate, pendingProfit, enquiries, receipts, lowStock] = await Promise.all([
       db.collection<any>('purchases').find(
         {tenantId, billStatus: {$in: ['Posted', 'Credited', 'FullyCredited']}, duePaise: {$gt: 0}, ...deadline},
         {projection: {_id: 1, supplierId: 1, purchaseNumber: 1, supplierInvoiceNumber: 1, dueDate: 1, promisedPaymentDate: 1, updatedAt: 1}}
@@ -83,10 +80,6 @@ export async function GET() {
         {$limit: 6},
         {$project: {_id: 1, name: 1, available: 1, threshold: 1, updatedAt: 1}},
       ]).toArray(),
-      db.collection<any>('quotations').find(
-        {tenantId, status: {$in: ['Sent', 'Accepted', 'Shared']}, validUntil: {$lte: quoteWindowEnd, $gte: '1900-01-01'}},
-        {projection: {_id: 1, quotationNumber: 1, status: 1, validUntil: 1}}
-      ).sort({validUntil: 1, _id: 1}).limit(6).toArray(),
     ]);
 
     const items: AttentionItem[] = [];
@@ -112,7 +105,6 @@ export async function GET() {
     for (const j of jobs) items.push({id: `job:${j._id}`, title: j.jobNumber, detail: j.status === 'ReadyForDelivery' ? 'Ready for customer collection.' : j.status === 'EstimatePending' ? 'Estimate approval needed.' : 'Waiting for parts.', href: `/services/${j._id}`, area: 'Service', occurredAt: j.updatedAt?.toISOString?.() || j.receivedDate || today});
     for (const r of returns) items.push({id: `return:${r._id}`, title: `Confirm supplier credit · ${r.returnNumber}`, detail: 'Goods returned; financial credit awaits confirmation.', href: `/suppliers/${r.supplierId}?tab=Returns`, area: 'Supplier', occurredAt: r.createdAt?.toISOString?.() || r.returnDate || today});
     for (const e of enquiries) items.push({id: `enquiry:${e._id}`, title: `Follow up · ${e.enquiryNumber}`, detail: `${e.followUpDate < today ? 'Follow-up overdue' : 'Follow-up due today'}.`, href: '/enquiries', area: 'Enquiry', occurredAt: e.followUpDate});
-    for (const q of quotations) items.push({id: `quotation:${q._id}`, title: `Review quotation · ${q.quotationNumber}`, detail: q.validUntil < today ? `Expired on ${q.validUntil}.` : q.validUntil === today ? 'Validity ends today.' : `Validity ends ${q.validUntil}.`, href: `/quotations/${q._id}`, area: 'Quotation', occurredAt: q.validUntil});
     for (const p of receipts) items.push({id: `receipt:${p._id}`, title: `Receive stock · ${p.purchaseNumber}`, detail: p.receiptStatus === 'PartlyReceived' ? 'Some ordered units are still pending.' : 'Supplier bill posted; stock has not been received.', href: `/purchases/${p._id}/receive`, area: 'Stock', occurredAt: p.updatedAt?.toISOString?.() || p.orderDate || today});
     for (const product of lowStock) items.push({id: `stock:${product._id}`, title: product.available === 0 ? `Out of stock · ${product.name}` : `Low stock · ${product.name}`, detail: `${product.available} available · Restock level ${product.threshold}.`, href: `/inventory/${product._id}`, area: 'Stock', occurredAt: product.updatedAt?.toISOString?.() || today});
     if (pendingProfit) items.push({id: 'profit', title: 'Complete missing profit entries', detail: 'Review costs before closing today.', href: `/profit?date=${today}`, area: 'Profit', occurredAt: pendingProfit.updatedAt?.toISOString?.() || pendingProfit.createdAt?.toISOString?.() || today});
@@ -127,7 +119,7 @@ export async function GET() {
     return {
       items,
       unreadCount,
-      hasMore: [purchases, invoices, jobs, returns, enquiries, receipts, lowStock, quotations].some((rows) => rows.length === 6),
+      hasMore: [purchases, invoices, jobs, returns, enquiries, receipts, lowStock].some((rows) => rows.length === 6),
       checkedAt: new Date().toISOString(),
     };
   });

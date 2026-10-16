@@ -367,7 +367,6 @@ export async function ensureIndexes() {
         // Phase 4: Quotations, invoices, customer receipts/advances/allocations, warranties, reservations
         safeCreateIndex(db.collection('quotations'), {tenantId: 1, quotationNumber: 1}, {unique: true}),
         safeCreateIndex(db.collection('quotations'), {tenantId: 1, status: 1, createdAt: -1}),
-        safeCreateIndex(db.collection('quotations'), {tenantId: 1, status: 1, validUntil: 1}),
         safeCreateIndex(db.collection('quotations'), {tenantId: 1, customerId: 1, status: 1, createdAt: -1}),
 
         safeCreateIndex(db.collection('invoices'), {tenantId: 1, invoiceNumber: 1}, {

@@ -3334,9 +3334,36 @@ export default function Documents({
                   {record.status === 'Draft' && <Link className="btn secondary" href={`/quotations/new?edit=${id}`}>
                     Edit quotation
                   </Link>}
-                  <Link href={`/sales/new?from=${id}`} className="btn">
-                    Convert to invoice
-                  </Link>
+                  <Btn
+                    disabled={actionBusy}
+                    onClick={async () => {
+                      if (!id || actionBusy) return;
+                      if (!isLive) {
+                        router.push(`/sales/new?from=${id}`);
+                        return;
+                      }
+                      setActionBusy(true);
+                      try {
+                        const version = detailData?.raw?.version ?? record.version ?? 1;
+                        const result = await convertQuotationApi(id, version, TODAY);
+                        if (!result.success || !result.draft) {
+                          notify(result.error || 'Could not convert quotation.');
+                          return;
+                        }
+                        const draftId = result.draft._id || result.draft.id;
+                        if (!draftId) {
+                          notify('Quotation converted, but the new invoice draft could not be opened. Refresh quotations and try again.');
+                          return;
+                        }
+                        notify('Quotation converted to an invoice draft. Select stock, then issue the invoice.');
+                        router.push(`/sales/${draftId}`);
+                      } finally {
+                        setActionBusy(false);
+                      }
+                    }}
+                  >
+                    {actionBusy ? 'Converting…' : 'Convert to invoice'}
+                  </Btn>
                   <Btn secondary onClick={() => setQuoteCancelOpen(true)}>
                     Cancel quotation
                   </Btn>
