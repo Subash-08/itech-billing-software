@@ -125,6 +125,7 @@ export function DocumentComposer({
   const params = useSearchParams();
 
   const editId = params.get('edit') || (existingId && existingId !== 'new' ? existingId : undefined);
+  const convertedFromQuotationId = params.get('fromQuotation');
   const [activeDraftId, setActiveDraftId] = useState<string | undefined>(editId);
   const isEditMode = !!editId;
   const isReceiptMode = purchase && !!existingId && existingId !== 'new';
@@ -1238,6 +1239,12 @@ export function DocumentComposer({
         <ArrowLeft size={14} />
         Back to {purchase ? 'purchases' : quotation ? 'quotations' : 'invoices'}
       </Link>
+
+      {!purchase && !quotation && convertedFromQuotationId && (
+        <div className="notice" role="status">
+          <strong>Invoice draft created from quotation.</strong> The quoted prices were copied unchanged. Review prices, quantities, tax and stock before issuing; changes here do not alter the quotation.
+        </div>
+      )}
 
       <PageHead
         title={
@@ -3355,14 +3362,14 @@ export default function Documents({
                           notify('Quotation converted, but the new invoice draft could not be opened. Refresh quotations and try again.');
                           return;
                         }
-                        notify('Quotation converted to an invoice draft. Select stock, then issue the invoice.');
-                        router.push(`/sales/${draftId}`);
+                        notify('Invoice draft created. Review prices and select stock before issuing.');
+                        router.push(`/sales/new?edit=${encodeURIComponent(draftId)}&fromQuotation=${encodeURIComponent(id)}`);
                       } finally {
                         setActionBusy(false);
                       }
                     }}
                   >
-                    {actionBusy ? 'Converting…' : 'Convert to invoice'}
+                    {actionBusy ? 'Converting…' : 'Convert to editable invoice'}
                   </Btn>
                   <Btn secondary onClick={() => setQuoteCancelOpen(true)}>
                     Cancel quotation
