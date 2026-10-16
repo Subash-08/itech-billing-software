@@ -5,7 +5,7 @@ import {purchaseLineBalances} from '@/lib/settlement';
 import {lineTotal} from '@/lib/domain';
 import {ReactNode, useState, useEffect} from 'react';
 import Link from 'next/link';
-import {Plus, Pencil, ArrowUpRight, ArrowLeft, Package, Download} from 'lucide-react';
+import {Plus, Pencil, ArrowUpRight, ArrowLeft, Package, Download, Boxes, PackageCheck, TriangleAlert} from 'lucide-react';
 import {Product, TODAY, available, reserved, uid, money, activeReservation, dateLabel} from '@/lib/domain';
 import {useStore} from './store';
 import {PageHead, Card, Btn, Modal, Field, SearchBox, Badge, Empty, csvDownload} from './ui';
@@ -342,6 +342,8 @@ export default function Inventory({id}: {id?: string}) {
   const [adjust, setAdjust] = useState(false);
   const [page, setPage] = useState(1);
   const [serverData, setServerData] = useState<{records: any[]; total: number; totalPages: number} | null>(null);
+  const [inventorySummary, setInventorySummary] = useState<any>(null);
+  const [inventorySummaryError, setInventorySummaryError] = useState('');
   const [detailProduct, setDetailProduct] = useState<Product | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
@@ -516,6 +518,22 @@ export default function Inventory({id}: {id?: string}) {
   useEffect(() => {
     setPage(1);
   }, [q, category, stock]);
+
+  useEffect(() => {
+    if (!isLive || id) return;
+    let active = true;
+    setInventorySummaryError('');
+    fetch('/api/master/products/summary', {cache: 'no-store'})
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not load inventory overview.');
+        if (active) setInventorySummary(data);
+      })
+      .catch((error) => {
+        if (active) setInventorySummaryError(error instanceof Error ? error.message : 'Could not load inventory overview.');
+      });
+    return () => { active = false; };
+  }, [isLive, id]);
 
   useEffect(() => {
     if (isLive && !id) {
@@ -1054,17 +1072,18 @@ export default function Inventory({id}: {id?: string}) {
         </div>
       ) : (
         <>
-          <div className="inventory-summary">
-            <span>
-              <b>{state.products.length}</b> products
-            </span>
-            <span>
-              <b>{state.products.reduce((a, p) => a + p.stock, 0)}</b> units on hand
-            </span>
-            <span>
-              <b>{state.products.filter((p) => available(state, p) <= p.low).length}</b> low stock
-            </span>
-          </div>
+          <section className="module-overview" aria-label="Inventory overview">
+            <div className="module-overview-head">
+              <div><span>Inventory overview</span><h2>Current stock position</h2></div>
+              {inventorySummaryError && <span className="error">{inventorySummaryError}</span>}
+            </div>
+            <div className="module-overview-grid">
+              <div className="module-metric neutral"><Boxes size={18}/><span>Products</span><strong>{isLive ? (inventorySummary?.productCount ?? '…') : state.products.length}</strong><small>Active catalogue items</small></div>
+              <div className="module-metric info"><Package size={18}/><span>Units on hand</span><strong>{isLive ? (inventorySummary?.unitsOnHand ?? '…') : state.products.reduce((a, product) => a + product.stock, 0)}</strong><small>Sellable, reserved and defective units</small></div>
+              <div className="module-metric success"><PackageCheck size={18}/><span>Available to sell</span><strong>{isLive ? (inventorySummary?.availableToSell ?? '…') : state.products.reduce((a, product) => a + available(state, product), 0)}</strong><small>Units ready for a new invoice</small></div>
+              <div className="module-metric warning"><TriangleAlert size={18}/><span>Needs restocking</span><strong>{isLive ? (inventorySummary?.lowStockCount ?? '…') : state.products.filter((product) => available(state, product) <= product.low).length}</strong><small>{inventorySummary ? `${inventorySummary.outOfStockCount} out of stock · ${inventorySummary.defectiveUnits} defective` : 'At or below the restock alert level'}</small></div>
+            </div>
+          </section>
           <Card>
             <div className="toolbar">
               <SearchBox value={q} onChange={setQ} placeholder="Search product, brand or model…" />

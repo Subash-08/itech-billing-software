@@ -32,7 +32,7 @@ const globalDb = globalThis as typeof globalThis & {
   itechRuntimeIndexCheck?: Promise<void>;
 };
 
-const REQUIRED_INDEX_MANIFEST_VERSION = 3;
+const REQUIRED_INDEX_MANIFEST_VERSION = 4;
 
 function isDnsDiscoveryError(err: any): boolean {
   if (!err) return false;
@@ -323,6 +323,9 @@ export async function ensureIndexes() {
         safeCreateIndex(db.collection('invoices'), {tenantId: 1, status: 1, promisedPaymentDate: 1}),
         safeCreateIndex(db.collection('openingPayables'), {tenantId: 1, supplierId: 1, remainingAmountPaise: 1}),
         safeCreateIndex(db.collection('serviceJobs'), {tenantId: 1, status: 1, updatedAt: 1}),
+        safeCreateIndex(db.collection('enquiries'), {tenantId: 1, status: 1, followUpDate: 1}),
+        safeCreateIndex(db.collection('attentionReads'), {tenantId: 1, userId: 1, key: 1}, {unique: true}),
+        safeCreateIndex(db.collection('attentionReads'), {expiresAt: 1}, {expireAfterSeconds: 0}),
         safeCreateIndex(db.collection('purchases'), {tenantId: 1, supplierId: 1, billStatus: 1, orderDate: -1}),
         safeCreateIndex(db.collection('purchases'), {tenantId: 1, receiptStatus: 1, orderDate: -1}),
         safeCreateIndex(db.collection('purchases'), {tenantId: 1, paymentStatus: 1, orderDate: -1}),
@@ -364,6 +367,7 @@ export async function ensureIndexes() {
         // Phase 4: Quotations, invoices, customer receipts/advances/allocations, warranties, reservations
         safeCreateIndex(db.collection('quotations'), {tenantId: 1, quotationNumber: 1}, {unique: true}),
         safeCreateIndex(db.collection('quotations'), {tenantId: 1, status: 1, createdAt: -1}),
+        safeCreateIndex(db.collection('quotations'), {tenantId: 1, status: 1, validUntil: 1}),
         safeCreateIndex(db.collection('quotations'), {tenantId: 1, customerId: 1, status: 1, createdAt: -1}),
 
         safeCreateIndex(db.collection('invoices'), {tenantId: 1, invoiceNumber: 1}, {

@@ -2,7 +2,7 @@
 import AccountHistory from './account-history';
 import {useState, useEffect} from 'react';
 import Link from 'next/link';
-import {Plus, ArrowUpRight, Pencil, Phone, Mail, FileText, ArrowLeft, Archive} from 'lucide-react';
+import {Plus, ArrowUpRight, Pencil, Phone, Mail, FileText, ArrowLeft, Archive, IndianRupee, AlarmClock, CalendarClock, UsersRound} from 'lucide-react';
 import {useStore} from './store';
 import {Customer, Supplier, uid, money, roundedTotal, balance, dateLabel} from '@/lib/domain';
 import {PageHead, Card, SearchBox, Btn, Modal, Field, Empty, Badge} from './ui';
@@ -261,6 +261,8 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
   const [type, setType] = useState('All');
   const [page, setPage] = useState(1);
   const [serverData, setServerData] = useState<{records: any[]; total: number; totalPages: number} | null>(null);
+  const [supplierSummary, setSupplierSummary] = useState<any>(null);
+  const [supplierSummaryError, setSupplierSummaryError] = useState('');
   const [listLoading, setListLoading] = useState(false);
   const [listError, setListError] = useState('');
   const [refreshIndex, setRefreshIndex] = useState(0);
@@ -283,6 +285,22 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
   useEffect(() => {
     setPage(1);
   }, [q, type, supplier]);
+
+  useEffect(() => {
+    if (!isLive || !supplier || isDetailRoute) return;
+    let active = true;
+    setSupplierSummaryError('');
+    fetch('/api/master/suppliers/summary', {cache: 'no-store'})
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not load supplier overview.');
+        if (active) setSupplierSummary(data);
+      })
+      .catch((error) => {
+        if (active) setSupplierSummaryError(error instanceof Error ? error.message : 'Could not load supplier overview.');
+      });
+    return () => { active = false; };
+  }, [isLive, supplier, isDetailRoute, refreshIndex]);
 
   useEffect(() => {
     if (isLive && !isDetailRoute) {
@@ -680,7 +698,22 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
           </div>
         </>
       ) : (
-        <Card>
+        <>
+          {supplier && (
+            <section className="module-overview" aria-label="Supplier overview">
+              <div className="module-overview-head">
+                <div><span>Supplier overview</span><h2>Payments and due dates</h2></div>
+                {supplierSummaryError && <button type="button" onClick={() => setRefreshIndex((value) => value + 1)}>Retry overview</button>}
+              </div>
+              <div className="module-overview-grid">
+                <div className="module-metric danger"><IndianRupee size={18}/><span>Total to pay</span><strong>{supplierSummary ? money(supplierSummary.totalDuePaise / 100) : '…'}</strong><small>Includes unpaid supplier bills and opening balances</small></div>
+                <div className="module-metric warning"><AlarmClock size={18}/><span>Overdue</span><strong>{supplierSummary ? money(supplierSummary.overduePaise / 100) : '…'}</strong><small>{supplierSummary ? `${supplierSummary.overdueCount} bill(s) past the agreed date` : 'Checking due dates…'}</small></div>
+                <div className="module-metric info"><CalendarClock size={18}/><span>Due in 7 days</span><strong>{supplierSummary ? money(supplierSummary.dueSoonPaise / 100) : '…'}</strong><small>{supplierSummary ? `${supplierSummary.dueSoonCount} bill(s) due soon` : 'Checking upcoming bills…'}</small></div>
+                <div className="module-metric neutral"><UsersRound size={18}/><span>Suppliers with balance</span><strong>{supplierSummary ? supplierSummary.suppliersWithBalance : '…'}</strong><small>{supplierSummary ? `${supplierSummary.activeSuppliers} active supplier(s)` : 'Checking supplier accounts…'}</small></div>
+              </div>
+            </section>
+          )}
+          <Card>
           <div className="toolbar">
             <SearchBox
               value={q}
@@ -798,6 +831,7 @@ export default function People({supplier = false, id}: {supplier?: boolean; id?:
             </div>
           )}
         </Card>
+        </>
       )}
 
       {edit && (
