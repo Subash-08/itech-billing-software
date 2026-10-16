@@ -238,7 +238,15 @@ export async function recordCustomerReceipt(
             {session, returnDocument: 'after'}
           );
           if (!inv) {
-            throw new AppError(400, `Invoice ${alloc.targetId} has insufficient due or does not belong to this customer.`);
+            const current = await col<InvoiceDocument>(db, 'invoices').findOne(
+              {_id: alloc.targetId, tenantId},
+              {session, projection: {_id: 1, customerId: 1, status: 1, duePaise: 1}}
+            );
+            if (!current) throw new AppError(404, `Invoice ${alloc.targetId} was not found.`);
+            if (current.customerId !== input.customerId) throw new AppError(400, `Invoice ${alloc.targetId} belongs to a different customer.`);
+            if (current.status !== 'Issued') throw new AppError(400, `Invoice ${alloc.targetId} is not issued and cannot receive a payment.`);
+            if ((current.duePaise || 0) <= 0) throw new AppError(409, `Invoice ${alloc.targetId} is already fully paid.`);
+            throw new AppError(409, `Invoice balance changed. Remaining due is ₹${((current.duePaise || 0) / 100).toFixed(2)}. Reload the invoice and retry.`);
           }
           const paymentStatus = inv.duePaise === 0 ? 'Paid' : 'PartlyPaid';
           await col(db, 'invoices').updateOne(

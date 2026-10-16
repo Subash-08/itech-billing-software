@@ -646,7 +646,7 @@ export function CustomerReceiptModal({
   const [busy, setBusy] = useState(false);
   const [account, setAccount] = useState<'Cash' | 'Bank'>('Cash');
   const [method, setMethod] = useState<'Cash' | 'UPI' | 'BankTransfer' | 'Card'>('Cash');
-  const [amount, setAmount] = useState<string>(() => String(invoice.dueAmount || ''));
+  const [amount, setAmount] = useState<string>(() => invoice.dueAmount > 0 ? invoice.dueAmount.toFixed(2) : '');
   const [reference, setReference] = useState('');
   const [date, setDate] = useState(TODAY);
 
@@ -657,6 +657,10 @@ export function CustomerReceiptModal({
     const numAmt = parseFloat(amount) || 0;
     if (numAmt <= 0) {
       notify('Enter a positive receipt amount.');
+      return;
+    }
+    if (numAmt - invoice.dueAmount > 0.005) {
+      notify(`Enter ${money(invoice.dueAmount)} or less. Record any extra amount separately as a customer advance.`);
       return;
     }
 
@@ -677,7 +681,7 @@ export function CustomerReceiptModal({
           targetId: invoice.id,
           amountPaise,
         }],
-        recordExcessAsCustomerAdvance: true,
+        recordExcessAsCustomerAdvance: false,
         notes: `Receipt applied to invoice ${invoice.id}`,
         idempotencyKey: `rcpt-${Date.now()}-${uid('IDEM')}`,
       });
@@ -698,14 +702,18 @@ export function CustomerReceiptModal({
     <Modal title={`Record Customer Receipt · ${invoice.id}`} onClose={onClose}>
       <form onSubmit={handleRecord}>
         <div className="form-body form-grid">
+          <div className="notice full">
+            Remaining invoice balance: <strong>{money(invoice.dueAmount)}</strong>. You can record the full amount or a partial payment.
+          </div>
           <Field label="Receipt Date *">
-            <input required type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            <input required type="date" max={TODAY} value={date} onChange={(e) => setDate(e.target.value)} />
           </Field>
           <Field label="Amount (₹) *">
             <input
               required
               type="number"
               min="0.01"
+              max={invoice.dueAmount}
               step="0.01"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}

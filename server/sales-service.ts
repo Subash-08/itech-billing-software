@@ -1040,7 +1040,13 @@ export async function getInvoice(db: Db, identity: Identity, invoiceId: string) 
   const invoice = await col<InvoiceDocument>(db, 'invoices').findOne({_id: invoiceId, tenantId: identity.tenantId});
   if (!invoice) throw new AppError(404, 'Invoice not found.');
   const [receipts, warranties] = await Promise.all([
-    col(db, 'customerReceipts').find({tenantId: identity.tenantId, invoiceId}).sort({date: -1}).limit(50).toArray(),
+    col(db, 'customerReceipts').find({
+      tenantId: identity.tenantId,
+      $or: [
+        {invoiceId},
+        {allocations: {$elemMatch: {targetType: 'Invoice', targetId: invoiceId}}},
+      ],
+    }).sort({date: -1, createdAt: -1}).limit(50).toArray(),
     col(db, 'warranties').find({tenantId: identity.tenantId, invoiceId}).sort({createdAt: -1}).limit(50).toArray(),
   ]);
   return {invoice: hasProfitAccess(identity) ? invoice : withoutPrivateProfitFields(invoice), receipts, warranties};

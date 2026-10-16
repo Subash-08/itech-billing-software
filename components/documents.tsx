@@ -2942,6 +2942,30 @@ export default function Documents({
       ? (detailData?.quotation ? detailData.quotation : state.bills.find((b) => b.id === id && b.kind === 'Quotation'))
       : (detailData?.invoice ? detailData.invoice : state.bills.find((b) => b.id === id && b.kind !== 'Quotation'));
 
+  const invoicePaidAmount = !purchase && !quotation && record
+    ? detailData?.raw?.allocatedPaidPaise != null
+      ? detailData.raw.allocatedPaidPaise / 100
+      : Number((record as any).paid ?? paid(state, record.id))
+    : 0;
+  const invoiceBalanceAmount = !purchase && !quotation && record
+    ? detailData?.raw?.duePaise != null
+      ? detailData.raw.duePaise / 100
+      : balance(state, record)
+    : 0;
+  const invoicePaymentRows = !purchase && !quotation && record
+    ? isLive
+      ? (detailData?.receipts || []).map((receipt: any) => ({
+          id: receipt._id || receipt.id || receipt.receiptNumber,
+          date: receipt.date,
+          account: Array.from(new Set((receipt.components || []).map((component: any) => component.account))).join(' + ') || '—',
+          purpose: receipt.isReversed ? 'Customer receipt · Reversed' : 'Customer receipt',
+          amount: ((receipt.allocations || [])
+            .filter((allocation: any) => allocation.targetType === 'Invoice' && allocation.targetId === record.id)
+            .reduce((sum: number, allocation: any) => sum + (allocation.amountPaise || 0), 0) || receipt.totalAmountPaise || 0) / 100,
+        }))
+      : state.payments.filter(payment => payment.reference === record.id)
+    : [];
+
   const refreshDetail = () => {
     if (id && isLive) {
       const requestId = ++detailRequestRef.current;
@@ -3357,9 +3381,9 @@ export default function Documents({
                       onClick={() => {
                         if (isLive) {
                           setReceiptTargetInvoice({
-                            id: record.id,
-                            customerId: (record as Bill).customerId || (detailData?.raw?.customerId ?? ''),
-                            dueAmount: detailData?.raw?.duePaise != null ? detailData.raw.duePaise : Math.round(balance(state, record) * 100),
+                            id: detailData?.raw?._id || record.id,
+                            customerId: detailData?.raw?.customerId || (record as Bill).customerId || '',
+                            dueAmount: detailData?.raw?.duePaise != null ? detailData.raw.duePaise / 100 : balance(state, record),
                           });
                           setReceiptModalOpen(true);
                         } else {
@@ -3594,18 +3618,18 @@ export default function Documents({
             {!quotation && (
               <>
                 <span>
-                  Paid <b>{money(purchase ? Number((record as any).paid || 0) : paid(state, record.id))}</b>
+                  Paid <b>{money(purchase ? Number((record as any).paid || 0) : invoicePaidAmount)}</b>
                 </span>
                 {purchase && Number((record as any).creditedAmount || 0) > 0 && <span>Return / supplier credit <b>{money(Number((record as any).creditedAmount || 0))}</b></span>}
                 <span>
-                  Balance <b>{money(purchase ? Number((record as any).dueAmount || 0) : balance(state, record))}</b>
+                  Balance <b>{money(purchase ? Number((record as any).dueAmount || 0) : invoiceBalanceAmount)}</b>
                 </span>
                 <Badge>
-                  {(purchase ? Number((record as any).dueAmount || 0) : balance(state, record)) === 0
+                  {(purchase ? Number((record as any).dueAmount || 0) : invoiceBalanceAmount) === 0
                     ? purchase && Number((record as any).creditedAmount || 0) > 0 && Number((record as any).paid || 0) < roundedTotal(record)
                       ? 'Settled with supplier credit'
                       : 'Paid'
-                    : (purchase ? Number((record as any).paid || 0) : paid(state, record.id)) > 0
+                    : (purchase ? Number((record as any).paid || 0) : invoicePaidAmount) > 0
                       ? 'Partly paid'
                       : 'Unpaid'}
                 </Badge>
@@ -4056,9 +4080,7 @@ export default function Documents({
                         </tr>
                       </thead>
                       <tbody>
-                        {state.payments
-                          .filter((p) => p.reference === record.id)
-                          .map((p) => (
+                        {invoicePaymentRows.map((p: any) => (
                             <tr key={p.id}>
                               <td>{p.date}</td>
                               <td>{p.account}</td>
@@ -4069,7 +4091,7 @@ export default function Documents({
                       </tbody>
                     </table>
                   </div>
-                  {!state.payments.some((p) => p.reference === record.id) && (
+                  {!invoicePaymentRows.length && (
                     <Empty
                       title="No payments recorded"
                       text="Record the payment when money is actually received or paid."
